@@ -364,7 +364,8 @@
 
       <div class="form-card">
         <label class="field-label" for="phone">Số điện thoại <span class="required-star">*</span></label>
-        <input type="tel" id="phone" placeholder="Câu trả lời của bạn" />
+        <input type="tel" id="phone" placeholder="Câu trả lời của bạn" inputmode="numeric" maxlength="10"
+          oninput="this.value=this.value.replace(/\D/g,'').slice(0,10)" />
         <div class="error-msg" id="phoneErr">Câu hỏi này là bắt buộc.</div>
       </div>
 
@@ -499,7 +500,7 @@
           <label class="radio-option"><input type="radio" name="chonLoai" value="KV 468 R" /> KV 468 R</label>
           <label class="radio-option"><input type="radio" name="chonLoai" value="OT 70" /> OT 70</label>
           <label class="radio-option"><input type="radio" name="chonLoai" value="LQ 71" /> LQ 71</label>
-          <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5.122" /> CT 5.122</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5122" /> CT 5122</label>
           <label class="radio-option"><input type="radio" name="chonLoai" value="MT 500 R" /> MT 500 R</label>
           <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5222" /> CT 5222</label>
           <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5222 R" /> CT 5222 R</label>
@@ -509,12 +510,14 @@
 
       <div class="form-card">
         <label class="field-label" for="ngang3">Ngang</label>
-        <input type="text" id="ngang3" placeholder="Câu trả lời của bạn" />
+        <input type="text" id="ngang3" placeholder="Câu trả lời của bạn" inputmode="numeric" maxlength="4"
+          oninput="this.value=this.value.replace(/\D/g,'').slice(0,4)" />
       </div>
 
       <div class="form-card">
         <label class="field-label" for="cao3">Cao</label>
-        <input type="text" id="cao3" placeholder="Câu trả lời của bạn" />
+        <input type="text" id="cao3" placeholder="Câu trả lời của bạn" inputmode="numeric" maxlength="4"
+          oninput="this.value=this.value.replace(/\D/g,'').slice(0,4)" />
       </div>
 
       <div class="form-card btn-row">
@@ -545,12 +548,14 @@
 
       <div class="form-card">
         <label class="field-label" for="ngang4">Ngang</label>
-        <input type="text" id="ngang4" placeholder="Câu trả lời của bạn" />
+        <input type="text" id="ngang4" placeholder="Câu trả lời của bạn" inputmode="numeric" maxlength="4"
+          oninput="this.value=this.value.replace(/\D/g,'').slice(0,4)" />
       </div>
 
       <div class="form-card">
         <label class="field-label" for="cao4">Cao</label>
-        <input type="text" id="cao4" placeholder="Câu trả lời của bạn" />
+        <input type="text" id="cao4" placeholder="Câu trả lời của bạn" inputmode="numeric" maxlength="4"
+          oninput="this.value=this.value.replace(/\D/g,'').slice(0,4)" />
       </div>
 
       <div class="form-card btn-row">
@@ -573,7 +578,8 @@
 
       <div class="form-card">
         <label class="field-label" for="datCoc">Đã đặt cọc</label>
-        <input type="text" id="datCoc" placeholder="Câu trả lời của bạn" />
+        <input type="text" id="datCoc" placeholder="Câu trả lời của bạn" inputmode="numeric"
+          oninput="this.value=this.value.replace(/\D/g,'')" />
       </div>
 
       <div class="form-card">
