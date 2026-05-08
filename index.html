@@ -940,19 +940,27 @@
       const responses = loadResponses();
       if (!responses.length) return;
 
+      const seen = new Set();
       const data = [
-        ['#', 'Thời gian', 'Tên', 'Địa chỉ', 'Số điện thoại', 'Phụ kiện', 'Số bộ', 'Bộ', 'Loại cửa', 'Công nghệ', 'Chọn loại', 'Độ dày', 'Ngang', 'Cao', 'Ngày lắp đặt', 'Đã đặt cọc', 'Ghi chú'],
-        ...responses.map((r, i) => [
-          i + 1, r.timestamp, r.name, r.address, r.phone, r.phukien, r.soBo, r.bo,
-          r.loaiCua, r.congNghe, r.chonLoai, r.doDay, r.ngang, r.cao,
-          r.ngayLapDat, r.datCoc, r.ghiChu
-        ])
+        ['Thời gian', 'Tên', 'Địa chỉ', 'Số điện thoại', 'Phụ kiện', 'Số bộ', 'Bộ', 'Loại cửa', 'Công nghệ', 'Chọn loại', 'Độ dày', 'Ngang', 'Cao', 'Ngày lắp đặt', 'Đã đặt cọc', 'Ghi chú'],
+        ...responses.map(r => {
+          const key = r.timestamp + '|' + r.name + '|' + r.phone;
+          const first = !seen.has(key);
+          seen.add(key);
+          return [
+            first ? r.timestamp : '', first ? r.name : '', first ? r.address : '',
+            first ? r.phone : '', first ? r.phukien : '', first ? r.soBo : '',
+            r.bo, r.loaiCua, r.congNghe, r.chonLoai, r.doDay, r.ngang, r.cao,
+            first ? r.ngayLapDat : '', first ? r.datCoc : '', first ? r.ghiChu : '',
+          ];
+        })
       ];
 
       const ws = XLSX.utils.aoa_to_sheet(data);
       ws['!cols'] = [
-        { wch: 4 }, { wch: 20 }, { wch: 20 }, { wch: 28 }, { wch: 14 }, { wch: 6 }, { wch: 5 },
-        { wch: 16 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }
+        { wch: 20 }, { wch: 20 }, { wch: 28 }, { wch: 16 }, { wch: 20 }, { wch: 6 }, { wch: 5 },
+        { wch: 16 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
+        { wch: 14 }, { wch: 14 }, { wch: 24 }
       ];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Phản hồi');
