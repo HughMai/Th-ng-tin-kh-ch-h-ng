@@ -941,6 +941,16 @@
     `).join('');
     }
 
+    /* ---- Price lookup (mirrors GET_PRICE named function in Google Sheets) ---- */
+    function getPrice(model) {
+      const prices = {
+        'KV412': 1250, 'KV380': 1200, 'KV422R': 1500, 'KV432R': 1700,
+        'KV468R': 2000, 'OT70': 1100, 'LG71': 1300, 'CT5122': 1500,
+        'MT500R': 1800, 'CT5222': 2100, 'CT5222R': 2200,
+      };
+      return prices[(model || '').toUpperCase().replace(/\s/g, '')] || 0;
+    }
+
     /* ---- Export ---- */
     function exportToExcel() {
       const responses = loadResponses();
@@ -948,16 +958,18 @@
 
       const seen = new Set();
       const data = [
-        ['Thời gian', 'Tên', 'Địa chỉ', 'Số điện thoại', 'Phụ kiện', 'Số bộ', 'Bộ', 'Loại cửa', 'Công nghệ', 'Chọn loại', 'Độ dày', 'Ngang', 'Cao', 'Ngày lắp đặt', 'Đã đặt cọc', 'Ghi chú'],
+        ['Thời gian', 'Tên', 'Địa chỉ', 'Số điện thoại', 'Phụ kiện', 'Số bộ', 'Bộ', 'Loại cửa', 'Công nghệ', 'Chọn loại', 'Độ dày', 'Ngang', 'Cao', 'Ngày lắp đặt', 'Đã đặt cọc', 'Ghi chú', 'Thành tiền'],
         ...responses.map(r => {
           const key = r.timestamp + '|' + r.name + '|' + r.phone;
           const first = !seen.has(key);
           seen.add(key);
+          const thanhTien = getPrice(r.chonLoai) * (parseInt(r.ngang) || 0) * (parseInt(r.cao) || 0) / 1000000;
           return [
             first ? r.timestamp : '', first ? r.name : '', first ? r.address : '',
             first ? r.phone : '', first ? r.phukien : '', first ? r.soBo : '',
             r.bo, r.loaiCua, r.congNghe, r.chonLoai, r.doDay, r.ngang, r.cao,
             first ? r.ngayLapDat : '', first ? r.datCoc : '', first ? r.ghiChu : '',
+            thanhTien || '',
           ];
         })
       ];
@@ -966,7 +978,7 @@
       ws['!cols'] = [
         { wch: 20 }, { wch: 20 }, { wch: 28 }, { wch: 16 }, { wch: 20 }, { wch: 6 }, { wch: 5 },
         { wch: 16 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
-        { wch: 14 }, { wch: 14 }, { wch: 24 }
+        { wch: 14 }, { wch: 14 }, { wch: 24 }, { wch: 14 }
       ];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Phản hồi');
