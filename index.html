@@ -1,19 +1,32 @@
 <!DOCTYPE html>
 <html lang="vi">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Khảo Sát Khách Hàng</title>
+  <title>Thông Tin Khách Hàng</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
     body {
       font-family: 'Google Sans', Roboto, Arial, sans-serif;
       background: #f0ebf8;
       min-height: 100vh;
       padding: 24px 16px;
     }
-    .form-wrapper { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+
+    .form-wrapper {
+      max-width: 640px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
 
     .form-header {
       background: #fff;
@@ -21,10 +34,32 @@
       border-top: 10px solid #673ab7;
       padding: 24px;
     }
-    .form-header h1 { font-size: 26px; font-weight: 400; color: #202124; margin-bottom: 6px; }
-    .form-header .section-label { font-size: 13px; color: #5f6368; margin-bottom: 10px; }
-    .progress-bar-wrap { height: 4px; background: #e0e0e0; border-radius: 2px; }
-    .progress-bar { height: 4px; background: #673ab7; border-radius: 2px; transition: width 0.3s; }
+
+    .form-header h1 {
+      font-size: 26px;
+      font-weight: 400;
+      color: #202124;
+      margin-bottom: 6px;
+    }
+
+    .form-header .section-label {
+      font-size: 13px;
+      color: #5f6368;
+      margin-bottom: 10px;
+    }
+
+    .progress-bar-wrap {
+      height: 4px;
+      background: #e0e0e0;
+      border-radius: 2px;
+    }
+
+    .progress-bar {
+      height: 4px;
+      background: #673ab7;
+      border-radius: 2px;
+      transition: width 0.3s;
+    }
 
     .form-card {
       background: #fff;
@@ -32,6 +67,7 @@
       padding: 24px;
       border: 1px solid #e0e0e0;
     }
+
     .section-card-title {
       border-left: 4px solid #673ab7;
       padding-left: 16px;
@@ -40,13 +76,31 @@
       color: #202124;
     }
 
-    .section-block { display: none; flex-direction: column; gap: 12px; }
-    .section-block.active { display: flex; }
+    .section-block {
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+    }
 
-    label.field-label { display: block; font-size: 14px; color: #202124; margin-bottom: 8px; }
-    .required-star { color: #d93025; margin-left: 3px; }
+    .section-block.active {
+      display: flex;
+    }
 
-    input[type="text"], input[type="tel"], input[type="number"] {
+    label.field-label {
+      display: block;
+      font-size: 14px;
+      color: #202124;
+      margin-bottom: 8px;
+    }
+
+    .required-star {
+      color: #d93025;
+      margin-left: 3px;
+    }
+
+    input[type="text"],
+    input[type="tel"],
+    input[type="number"] {
       width: 100%;
       border: none;
       border-bottom: 1px solid #9e9e9e;
@@ -57,602 +111,805 @@
       background: transparent;
       transition: border-color 0.2s;
     }
+
     input[type="text"]:focus,
     input[type="tel"]:focus,
-    input[type="number"]:focus { border-bottom: 2px solid #673ab7; }
-
-    .radio-group { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
-    .radio-option {
-      display: flex; align-items: center; gap: 10px;
-      cursor: pointer; font-size: 14px; color: #202124;
+    input[type="number"]:focus {
+      border-bottom: 2px solid #673ab7;
     }
-    .radio-option input[type="radio"] { accent-color: #673ab7; width: 16px; height: 16px; cursor: pointer; }
 
-    .other-input-wrap { display: none; margin-left: 26px; margin-top: 4px; }
-    .other-input-wrap input { max-width: 200px; }
+    .radio-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 4px;
+    }
 
-    .phukien-list { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
-    .phukien-row { display: flex; align-items: center; gap: 12px; }
+    .radio-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #202124;
+    }
+
+    .radio-option input[type="radio"] {
+      accent-color: #673ab7;
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    .other-input-wrap {
+      display: none;
+      margin-left: 26px;
+      margin-top: 4px;
+    }
+
+    .other-input-wrap input {
+      max-width: 200px;
+    }
+
+    .phukien-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .phukien-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
     .phukien-check {
-      display: flex; align-items: center; gap: 8px;
-      font-size: 14px; color: #202124; cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: #202124;
+      cursor: pointer;
       min-width: 140px;
     }
-    .phukien-check input[type="checkbox"] { accent-color: #673ab7; width: 16px; height: 16px; cursor: pointer; }
+
+    .phukien-check input[type="checkbox"] {
+      accent-color: #673ab7;
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
     .qty-input {
-      width: 72px; border: none;
+      width: 72px;
+      border: none;
       border-bottom: 1px solid #9e9e9e;
-      padding: 4px 0; font-size: 14px;
-      color: #202124; outline: none; background: transparent;
-      text-align: center; transition: border-color 0.2s;
+      padding: 4px 0;
+      font-size: 14px;
+      color: #202124;
+      outline: none;
+      background: transparent;
+      text-align: center;
+      transition: border-color 0.2s;
     }
-    .qty-input:focus { border-bottom: 2px solid #673ab7; }
-    .qty-input:disabled { opacity: 0.3; cursor: not-allowed; }
 
-    .error-msg { color: #d93025; font-size: 12px; margin-top: 6px; display: none; }
-
-    .btn-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-    .btn-next, .btn-submit {
-      background: #673ab7; color: #fff; border: none; border-radius: 4px;
-      padding: 10px 24px; font-size: 14px; font-weight: 500; cursor: pointer;
+    .qty-input:focus {
+      border-bottom: 2px solid #673ab7;
     }
-    .btn-next:hover, .btn-submit:hover { background: #5e35b1; }
-    .btn-back { background: transparent; color: #673ab7; border: none; border-radius: 4px; padding: 10px 16px; font-size: 14px; cursor: pointer; }
-    .btn-back:hover { background: #f3e5f5; }
+
+    .qty-input:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+
+    .error-msg {
+      color: #d93025;
+      font-size: 12px;
+      margin-top: 6px;
+      display: none;
+    }
+
+    .btn-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .btn-next,
+    .btn-submit {
+      background: #673ab7;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 10px 24px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .btn-next:hover,
+    .btn-submit:hover {
+      background: #5e35b1;
+    }
+
+    .btn-back {
+      background: transparent;
+      color: #673ab7;
+      border: none;
+      border-radius: 4px;
+      padding: 10px 16px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .btn-back:hover {
+      background: #f3e5f5;
+    }
 
     .btn-export {
-      background: #1a73e8; color: #fff; border: none; border-radius: 4px;
-      padding: 10px 20px; font-size: 14px; font-weight: 500; cursor: pointer;
+      background: #1a73e8;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
     }
-    .btn-export:hover { background: #1558b0; }
+
+    .btn-export:hover {
+      background: #1558b0;
+    }
 
     .success-banner {
-      background: #e8f5e9; border: 1px solid #a5d6a7; border-radius: 8px;
-      padding: 24px; color: #2e7d32; font-size: 15px; text-align: center; display: none;
+      background: #e8f5e9;
+      border: 1px solid #a5d6a7;
+      border-radius: 8px;
+      padding: 24px;
+      color: #2e7d32;
+      font-size: 15px;
+      text-align: center;
+      display: none;
     }
 
     .responses-table-wrapper {
-      background: #fff; border-radius: 8px; padding: 24px;
-      border: 1px solid #e0e0e0; display: none; overflow-x: auto;
+      background: #fff;
+      border-radius: 8px;
+      padding: 24px;
+      border: 1px solid #e0e0e0;
+      display: none;
+      overflow-x: auto;
     }
-    .responses-table-wrapper h2 { font-size: 16px; font-weight: 500; color: #202124; margin-bottom: 12px; }
-    .count-badge { font-size: 12px; color: #5f6368; margin-bottom: 12px; }
-    .table-actions { display: flex; justify-content: flex-end; margin-bottom: 12px; }
 
-    table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 900px; }
-    th {
-      background: #f8f9fa; text-align: left; padding: 10px 12px;
-      border-bottom: 2px solid #e0e0e0; color: #5f6368; font-weight: 500; white-space: nowrap;
+    .responses-table-wrapper h2 {
+      font-size: 16px;
+      font-weight: 500;
+      color: #202124;
+      margin-bottom: 12px;
     }
-    td { padding: 10px 12px; border-bottom: 1px solid #f1f3f4; color: #202124; vertical-align: top; }
-    tr:hover td { background: #f8f9fa; }
+
+    .count-badge {
+      font-size: 12px;
+      color: #5f6368;
+      margin-bottom: 12px;
+    }
+
+    .table-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 12px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      min-width: 900px;
+    }
+
+    th {
+      background: #f8f9fa;
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 2px solid #e0e0e0;
+      color: #5f6368;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #f1f3f4;
+      color: #202124;
+      vertical-align: top;
+    }
+
+    tr:hover td {
+      background: #f8f9fa;
+    }
   </style>
 </head>
+
 <body>
-<div class="form-wrapper">
+  <div class="form-wrapper">
 
-  <!-- Header -->
-  <div class="form-header">
-    <h1>Khảo Sát Khách Hàng</h1>
-    <div class="section-label" id="sectionLabel">Thông tin cơ bản</div>
-    <div class="progress-bar-wrap">
-      <div class="progress-bar" id="progressBar" style="width: 0%"></div>
-    </div>
-  </div>
-
-  <div class="success-banner" id="successBanner">✓ Phản hồi của bạn đã được ghi nhận. Cảm ơn!</div>
-
-  <!-- ===== SECTION 1: Thông tin + Số bộ ===== -->
-  <div class="section-block active" id="section1">
-
-    <div class="form-card">
-      <label class="field-label" for="name">Tên <span class="required-star">*</span></label>
-      <input type="text" id="name" placeholder="Câu trả lời của bạn" />
-      <div class="error-msg" id="nameErr">Câu hỏi này là bắt buộc.</div>
+    <!-- Header -->
+    <div class="form-header">
+      <h1>Khảo Sát Khách Hàng</h1>
+      <div class="section-label" id="sectionLabel">Thông tin cơ bản</div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+      </div>
     </div>
 
-    <div class="form-card">
-      <label class="field-label" for="address">Địa chỉ <span class="required-star">*</span></label>
-      <input type="text" id="address" placeholder="Câu trả lời của bạn" />
-      <div class="error-msg" id="addressErr">Câu hỏi này là bắt buộc.</div>
-    </div>
+    <div class="success-banner" id="successBanner">✓ Phản hồi của bạn đã được ghi nhận. Cảm ơn!</div>
 
-    <div class="form-card">
-      <label class="field-label" for="phone">Số điện thoại <span class="required-star">*</span></label>
-      <input type="tel" id="phone" placeholder="Câu trả lời của bạn" />
-      <div class="error-msg" id="phoneErr">Câu hỏi này là bắt buộc.</div>
-    </div>
+    <!-- ===== SECTION 1: Thông tin + Số bộ ===== -->
+    <div class="section-block active" id="section1">
 
-    <div class="form-card">
-      <label class="field-label">Phụ kiện</label>
-      <div class="phukien-list">
-        <div class="phukien-row">
-          <label class="phukien-check">
-            <input type="checkbox" name="phukien" value="Motor" onchange="toggleQty(this)" />
-            Motor
-          </label>
-          <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+      <div class="form-card">
+        <label class="field-label" for="name">Tên <span class="required-star">*</span></label>
+        <input type="text" id="name" placeholder="Câu trả lời của bạn" />
+        <div class="error-msg" id="nameErr">Câu hỏi này là bắt buộc.</div>
+      </div>
+
+      <div class="form-card">
+        <label class="field-label" for="address">Địa chỉ <span class="required-star">*</span></label>
+        <input type="text" id="address" placeholder="Câu trả lời của bạn" />
+        <div class="error-msg" id="addressErr">Câu hỏi này là bắt buộc.</div>
+      </div>
+
+      <div class="form-card">
+        <label class="field-label" for="phone">Số điện thoại <span class="required-star">*</span></label>
+        <input type="tel" id="phone" placeholder="Câu trả lời của bạn" />
+        <div class="error-msg" id="phoneErr">Câu hỏi này là bắt buộc.</div>
+      </div>
+
+      <div class="form-card">
+        <label class="field-label">Phụ kiện</label>
+        <div class="phukien-list">
+          <div class="phukien-row">
+            <label class="phukien-check">
+              <input type="checkbox" name="phukien" value="Motor" onchange="toggleQty(this)" />
+              Motor
+            </label>
+            <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+          </div>
+          <div class="phukien-row">
+            <label class="phukien-check">
+              <input type="checkbox" name="phukien" value="Ắc Quy" onchange="toggleQty(this)" />
+              Ắc Quy
+            </label>
+            <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+          </div>
+          <div class="phukien-row">
+            <label class="phukien-check">
+              <input type="checkbox" name="phukien" value="Remote" onchange="toggleQty(this)" />
+              Remote
+            </label>
+            <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+          </div>
+          <div class="phukien-row">
+            <label class="phukien-check">
+              <input type="checkbox" name="phukien" value="Khóa Ngang" onchange="toggleQty(this)" />
+              Khóa Ngang
+            </label>
+            <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+          </div>
+          <div class="phukien-row">
+            <label class="phukien-check">
+              <input type="checkbox" name="phukien" value="Lò Xo" onchange="toggleQty(this)" />
+              Lò Xo
+            </label>
+            <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+          </div>
         </div>
-        <div class="phukien-row">
-          <label class="phukien-check">
-            <input type="checkbox" name="phukien" value="Ắc Quy" onchange="toggleQty(this)" />
-            Ắc Quy
+      </div>
+
+      <div class="form-card">
+        <label class="field-label">Số bộ <span class="required-star">*</span></label>
+        <div class="radio-group">
+          <label class="radio-option"><input type="radio" name="soBo" value="1" /> 1</label>
+          <label class="radio-option"><input type="radio" name="soBo" value="2" /> 2</label>
+          <label class="radio-option"><input type="radio" name="soBo" value="3" /> 3</label>
+          <label class="radio-option">
+            <input type="radio" name="soBo" value="other" onchange="toggleSoBoOther()" /> Khác:
           </label>
-          <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
         </div>
-        <div class="phukien-row">
-          <label class="phukien-check">
-            <input type="checkbox" name="phukien" value="Remote" onchange="toggleQty(this)" />
-            Remote
-          </label>
-          <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+        <div class="other-input-wrap" id="soBoOtherWrap">
+          <input type="number" id="soBoOther" min="1" placeholder="Nhập số bộ" />
         </div>
-        <div class="phukien-row">
-          <label class="phukien-check">
-            <input type="checkbox" name="phukien" value="Khóa Ngang" onchange="toggleQty(this)" />
-            Khóa Ngang
-          </label>
-          <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+        <div class="error-msg" id="soBoErr">Vui lòng chọn số bộ.</div>
+        <div class="error-msg" id="soBoOtherErr">Vui lòng nhập số bộ hợp lệ.</div>
+      </div>
+
+      <div class="form-card btn-row">
+        <span></span>
+        <button class="btn-next" onclick="goFromSection1()">Tiếp theo</button>
+      </div>
+    </div>
+
+    <!-- ===== LOOP SECTION: Loại cửa (bộ n) ===== -->
+    <div class="section-block" id="sectionLoop">
+
+      <div class="form-card">
+        <div class="section-card-title" id="loopTitle">Loại cửa (bộ 1)</div>
+      </div>
+
+      <div class="form-card">
+        <label class="field-label">Loại cửa <span class="required-star">*</span></label>
+        <div class="radio-group">
+          <label class="radio-option"><input type="radio" name="loaiCua" value="Cửa Cuốn" /> Cửa Cuốn</label>
+          <label class="radio-option"><input type="radio" name="loaiCua" value="Cửa Kéo" /> Cửa Kéo</label>
+          <label class="radio-option"><input type="radio" name="loaiCua" value="Cửa Nhôm Kính" /> Cửa Nhôm Kính</label>
+          <label class="radio-option"><input type="radio" name="loaiCua" value="Nhôm Xingfa" /> Nhôm Xingfa</label>
         </div>
-        <div class="phukien-row">
-          <label class="phukien-check">
-            <input type="checkbox" name="phukien" value="Lò Xo" onchange="toggleQty(this)" />
-            Lò Xo
-          </label>
-          <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+        <div class="error-msg" id="loaiCuaErr">Vui lòng chọn một loại cửa.</div>
+      </div>
+
+      <div class="form-card btn-row">
+        <button class="btn-back" onclick="goBackToSection1()">← Quay lại</button>
+        <button class="btn-next" onclick="goFromLoop()">Tiếp theo</button>
+      </div>
+    </div>
+
+    <!-- ===== SECTION 2: Cửa Cuốn - Công nghệ ===== -->
+    <div class="section-block" id="section2">
+
+      <div class="form-card">
+        <div class="section-card-title">Cửa Cuốn</div>
+      </div>
+
+      <div class="form-card">
+        <label class="field-label">Công nghệ <span class="required-star">*</span></label>
+        <div class="radio-group">
+          <label class="radio-option"><input type="radio" name="congNghe" value="Cửa cuốn công nghệ Úc" /> Cửa cuốn công
+            nghệ Úc</label>
+          <label class="radio-option"><input type="radio" name="congNghe" value="Cửa cuốn công nghệ Đức" /> Cửa cuốn
+            công nghệ Đức</label>
+          <label class="radio-option"><input type="radio" name="congNghe" value="Cửa cuốn công nghệ Đài Loan" /> Cửa
+            cuốn công nghệ Đài Loan</label>
         </div>
+        <div class="error-msg" id="congNgheErr">Vui lòng chọn một công nghệ.</div>
+      </div>
+
+      <div class="form-card btn-row">
+        <button class="btn-back" onclick="showSection('sectionLoop')">← Quay lại</button>
+        <button class="btn-next" onclick="goFromSection2()">Tiếp theo</button>
       </div>
     </div>
 
-    <div class="form-card">
-      <label class="field-label">Số bộ <span class="required-star">*</span></label>
-      <div class="radio-group">
-        <label class="radio-option"><input type="radio" name="soBo" value="1" /> 1</label>
-        <label class="radio-option"><input type="radio" name="soBo" value="2" /> 2</label>
-        <label class="radio-option"><input type="radio" name="soBo" value="3" /> 3</label>
-        <label class="radio-option">
-          <input type="radio" name="soBo" value="other" onchange="toggleSoBoOther()" /> Khác:
-        </label>
+    <!-- ===== SECTION 3: Công nghệ Đức ===== -->
+    <div class="section-block" id="section3">
+
+      <div class="form-card">
+        <div class="section-card-title">Công nghệ Đức</div>
       </div>
-      <div class="other-input-wrap" id="soBoOtherWrap">
-        <input type="number" id="soBoOther" min="1" placeholder="Nhập số bộ" />
+
+      <div class="form-card">
+        <label class="field-label">Chọn loại <span class="required-star">*</span></label>
+        <div class="radio-group">
+          <label class="radio-option"><input type="radio" name="chonLoai" value="KV 412" /> KV 412</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="KV 380" /> KV 380</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="KV 422 R" /> KV 422 R</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="KV 432 R" /> KV 432 R</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="KV 468 R" /> KV 468 R</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="OT 70" /> OT 70</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="LQ 71" /> LQ 71</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5.122" /> CT 5.122</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="MT 500 R" /> MT 500 R</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5222" /> CT 5222</label>
+          <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5222 R" /> CT 5222 R</label>
+        </div>
+        <div class="error-msg" id="chonLoaiErr">Vui lòng chọn một loại.</div>
       </div>
-      <div class="error-msg" id="soBoErr">Vui lòng chọn số bộ.</div>
-      <div class="error-msg" id="soBoOtherErr">Vui lòng nhập số bộ hợp lệ.</div>
+
+      <div class="form-card">
+        <label class="field-label" for="ngang3">Ngang</label>
+        <input type="text" id="ngang3" placeholder="Câu trả lời của bạn" />
+      </div>
+
+      <div class="form-card">
+        <label class="field-label" for="cao3">Cao</label>
+        <input type="text" id="cao3" placeholder="Câu trả lời của bạn" />
+      </div>
+
+      <div class="form-card btn-row">
+        <button class="btn-back" onclick="showSection('section2')">← Quay lại</button>
+        <button class="btn-next" onclick="finishUnit('section3')">Tiếp theo</button>
+      </div>
     </div>
 
-    <div class="form-card btn-row">
-      <span></span>
-      <button class="btn-next" onclick="goFromSection1()">Tiếp theo</button>
+    <!-- ===== SECTION 4: Cửa Kéo ===== -->
+    <div class="section-block" id="section4">
+
+      <div class="form-card">
+        <div class="section-card-title">Cửa Kéo</div>
+      </div>
+
+      <div class="form-card">
+        <label class="field-label">Độ dày</label>
+        <div class="radio-group">
+          <label class="radio-option"><input type="radio" name="doDay" value="6zem" /> 6zem</label>
+          <label class="radio-option"><input type="radio" name="doDay" value="8zem" /> 8zem</label>
+          <label class="radio-option"><input type="radio" name="doDay" value="1y" /> 1y</label>
+          <label class="radio-option"><input type="radio" name="doDay" value="1.2y" /> 1.2y</label>
+          <label class="radio-option"><input type="radio" name="doDay" value="1.4y" /> 1.4y</label>
+          <label class="radio-option"><input type="radio" name="doDay" value="1.6y" /> 1.6y</label>
+        </div>
+        <div class="error-msg" id="doDayErr">Vui lòng chọn một độ dày.</div>
+      </div>
+
+      <div class="form-card">
+        <label class="field-label" for="ngang4">Ngang</label>
+        <input type="text" id="ngang4" placeholder="Câu trả lời của bạn" />
+      </div>
+
+      <div class="form-card">
+        <label class="field-label" for="cao4">Cao</label>
+        <input type="text" id="cao4" placeholder="Câu trả lời của bạn" />
+      </div>
+
+      <div class="form-card btn-row">
+        <button class="btn-back" onclick="showSection('sectionLoop')">← Quay lại</button>
+        <button class="btn-next" onclick="finishUnit('section4')">Tiếp theo</button>
+      </div>
     </div>
+
+    <!-- ===== SECTION FINAL: Ngày lắp đặt, Đặt cọc, Ghi chú ===== -->
+    <div class="section-block" id="sectionFinal">
+
+      <div class="form-card">
+        <div class="section-card-title">Thông tin thêm</div>
+      </div>
+
+      <div class="form-card">
+        <label class="field-label" for="ngayLapDat">Ngày lắp đặt</label>
+        <input type="date" id="ngayLapDat" />
+      </div>
+
+      <div class="form-card">
+        <label class="field-label" for="datCoc">Đã đặt cọc</label>
+        <input type="text" id="datCoc" placeholder="Câu trả lời của bạn" />
+      </div>
+
+      <div class="form-card">
+        <label class="field-label" for="ghiChu">Ghi chú</label>
+        <textarea id="ghiChu" placeholder="Câu trả lời của bạn" rows="3"
+          style="width:100%;border:none;border-bottom:1px solid #9e9e9e;padding:6px 0;font-size:14px;color:#202124;outline:none;background:transparent;resize:vertical;font-family:inherit;transition:border-color 0.2s;"
+          onfocus="this.style.borderBottom='2px solid #673ab7'"
+          onblur="this.style.borderBottom='1px solid #9e9e9e'"></textarea>
+      </div>
+
+      <div class="form-card btn-row">
+        <button class="btn-back" onclick="showSection('sectionLoop')">← Quay lại</button>
+        <button class="btn-submit" onclick="submitAll()">Gửi</button>
+      </div>
+    </div>
+
+    <!-- ===== Responses table ===== -->
+    <div class="responses-table-wrapper" id="responsesSection">
+      <div class="table-actions">
+        <button class="btn-export" onclick="exportToExcel()">Xuất Excel</button>
+      </div>
+      <h2>Phản hồi đã nhận</h2>
+      <div class="count-badge" id="countBadge"></div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Thời gian</th>
+            <th>Tên</th>
+            <th>Địa chỉ</th>
+            <th>Số điện thoại</th>
+            <th>Số bộ</th>
+            <th>Bộ</th>
+            <th>Loại cửa</th>
+            <th>Công nghệ</th>
+            <th>Chọn loại</th>
+            <th>Độ dày</th>
+            <th>Ngang</th>
+            <th>Cao</th>
+            <th>Ngày lắp đặt</th>
+            <th>Đã đặt cọc</th>
+            <th>Ghi chú</th>
+          </tr>
+        </thead>
+        <tbody id="responsesBody"></tbody>
+      </table>
+    </div>
+
   </div>
 
-  <!-- ===== LOOP SECTION: Loại cửa (bộ n) ===== -->
-  <div class="section-block" id="sectionLoop">
+  <script>
+    const STORAGE_KEY = 'surveyResponses_v3';
 
-    <div class="form-card">
-      <div class="section-card-title" id="loopTitle">Loại cửa (bộ 1)</div>
-    </div>
-
-    <div class="form-card">
-      <label class="field-label">Loại cửa <span class="required-star">*</span></label>
-      <div class="radio-group">
-        <label class="radio-option"><input type="radio" name="loaiCua" value="Cửa Cuốn" /> Cửa Cuốn</label>
-        <label class="radio-option"><input type="radio" name="loaiCua" value="Cửa Kéo" /> Cửa Kéo</label>
-        <label class="radio-option"><input type="radio" name="loaiCua" value="Cửa Nhôm Kính" /> Cửa Nhôm Kính</label>
-        <label class="radio-option"><input type="radio" name="loaiCua" value="Nhôm Xingfa" /> Nhôm Xingfa</label>
-      </div>
-      <div class="error-msg" id="loaiCuaErr">Vui lòng chọn một loại cửa.</div>
-    </div>
-
-    <div class="form-card btn-row">
-      <button class="btn-back" onclick="goBackToSection1()">← Quay lại</button>
-      <button class="btn-next" onclick="goFromLoop()">Tiếp theo</button>
-    </div>
-  </div>
-
-  <!-- ===== SECTION 2: Cửa Cuốn - Công nghệ ===== -->
-  <div class="section-block" id="section2">
-
-    <div class="form-card"><div class="section-card-title">Cửa Cuốn</div></div>
-
-    <div class="form-card">
-      <label class="field-label">Công nghệ <span class="required-star">*</span></label>
-      <div class="radio-group">
-        <label class="radio-option"><input type="radio" name="congNghe" value="Cửa cuốn công nghệ Úc" /> Cửa cuốn công nghệ Úc</label>
-        <label class="radio-option"><input type="radio" name="congNghe" value="Cửa cuốn công nghệ Đức" /> Cửa cuốn công nghệ Đức</label>
-        <label class="radio-option"><input type="radio" name="congNghe" value="Cửa cuốn công nghệ Đài Loan" /> Cửa cuốn công nghệ Đài Loan</label>
-      </div>
-      <div class="error-msg" id="congNgheErr">Vui lòng chọn một công nghệ.</div>
-    </div>
-
-    <div class="form-card btn-row">
-      <button class="btn-back" onclick="showSection('sectionLoop')">← Quay lại</button>
-      <button class="btn-next" onclick="goFromSection2()">Tiếp theo</button>
-    </div>
-  </div>
-
-  <!-- ===== SECTION 3: Công nghệ Đức ===== -->
-  <div class="section-block" id="section3">
-
-    <div class="form-card"><div class="section-card-title">Công nghệ Đức</div></div>
-
-    <div class="form-card">
-      <label class="field-label">Chọn loại <span class="required-star">*</span></label>
-      <div class="radio-group">
-        <label class="radio-option"><input type="radio" name="chonLoai" value="KV 412" /> KV 412</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="KV 380" /> KV 380</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="KV 422 R" /> KV 422 R</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="KV 432 R" /> KV 432 R</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="KV 468 R" /> KV 468 R</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="OT 70" /> OT 70</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="LQ 71" /> LQ 71</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5.122" /> CT 5.122</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="MT 500 R" /> MT 500 R</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5222" /> CT 5222</label>
-        <label class="radio-option"><input type="radio" name="chonLoai" value="CT 5222 R" /> CT 5222 R</label>
-      </div>
-      <div class="error-msg" id="chonLoaiErr">Vui lòng chọn một loại.</div>
-    </div>
-
-    <div class="form-card">
-      <label class="field-label" for="ngang3">Ngang</label>
-      <input type="text" id="ngang3" placeholder="Câu trả lời của bạn" />
-    </div>
-
-    <div class="form-card">
-      <label class="field-label" for="cao3">Cao</label>
-      <input type="text" id="cao3" placeholder="Câu trả lời của bạn" />
-    </div>
-
-    <div class="form-card btn-row">
-      <button class="btn-back" onclick="showSection('section2')">← Quay lại</button>
-      <button class="btn-next" onclick="finishUnit('section3')">Tiếp theo</button>
-    </div>
-  </div>
-
-  <!-- ===== SECTION 4: Cửa Kéo ===== -->
-  <div class="section-block" id="section4">
-
-    <div class="form-card"><div class="section-card-title">Cửa Kéo</div></div>
-
-    <div class="form-card">
-      <label class="field-label">Độ dày</label>
-      <div class="radio-group">
-        <label class="radio-option"><input type="radio" name="doDay" value="6zem" /> 6zem</label>
-        <label class="radio-option"><input type="radio" name="doDay" value="8zem" /> 8zem</label>
-        <label class="radio-option"><input type="radio" name="doDay" value="1y" /> 1y</label>
-        <label class="radio-option"><input type="radio" name="doDay" value="1.2y" /> 1.2y</label>
-        <label class="radio-option"><input type="radio" name="doDay" value="1.4y" /> 1.4y</label>
-        <label class="radio-option"><input type="radio" name="doDay" value="1.6y" /> 1.6y</label>
-      </div>
-      <div class="error-msg" id="doDayErr">Vui lòng chọn một độ dày.</div>
-    </div>
-
-    <div class="form-card">
-      <label class="field-label" for="ngang4">Ngang</label>
-      <input type="text" id="ngang4" placeholder="Câu trả lời của bạn" />
-    </div>
-
-    <div class="form-card">
-      <label class="field-label" for="cao4">Cao</label>
-      <input type="text" id="cao4" placeholder="Câu trả lời của bạn" />
-    </div>
-
-    <div class="form-card btn-row">
-      <button class="btn-back" onclick="showSection('sectionLoop')">← Quay lại</button>
-      <button class="btn-next" onclick="finishUnit('section4')">Tiếp theo</button>
-    </div>
-  </div>
-
-  <!-- ===== Responses table ===== -->
-  <div class="responses-table-wrapper" id="responsesSection">
-    <div class="table-actions">
-      <button class="btn-export" onclick="exportToExcel()">Xuất Excel</button>
-    </div>
-    <h2>Phản hồi đã nhận</h2>
-    <div class="count-badge" id="countBadge"></div>
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Thời gian</th>
-          <th>Tên</th>
-          <th>Địa chỉ</th>
-          <th>Số điện thoại</th>
-          <th>Phụ kiện</th>
-          <th>Số bộ</th>
-          <th>Bộ</th>
-          <th>Loại cửa</th>
-          <th>Công nghệ</th>
-          <th>Chọn loại</th>
-          <th>Độ dày</th>
-          <th>Ngang</th>
-          <th>Cao</th>
-        </tr>
-      </thead>
-      <tbody id="responsesBody"></tbody>
-    </table>
-  </div>
-
-</div>
-
-<script>
-  const STORAGE_KEY = 'surveyResponses_v3';
-
-  // State
-  let state = {
-    soBo: 0,
-    currentBo: 1,
-    units: [],          // collected per-unit data for current submission
-    baseInfo: {},
-  };
-
-  /* ---- Helpers ---- */
-  function showSection(id) {
-    document.querySelectorAll('.section-block').forEach(el => el.classList.remove('active'));
-    document.getElementById(id).classList.add('active');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    updateHeader();
-  }
-
-  function updateHeader() {
-    const active = document.querySelector('.section-block.active')?.id;
-    const labels = {
-      section1:    'Thông tin cơ bản',
-      sectionLoop: `Loại cửa — Bộ ${state.currentBo} / ${state.soBo}`,
-      section2:    `Cửa Cuốn — Bộ ${state.currentBo} / ${state.soBo}`,
-      section3:    `Công nghệ Đức — Bộ ${state.currentBo} / ${state.soBo}`,
-      section4:    `Cửa Kéo — Bộ ${state.currentBo} / ${state.soBo}`,
+    // State
+    let state = {
+      soBo: 0,
+      currentBo: 1,
+      units: [],          // collected per-unit data for current submission
+      baseInfo: {},
     };
-    document.getElementById('sectionLabel').textContent = labels[active] || '';
 
-    // Progress: section1=0%, loop=each unit step
-    let pct = 0;
-    if (active === 'section1') pct = 0;
-    else {
-      const unitProgress = (state.currentBo - 1) / state.soBo;
-      const sectionOffset = active === 'sectionLoop' ? 0 : active === 'section2' ? 0.33 : 0.66;
-      pct = Math.round((unitProgress + sectionOffset / state.soBo) * 100);
+    /* ---- Helpers ---- */
+    function showSection(id) {
+      document.querySelectorAll('.section-block').forEach(el => el.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      updateHeader();
     }
-    if (active !== 'section1') {
-      // simple: base on current bộ
-      pct = Math.round(((state.currentBo - 1) / state.soBo) * 100);
-    }
-    document.getElementById('progressBar').style.width = pct + '%';
-  }
 
-  function requireText(id, errId) {
-    const val = document.getElementById(id).value.trim();
-    const err = document.getElementById(errId);
-    if (!val) { err.style.display = 'block'; return false; }
-    err.style.display = 'none'; return true;
-  }
+    function updateHeader() {
+      const active = document.querySelector('.section-block.active')?.id;
+      const labels = {
+        section1: 'Thông tin cơ bản',
+        sectionLoop: `Loại cửa — Bộ ${state.currentBo} / ${state.soBo}`,
+        section2: `Cửa Cuốn — Bộ ${state.currentBo} / ${state.soBo}`,
+        section3: `Công nghệ Đức — Bộ ${state.currentBo} / ${state.soBo}`,
+        section4: `Cửa Kéo — Bộ ${state.currentBo} / ${state.soBo}`,
+      };
+      document.getElementById('sectionLabel').textContent = labels[active] || '';
 
-  function requireRadio(name, errId) {
-    const checked = document.querySelector(`input[name="${name}"]:checked`);
-    const err = document.getElementById(errId);
-    if (!checked) { err.style.display = 'block'; return false; }
-    err.style.display = 'none'; return true;
-  }
-
-  function val(id) { return document.getElementById(id)?.value.trim() || ''; }
-  function radio(name) { return document.querySelector(`input[name="${name}"]:checked`)?.value || ''; }
-  function clearRadio(name) { document.querySelectorAll(`input[name="${name}"]`).forEach(el => el.checked = false); }
-
-  /* ---- Phụ kiện qty toggle ---- */
-  function toggleQty(cb) {
-    const qtyInput = cb.closest('.phukien-row').querySelector('.qty-input');
-    qtyInput.disabled = !cb.checked;
-    if (cb.checked) { qtyInput.value = 1; qtyInput.focus(); }
-    else qtyInput.value = '';
-  }
-
-  function collectPhukien() {
-    const result = [];
-    document.querySelectorAll('input[name="phukien"]:checked').forEach(cb => {
-      const qty = cb.closest('.phukien-row').querySelector('.qty-input').value || '1';
-      result.push(`${cb.value} x${qty}`);
-    });
-    return result.join(', ');
-  }
-
-  function resetPhukien() {
-    document.querySelectorAll('input[name="phukien"]').forEach(cb => {
-      cb.checked = false;
-      const qty = cb.closest('.phukien-row').querySelector('.qty-input');
-      qty.disabled = true;
-      qty.value = '';
-    });
-  }
-
-  /* ---- Số bộ other toggle ---- */
-  function toggleSoBoOther() {
-    const isOther = document.querySelector('input[name="soBo"]:checked')?.value === 'other';
-    document.getElementById('soBoOtherWrap').style.display = isOther ? 'block' : 'none';
-  }
-  document.querySelectorAll('input[name="soBo"]').forEach(el => {
-    el.addEventListener('change', () => {
-      if (el.value !== 'other') document.getElementById('soBoOtherWrap').style.display = 'none';
-    });
-  });
-
-  /* ---- Section 1 → Loop ---- */
-  function goFromSection1() {
-    const a = requireText('name', 'nameErr');
-    const b = requireText('address', 'addressErr');
-    const c = requireText('phone', 'phoneErr');
-
-    const soBoVal = radio('soBo');
-    let soBoNum = 0;
-    document.getElementById('soBoErr').style.display = 'none';
-    document.getElementById('soBoOtherErr').style.display = 'none';
-
-    if (!soBoVal) {
-      document.getElementById('soBoErr').style.display = 'block';
-      return;
-    }
-    if (soBoVal === 'other') {
-      soBoNum = parseInt(document.getElementById('soBoOther').value);
-      if (!soBoNum || soBoNum < 1) {
-        document.getElementById('soBoOtherErr').style.display = 'block';
-        return;
+      // Progress: section1=0%, loop=each unit step
+      let pct = 0;
+      if (active === 'section1') pct = 0;
+      else {
+        const unitProgress = (state.currentBo - 1) / state.soBo;
+        const sectionOffset = active === 'sectionLoop' ? 0 : active === 'section2' ? 0.33 : 0.66;
+        pct = Math.round((unitProgress + sectionOffset / state.soBo) * 100);
       }
-    } else {
-      soBoNum = parseInt(soBoVal);
+      if (active !== 'section1') {
+        // simple: base on current bộ
+        pct = Math.round(((state.currentBo - 1) / state.soBo) * 100);
+      }
+      document.getElementById('progressBar').style.width = pct + '%';
     }
 
-    if (!a || !b || !c) return;
-
-    state.soBo = soBoNum;
-    state.currentBo = 1;
-    state.units = [];
-    state.baseInfo = {
-      timestamp: new Date().toLocaleString('vi-VN'),
-      name:    val('name'),
-      address: val('address'),
-      phone:   val('phone'),
-      phukien: collectPhukien(),
-      soBo:    soBoNum,
-    };
-
-    startLoopUnit();
-  }
-
-  function goBackToSection1() {
-    state.currentBo = 1;
-    state.units = [];
-    showSection('section1');
-  }
-
-  function startLoopUnit() {
-    // Reset loop fields
-    clearRadio('loaiCua');
-    clearRadio('congNghe');
-    clearRadio('chonLoai');
-    clearRadio('doDay');
-    ['ngang3','cao3','ngang4','cao4'].forEach(id => document.getElementById(id).value = '');
-    ['loaiCuaErr','congNgheErr','chonLoaiErr','doDayErr'].forEach(id => {
-      document.getElementById(id).style.display = 'none';
-    });
-
-    document.getElementById('loopTitle').textContent = `Loại cửa (bộ ${state.currentBo})`;
-    showSection('sectionLoop');
-  }
-
-  /* ---- Loop → next section ---- */
-  function goFromLoop() {
-    if (!requireRadio('loaiCua', 'loaiCuaErr')) return;
-    const loai = radio('loaiCua');
-    if (loai === 'Cửa Cuốn') {
-      showSection('section2');
-    } else if (loai === 'Cửa Kéo') {
-      showSection('section4');
-    } else {
-      // Cửa Nhôm Kính / Nhôm Xingfa → save unit, next
-      saveUnit();
+    function requireText(id, errId) {
+      const val = document.getElementById(id).value.trim();
+      const err = document.getElementById(errId);
+      if (!val) { err.style.display = 'block'; return false; }
+      err.style.display = 'none'; return true;
     }
-  }
 
-  function goFromSection2() {
-    if (!requireRadio('congNghe', 'congNgheErr')) return;
-    const cong = radio('congNghe');
-    if (cong === 'Cửa cuốn công nghệ Đức') {
-      showSection('section3');
-    } else {
-      saveUnit();
+    function requireRadio(name, errId) {
+      const checked = document.querySelector(`input[name="${name}"]:checked`);
+      const err = document.getElementById(errId);
+      if (!checked) { err.style.display = 'block'; return false; }
+      err.style.display = 'none'; return true;
     }
-  }
 
-  function finishUnit(fromSection) {
-    if (fromSection === 'section3') {
-      if (!requireRadio('chonLoai', 'chonLoaiErr')) return;
+    function val(id) { return document.getElementById(id)?.value.trim() || ''; }
+    function radio(name) { return document.querySelector(`input[name="${name}"]:checked`)?.value || ''; }
+    function clearRadio(name) { document.querySelectorAll(`input[name="${name}"]`).forEach(el => el.checked = false); }
+
+    /* ---- Phụ kiện qty toggle ---- */
+    function toggleQty(cb) {
+      const qtyInput = cb.closest('.phukien-row').querySelector('.qty-input');
+      qtyInput.disabled = !cb.checked;
+      if (cb.checked) { qtyInput.value = 1; qtyInput.focus(); }
+      else qtyInput.value = '';
     }
-    if (fromSection === 'section4') {
-      if (!requireRadio('doDay', 'doDayErr')) return;
+
+    function collectPhukien() {
+      const result = [];
+      document.querySelectorAll('input[name="phukien"]:checked').forEach(cb => {
+        const qty = cb.closest('.phukien-row').querySelector('.qty-input').value || '1';
+        result.push(`${cb.value} x${qty}`);
+      });
+      return result.join(', ');
     }
-    saveUnit();
-  }
 
-  function saveUnit() {
-    const unit = {
-      bo:       state.currentBo,
-      loaiCua:  radio('loaiCua'),
-      congNghe: radio('congNghe'),
-      chonLoai: radio('chonLoai'),
-      doDay:    radio('doDay'),
-      ngang:    val('ngang3') || val('ngang4'),
-      cao:      val('cao3') || val('cao4'),
-    };
-    state.units.push(unit);
-
-    if (state.currentBo < state.soBo) {
-      state.currentBo++;
-      startLoopUnit();
-    } else {
-      submitAll();
+    function resetPhukien() {
+      document.querySelectorAll('input[name="phukien"]').forEach(cb => {
+        cb.checked = false;
+        const qty = cb.closest('.phukien-row').querySelector('.qty-input');
+        qty.disabled = true;
+        qty.value = '';
+      });
     }
-  }
 
-  function submitAll() {
-    const responses = loadResponses();
-
-    // Save one row per unit
-    state.units.forEach(unit => {
-      responses.push({
-        ...state.baseInfo,
-        bo:       unit.bo,
-        loaiCua:  unit.loaiCua,
-        congNghe: unit.congNghe,
-        chonLoai: unit.chonLoai,
-        doDay:    unit.doDay,
-        ngang:    unit.ngang,
-        cao:      unit.cao,
+    /* ---- Số bộ other toggle ---- */
+    function toggleSoBoOther() {
+      const isOther = document.querySelector('input[name="soBo"]:checked')?.value === 'other';
+      document.getElementById('soBoOtherWrap').style.display = isOther ? 'block' : 'none';
+    }
+    document.querySelectorAll('input[name="soBo"]').forEach(el => {
+      el.addEventListener('change', () => {
+        if (el.value !== 'other') document.getElementById('soBoOtherWrap').style.display = 'none';
       });
     });
 
-    saveResponses(responses);
+    /* ---- Section 1 → Loop ---- */
+    function goFromSection1() {
+      const a = requireText('name', 'nameErr');
+      const b = requireText('address', 'addressErr');
+      const c = requireText('phone', 'phoneErr');
 
-    // Reset form
-    resetPhukien();
-    ['name','address','phone','soBoOther','ngang3','cao3','ngang4','cao4'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.value = '';
-    });
-    document.querySelectorAll('input[type="radio"]').forEach(el => el.checked = false);
-    document.getElementById('soBoOtherWrap').style.display = 'none';
+      const soBoVal = radio('soBo');
+      let soBoNum = 0;
+      document.getElementById('soBoErr').style.display = 'none';
+      document.getElementById('soBoOtherErr').style.display = 'none';
 
-    state = { soBo: 0, currentBo: 1, units: [], baseInfo: {} };
+      if (!soBoVal) {
+        document.getElementById('soBoErr').style.display = 'block';
+        return;
+      }
+      if (soBoVal === 'other') {
+        soBoNum = parseInt(document.getElementById('soBoOther').value);
+        if (!soBoNum || soBoNum < 1) {
+          document.getElementById('soBoOtherErr').style.display = 'block';
+          return;
+        }
+      } else {
+        soBoNum = parseInt(soBoVal);
+      }
 
-    showSection('section1');
-    const banner = document.getElementById('successBanner');
-    banner.style.display = 'block';
-    setTimeout(() => banner.style.display = 'none', 3500);
+      if (!a || !b || !c) return;
 
-    renderTable();
-  }
+      state.soBo = soBoNum;
+      state.currentBo = 1;
+      state.units = [];
+      state.baseInfo = {
+        timestamp: new Date().toLocaleString('vi-VN'),
+        name: val('name'),
+        address: val('address'),
+        phone: val('phone'),
+        phukien: collectPhukien(),
+        soBo: soBoNum,
+      };
 
-  /* ---- Storage ---- */
-  function loadResponses() { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
-  function saveResponses(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
+      startLoopUnit();
+    }
 
-  /* ---- Render table ---- */
-  function renderTable() {
-    const responses = loadResponses();
-    const section = document.getElementById('responsesSection');
-    if (!responses.length) { section.style.display = 'none'; return; }
+    function goBackToSection1() {
+      state.currentBo = 1;
+      state.units = [];
+      showSection('section1');
+    }
 
-    section.style.display = 'block';
-    document.getElementById('countBadge').textContent = `${responses.length} bản ghi`;
+    function startLoopUnit() {
+      // Reset loop fields
+      clearRadio('loaiCua');
+      clearRadio('congNghe');
+      clearRadio('chonLoai');
+      clearRadio('doDay');
+      ['ngang3', 'cao3', 'ngang4', 'cao4'].forEach(id => document.getElementById(id).value = '');
+      ['loaiCuaErr', 'congNgheErr', 'chonLoaiErr', 'doDayErr'].forEach(id => {
+        document.getElementById(id).style.display = 'none';
+      });
 
-    document.getElementById('responsesBody').innerHTML = responses.map((r, i) => `
+      document.getElementById('loopTitle').textContent = `Loại cửa (bộ ${state.currentBo})`;
+      showSection('sectionLoop');
+    }
+
+    /* ---- Loop → next section ---- */
+    function goFromLoop() {
+      if (!requireRadio('loaiCua', 'loaiCuaErr')) return;
+      const loai = radio('loaiCua');
+      if (loai === 'Cửa Cuốn') {
+        showSection('section2');
+      } else if (loai === 'Cửa Kéo') {
+        showSection('section4');
+      } else {
+        // Cửa Nhôm Kính / Nhôm Xingfa → save unit, next
+        saveUnit();
+      }
+    }
+
+    function goFromSection2() {
+      if (!requireRadio('congNghe', 'congNgheErr')) return;
+      const cong = radio('congNghe');
+      if (cong === 'Cửa cuốn công nghệ Đức') {
+        showSection('section3');
+      } else {
+        saveUnit();
+      }
+    }
+
+    function finishUnit(fromSection) {
+      if (fromSection === 'section3') {
+        if (!requireRadio('chonLoai', 'chonLoaiErr')) return;
+      }
+      if (fromSection === 'section4') {
+        if (!requireRadio('doDay', 'doDayErr')) return;
+      }
+      saveUnit();
+    }
+
+    function saveUnit() {
+      const unit = {
+        bo: state.currentBo,
+        loaiCua: radio('loaiCua'),
+        congNghe: radio('congNghe'),
+        chonLoai: radio('chonLoai'),
+        doDay: radio('doDay'),
+        ngang: val('ngang3') || val('ngang4'),
+        cao: val('cao3') || val('cao4'),
+      };
+      state.units.push(unit);
+
+      if (state.currentBo < state.soBo) {
+        state.currentBo++;
+        startLoopUnit();
+      } else {
+        // Clear final section fields before showing
+        document.getElementById('ngayLapDat').value = '';
+        document.getElementById('datCoc').value = '';
+        document.getElementById('ghiChu').value = '';
+        showSection('sectionFinal');
+      }
+    }
+
+    function submitAll() {
+      const responses = loadResponses();
+
+      // Collect final section fields
+      const ngayLapDat = document.getElementById('ngayLapDat').value;
+      const datCoc = document.getElementById('datCoc').value.trim();
+      const ghiChu = document.getElementById('ghiChu').value.trim();
+
+      // Save one row per unit
+      state.units.forEach(unit => {
+        responses.push({
+          ...state.baseInfo,
+          bo: unit.bo,
+          loaiCua: unit.loaiCua,
+          congNghe: unit.congNghe,
+          chonLoai: unit.chonLoai,
+          doDay: unit.doDay,
+          ngang: unit.ngang,
+          cao: unit.cao,
+          ngayLapDat: ngayLapDat ? new Date(ngayLapDat).toLocaleDateString('vi-VN') : '',
+          datCoc,
+          ghiChu,
+        });
+      });
+
+      saveResponses(responses);
+
+      // Reset form
+      ['name', 'address', 'phone', 'soBoOther', 'ngang3', 'cao3', 'ngang4', 'cao4', 'ngayLapDat', 'datCoc', 'ghiChu'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      document.querySelectorAll('input[type="radio"]').forEach(el => el.checked = false);
+      document.getElementById('soBoOtherWrap').style.display = 'none';
+
+      state = { soBo: 0, currentBo: 1, units: [], baseInfo: {} };
+
+      showSection('section1');
+      const banner = document.getElementById('successBanner');
+      banner.style.display = 'block';
+      setTimeout(() => banner.style.display = 'none', 3500);
+
+      renderTable();
+    }
+
+    /* ---- Storage ---- */
+    function loadResponses() { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+    function saveResponses(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
+
+    /* ---- Render table ---- */
+    function renderTable() {
+      const responses = loadResponses();
+      const section = document.getElementById('responsesSection');
+      if (!responses.length) { section.style.display = 'none'; return; }
+
+      section.style.display = 'block';
+      document.getElementById('countBadge').textContent = `${responses.length} bản ghi`;
+
+      document.getElementById('responsesBody').innerHTML = responses.map((r, i) => `
       <tr>
         <td>${i + 1}</td>
         <td>${r.timestamp}</td>
         <td>${r.name}</td>
         <td>${r.address}</td>
         <td>${r.phone}</td>
-        <td>${r.phukien || '—'}</td>
         <td>${r.soBo}</td>
         <td>${r.bo}</td>
         <td>${r.loaiCua || '—'}</td>
@@ -661,34 +918,39 @@
         <td>${r.doDay || '—'}</td>
         <td>${r.ngang || '—'}</td>
         <td>${r.cao || '—'}</td>
+        <td>${r.ngayLapDat || '—'}</td>
+        <td>${r.datCoc || '—'}</td>
+        <td>${r.ghiChu || '—'}</td>
       </tr>
     `).join('');
-  }
+    }
 
-  /* ---- Export ---- */
-  function exportToExcel() {
-    const responses = loadResponses();
-    if (!responses.length) return;
+    /* ---- Export ---- */
+    function exportToExcel() {
+      const responses = loadResponses();
+      if (!responses.length) return;
 
-    const data = [
-      ['#','Thời gian','Tên','Địa chỉ','Số điện thoại','Phụ kiện','Số bộ','Bộ','Loại cửa','Công nghệ','Chọn loại','Độ dày','Ngang','Cao'],
-      ...responses.map((r, i) => [
-        i+1, r.timestamp, r.name, r.address, r.phone, r.phukien, r.soBo, r.bo,
-        r.loaiCua, r.congNghe, r.chonLoai, r.doDay, r.ngang, r.cao
-      ])
-    ];
+      const data = [
+        ['#', 'Thời gian', 'Tên', 'Địa chỉ', 'Số điện thoại', 'Phụ kiện', 'Số bộ', 'Bộ', 'Loại cửa', 'Công nghệ', 'Chọn loại', 'Độ dày', 'Ngang', 'Cao', 'Ngày lắp đặt', 'Đã đặt cọc', 'Ghi chú'],
+        ...responses.map((r, i) => [
+          i + 1, r.timestamp, r.name, r.address, r.phone, r.phukien, r.soBo, r.bo,
+          r.loaiCua, r.congNghe, r.chonLoai, r.doDay, r.ngang, r.cao,
+          r.ngayLapDat, r.datCoc, r.ghiChu
+        ])
+      ];
 
-    const ws = XLSX.utils.aoa_to_sheet(data);
-    ws['!cols'] = [
-      {wch:4},{wch:20},{wch:20},{wch:28},{wch:14},{wch:30},{wch:6},{wch:5},
-      {wch:16},{wch:26},{wch:12},{wch:10},{wch:10},{wch:10}
-    ];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Phản hồi');
-    XLSX.writeFile(wb, `khao_sat_khach_hang_${new Date().toISOString().slice(0,10)}.xlsx`);
-  }
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      ws['!cols'] = [
+        { wch: 4 }, { wch: 20 }, { wch: 20 }, { wch: 28 }, { wch: 14 }, { wch: 6 }, { wch: 5 },
+        { wch: 16 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Phản hồi');
+      XLSX.writeFile(wb, `khao_sat_khach_hang_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    }
 
-  renderTable();
-</script>
+    renderTable();
+  </script>
 </body>
+
 </html>
