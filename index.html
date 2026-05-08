@@ -626,6 +626,12 @@
 
   <script>
     const STORAGE_KEY = 'surveyResponses_v3';
+    const SCRIPT_URL = 'YOUR_APPS_SCRIPT_URL_HERE'; // paste deployed URL here
+
+    function sendToSheets(rows) {
+      if (SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE') return;
+      fetch(SCRIPT_URL, { method: 'POST', body: JSON.stringify(rows) }).catch(() => {});
+    }
 
     // State
     let state = {
@@ -854,8 +860,9 @@
       const ghiChu = document.getElementById('ghiChu').value.trim();
 
       // Save one row per unit
+      const newRows = [];
       state.units.forEach(unit => {
-        responses.push({
+        const row = {
           ...state.baseInfo,
           bo: unit.bo,
           loaiCua: unit.loaiCua,
@@ -867,10 +874,13 @@
           ngayLapDat: ngayLapDat ? new Date(ngayLapDat).toLocaleDateString('vi-VN') : '',
           datCoc,
           ghiChu,
-        });
+        };
+        responses.push(row);
+        newRows.push(row);
       });
 
       saveResponses(responses);
+      sendToSheets(newRows);
 
       // Reset form
       ['name', 'address', 'phone', 'soBoOther', 'ngang3', 'cao3', 'ngang4', 'cao4', 'ngayLapDat', 'datCoc', 'ghiChu'].forEach(id => {
