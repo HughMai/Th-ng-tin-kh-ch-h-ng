@@ -289,12 +289,7 @@
             </label>
             <input type="number" id="qty_nhomkinh" class="door-qty" min="1" max="20" value="1" disabled />
           </div>
-          <div class="door-row">
-            <label class="door-check">
-              <input type="checkbox" id="chk_xingfa" onchange="toggleDoorQty(this,'qty_xingfa')" /> Nhôm Xingfa
-            </label>
-            <input type="number" id="qty_xingfa" class="door-qty" min="1" max="20" value="1" disabled />
-          </div>
+
         </div>
         <div class="error-msg" id="doorErr">Vui lòng chọn ít nhất một loại cửa.</div>
       </div>
@@ -437,24 +432,18 @@
         fields: [
           {
             key: 'congNghe', label: 'Phân loại', required: true, type: 'select',
-            options: ['', 'Nhôm Việt', 'Nhôm Nhập']
+            options: ['', 'Nhôm Việt', 'Nhôm Nhập', 'Nhôm Maxpro', 'Cửa kính bản lề sàn', 'Lan can cầu thang']
           },
           {
             key: 'chonLoai', label: 'Chọn mẫu', required: true, type: 'select-dynamic',
             dependsOn: 'congNghe',
             optionMap: {
-              'Nhôm Việt': ['', 'Hàng 1.4 ly ( Cửa đi)', 'Hàng 2.0 ly', 'Cửa số'],
-              'Nhôm Nhập': ['', 'Cửa đi', 'Cửa số', 'Nhập 1.4 ly']
+              'Nhôm Việt':           ['', 'Cửa đi 1.2ly', 'Cửa đi 1.4ly', 'Cửa đi 2.0ly', 'Cửa sổ 1.2ly', 'Cửa sổ 1.4ly', 'Vách kính 1.2ly', 'Vách kính 1.4ly'],
+              'Nhôm Nhập':           ['', 'Cửa đi 1.4ly', 'Cửa đi 2.0ly', 'Cửa sổ 1.4ly', 'Vách kính 1.4ly'],
+              'Nhôm Maxpro':         ['', 'Hệ 55', 'Hệ 65', 'Hệ 83'],
+              'Cửa kính bản lề sàn': ['', '10 ly', '12 ly'],
+              'Lan can cầu thang':   ['', 'Tay gỗ', 'Tay nhôm 3D 2*2', 'Tay nhôm 3D 3*3', 'Tay nhôm 3D 4*4', 'Máng cover'],
             }
-          }
-        ]
-      },
-      xingfa: {
-        label: 'Nhôm Xingfa',
-        fields: [
-          {
-            key: 'chonLoai', label: 'Chọn mẫu', required: true, type: 'select',
-            options: ['', 'Series 55 - 1.2mm', 'Series 65 - 1.4mm', 'Series 70 - 1.6mm', 'Series 90 - 2.0mm']
           }
         ]
       }
@@ -505,7 +494,7 @@
         err.style.display = 'block';
         return false;
       }
-      const any = ['cuon','keo','nhomkinh','xingfa'].some(t => document.getElementById('chk_' + t).checked);
+      const any = ['cuon','keo','nhomkinh'].some(t => document.getElementById('chk_' + t).checked);
       document.getElementById('doorErr').style.display = any ? 'none' : 'block';
       if (!any) return false;
       return true;
@@ -552,7 +541,7 @@
       container.innerHTML = '';
       state.units = [];
 
-      ['cuon','keo','nhomkinh','xingfa'].forEach(type => {
+      ['cuon','keo','nhomkinh'].forEach(type => {
         if (!document.getElementById('chk_' + type).checked) return;
         const qty = parseInt(document.getElementById('qty_' + type).value) || 1;
         const cfg = DOOR_CONFIG[type];
@@ -672,7 +661,7 @@
       // Reset step 1
       ['name','address','phone'].forEach(id => { document.getElementById(id).value = ''; });
       setCustomerType('KH');
-      ['cuon','keo','nhomkinh','xingfa'].forEach(t => {
+      ['cuon','keo','nhomkinh'].forEach(t => {
         document.getElementById('chk_' + t).checked = false;
         const qty = document.getElementById('qty_' + t);
         qty.disabled = true; qty.value = 1;
@@ -764,6 +753,21 @@
           // Cửa Cuốn Úc
           'Cửa cuốn công nghệ Úc|Tole màu 5.2 zem':700,
           'Cửa cuốn công nghệ Úc|Tole màu 5.2 zem blusc':900,
+          // Nhôm Việt
+          'Nhôm Việt|Cửa đi 1.2ly':2200, 'Nhôm Việt|Cửa đi 1.4ly':2400, 'Nhôm Việt|Cửa đi 2.0ly':2600,
+          'Nhôm Việt|Cửa sổ 1.2ly':2100, 'Nhôm Việt|Cửa sổ 1.4ly':2300,
+          'Nhôm Việt|Vách kính 1.2ly':1400, 'Nhôm Việt|Vách kính 1.4ly':1500,
+          // Nhôm Nhập
+          'Nhôm Nhập|Cửa đi 1.4ly':2600, 'Nhôm Nhập|Cửa đi 2.0ly':2800,
+          'Nhôm Nhập|Cửa sổ 1.4ly':2500, 'Nhôm Nhập|Vách kính 1.4ly':1700,
+          // Nhôm Maxpro
+          'Nhôm Maxpro|Hệ 55':4000, 'Nhôm Maxpro|Hệ 65':4600, 'Nhôm Maxpro|Hệ 83':5800,
+          // Cửa kính bản lề sàn
+          'Cửa kính bản lề sàn|10 ly':1500, 'Cửa kính bản lề sàn|12 ly':1650,
+          // Lan can cầu thang
+          'Lan can cầu thang|Tay gỗ':1950, 'Lan can cầu thang|Tay nhôm 3D 2*2':2050,
+          'Lan can cầu thang|Tay nhôm 3D 3*3':2300, 'Lan can cầu thang|Tay nhôm 3D 4*4':2600,
+          'Lan can cầu thang|Máng cover':5800,
         },
         dl: {
           // Cửa Kéo — Có lá
@@ -783,6 +787,21 @@
           'Cửa cuốn công nghệ Đài Loan|1ly':700,
           // Cửa Cuốn Úc
           'Cửa cuốn công nghệ Úc|Tole màu 5.2 zem':550,
+          // Nhôm Việt
+          'Nhôm Việt|Cửa đi 1.2ly':2000, 'Nhôm Việt|Cửa đi 1.4ly':2200, 'Nhôm Việt|Cửa đi 2.0ly':2400,
+          'Nhôm Việt|Cửa sổ 1.2ly':1900, 'Nhôm Việt|Cửa sổ 1.4ly':2100,
+          'Nhôm Việt|Vách kính 1.2ly':1200, 'Nhôm Việt|Vách kính 1.4ly':1300,
+          // Nhôm Nhập
+          'Nhôm Nhập|Cửa đi 1.4ly':2400, 'Nhôm Nhập|Cửa đi 2.0ly':2600,
+          'Nhôm Nhập|Cửa sổ 1.4ly':2300, 'Nhôm Nhập|Vách kính 1.4ly':1500,
+          // Nhôm Maxpro
+          'Nhôm Maxpro|Hệ 55':3800, 'Nhôm Maxpro|Hệ 65':4400, 'Nhôm Maxpro|Hệ 83':5600,
+          // Cửa kính bản lề sàn
+          'Cửa kính bản lề sàn|10 ly':1300, 'Cửa kính bản lề sàn|12 ly':1450,
+          // Lan can cầu thang
+          'Lan can cầu thang|Tay gỗ':1750, 'Lan can cầu thang|Tay nhôm 3D 2*2':1850,
+          'Lan can cầu thang|Tay nhôm 3D 3*3':2100, 'Lan can cầu thang|Tay nhôm 3D 4*4':2400,
+          'Lan can cầu thang|Máng cover':5600,
         }
       };
       return PRICES[tier][key] || 0;
