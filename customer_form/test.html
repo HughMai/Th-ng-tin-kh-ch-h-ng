@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Form Tester</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Consolas', monospace; background: #1e1e1e; color: #d4d4d4; padding: 24px; }
+    h2 { color: #ce9178; margin-bottom: 16px; font-size: 18px; }
+
+    .controls {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      background: #252526; padding: 14px; border-radius: 6px; margin-bottom: 16px;
+    }
+    button {
+      padding: 8px 18px; background: #673ab7; color: #fff;
+      border: none; border-radius: 4px; cursor: pointer; font-size: 13px;
+    }
+    button:hover { background: #7e57c2; }
+    button.secondary { background: #3c3c3c; }
+    button.secondary:hover { background: #505050; }
+    label { color: #9cdcfe; font-size: 13px; }
+    input[type=number] {
+      width: 55px; padding: 6px 8px; background: #3c3c3c;
+      border: 1px solid #555; color: #d4d4d4; border-radius: 4px; font-size: 13px;
+    }
+    .divider { color: #555; }
+
+    #log {
+      background: #252526; padding: 16px; border-radius: 6px;
+      font-size: 12.5px; line-height: 1.7; max-height: 520px;
+      overflow-y: auto; white-space: pre-wrap; border: 1px solid #333;
+    }
+    .ok   { color: #4ec9b0; }
+    .err  { color: #f48771; }
+    .info { color: #9cdcfe; }
+    .dim  { color: #6a9955; }
+    .name { color: #dcdcaa; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+<h2>&#x1F9EA; Form Submission Tester</h2>
+
+<div class="controls">
+  <button onclick="sendOne()">&#9654; Send 1</button>
+  <span class="divider">|</span>
+  <button onclick="sendBatch()">&#9654;&#9654; Send N</button>
+  <label>N: <input type="number" id="count" value="3" min="1" max="20"></label>
+  <span class="divider">|</span>
+  <button class="secondary" onclick="clearLog()">Clear log</button>
+</div>
+
+<div id="log">Ready. Hit Send to fire a test submission.
+</div>
+
+<script>
+  const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyV7HykicmvzidE1sQTtxg8doPTsf8hZHK66noPlwZqdfHfrYkZ6tcrLooW5qxaOXWdmg/exec';
+
+  // ── Random data pools ──────────────────────────────────────────
+  const NAMES = [
+    'Nguyễn Văn An', 'Trần Thị Bình', 'Lê Minh Cường', 'Phạm Thị Dung',
+    'Hoàng Văn Em', 'Vũ Thị Phương', 'Đặng Minh Quân', 'Bùi Thị Hoa',
+    'Đỗ Văn Khoa', 'Ngô Thị Lan', 'Mai Trọng Hiếu', 'Đinh Thị Kim Ngân'
+  ];
+  const ADDRESSES = [
+    '123 Nguyễn Huệ, Q1, TP.HCM', '456 Lê Lợi, Q3, TP.HCM',
+    '789 Trần Hưng Đạo, Q5, TP.HCM', '12 Võ Văn Tần, Q3, TP.HCM',
+    '88 Đinh Tiên Hoàng, Q1, TP.HCM', '1180 Plenty Road, Bundoora',
+    '55 Nam Kỳ Khởi Nghĩa, Q1, TP.HCM', '200 Pasteur, Q3, TP.HCM'
+  ];
+  const PHUKIEN = ['', '', 'Khóa + Tay nắm', 'Remote x2', 'Khoá chống trộm', ''];
+  const GHICHU  = ['', '', 'Giao buổi sáng', 'Gọi trước khi đến', 'Cần hóa đơn VAT', ''];
+
+  // Door type config mirrors DOOR_CONFIG in the form
+  const DOOR_TYPES = {
+    cuon: {
+      loaiCua: 'Cửa Cuốn',
+      pick() {
+        const tech = rand(['Cửa cuốn công nghệ Úc', 'Cửa cuốn công nghệ Đức', 'Cửa cuốn công nghệ Đài Loan']);
+        return {
+          congNghe: tech,
+          chonLoai: tech === 'Cửa cuốn công nghệ Đức'
+            ? rand(['KV 412','KV 380','KV 422 R','KV 432 R','KV 468 R','OT 70','LQ 71','CT 5122','MT 500 R','CT 5222','CT 5222 R'])
+            : '',
+          doDay: ''
+        };
+      }
+    },
+    keo: {
+      loaiCua: 'Cửa Kéo',
+      pick: () => ({ congNghe: '', chonLoai: '', doDay: rand(['6zem','8zem','1ly','1.2ly','1.4ly','1.6ly']) })
+    },
+    nhomkinh: {
+      loaiCua: 'Cửa Nhôm Kính',
+      pick() {
+        const phanLoai = rand(['Nhôm Việt', 'Nhôm Nhập']);
+        const opts = phanLoai === 'Nhôm Việt'
+          ? ['Hàng 1.4 ly ( Cửa đi)','Hàng 2.0 ly','Cửa số']
+          : ['Cửa đi','Cửa số','Nhập 1.4 ly'];
+        return { congNghe: phanLoai, chonLoai: rand(opts), doDay: '' };
+      }
+    },
+    xingfa: {
+      loaiCua: 'Nhôm Xingfa',
+      pick: () => ({ congNghe: '', chonLoai: rand(['Series 55 - 1.2mm','Series 65 - 1.4mm','Series 70 - 1.6mm','Series 90 - 2.0mm']), doDay: '' })
+    }
+  };
+
+  // ── Helpers ────────────────────────────────────────────────────
+  function rand(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+  function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+  function randPhone() { return '0' + randInt(300000000, 999999999); }
+  function randDate() {
+    const d = new Date();
+    d.setDate(d.getDate() + randInt(3, 45));
+    return d.toLocaleDateString('vi-VN');
+  }
+
+  // ── Payload generator ──────────────────────────────────────────
+  function generatePayload() {
+    const name      = rand(NAMES);
+    const address   = rand(ADDRESSES);
+    const phone     = randPhone();
+    const timestamp = new Date().toLocaleString('vi-VN');
+    const ngayLapDat = randDate();
+    const datCoc    = String(randInt(1, 20) * 500000);
+    const ghiChu    = rand(GHICHU);
+    const phukien   = rand(PHUKIEN);
+
+    // Pick 1–3 random door types
+    const allTypes = Object.keys(DOOR_TYPES);
+    let picked = allTypes.filter(() => Math.random() > 0.45);
+    if (picked.length === 0) picked = [rand(allTypes)];
+    picked = picked.slice(0, 3);
+
+    const totalBo = picked.reduce((s, t) => s + randInt(1, 2), 0);
+    const units = [];
+
+    picked.forEach(typeKey => {
+      const cfg = DOOR_TYPES[typeKey];
+      const qty = randInt(1, 2);
+      for (let bo = 1; bo <= qty; bo++) {
+        const v = cfg.pick();
+        units.push({
+          timestamp, name, address, phone,
+          ngayLapDat, datCoc, phukien, ghiChu,
+          soBo:     String(totalBo),
+          bo:       String(bo),
+          loaiCua:  cfg.loaiCua,
+          congNghe: v.congNghe,
+          chonLoai: v.chonLoai,
+          doDay:    v.doDay,
+          ngang:    String(randInt(800, 4200)),
+          cao:      String(randInt(1500, 3200)),
+        });
+      }
+    });
+
+    return units;
+  }
+
+  // ── Logging ────────────────────────────────────────────────────
+  function log(msg, cls = '') {
+    const el = document.getElementById('log');
+    el.innerHTML += cls ? `<span class="${cls}">${msg}</span>\n` : msg + '\n';
+    el.scrollTop = el.scrollHeight;
+  }
+  function clearLog() { document.getElementById('log').textContent = 'Log cleared.\n'; }
+
+  // ── Send ───────────────────────────────────────────────────────
+  async function sendOne() {
+    const payload = generatePayload();
+    const base = payload[0];
+    log(`\n→ <span class="name">${base.name}</span> | ${base.phone} | ${payload.length} unit(s)`, '');
+    payload.forEach((u, i) => {
+      log(`   [${i+1}] ${u.loaiCua} ${u.congNghe} ${u.chonLoai || u.doDay} — ${u.ngang}×${u.cao}mm`, 'dim');
+    });
+
+    try {
+      const res  = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      const json = await res.json();
+      if (json.status === 'ok') {
+        log(`   ✓ OK — Sheets updated, Báo Giá generated`, 'ok');
+      } else {
+        log(`   ✗ Script error: ${json.message}`, 'err');
+      }
+    } catch (err) {
+      log(`   ✗ Fetch failed: ${err.message}`, 'err');
+    }
+  }
+
+  async function sendBatch() {
+    const n = Math.max(1, parseInt(document.getElementById('count').value) || 3);
+    log(`\n⚡ Sending ${n} submissions...`, 'info');
+    for (let i = 0; i < n; i++) {
+      await sendOne();
+      if (i < n - 1) await new Promise(r => setTimeout(r, 900)); // avoid lock contention
+    }
+    log(`\n✓ Batch done (${n} sent).`, 'ok');
+  }
+</script>
+</body>
+</html>
