@@ -897,9 +897,10 @@
           const cao   = parseInt(r.cao)   || 0;
           const areaSqm = ngang * cao / 1_000_000;
 
-          const surcharge = getSmallDoorSurcharge(r.loaiCua, areaSqm);
-          const unitPrice = getPrice(r.loaiCua, r.congNghe, mau, r.customerType) + surcharge;
-          const doorTotal = unitPrice * ngang * cao / 1_000_000;
+          const perSqmSurcharge = getSmallDoorSurcharge(r.loaiCua, areaSqm);
+          const flatSurcharge   = (r.congNghe === 'Cửa cuốn công nghệ Úc' && areaSqm < 8) ? 600 : 0;
+          const unitPrice = getPrice(r.loaiCua, r.congNghe, mau, r.customerType) + perSqmSurcharge;
+          const doorTotal = unitPrice * ngang * cao / 1_000_000 + flatSurcharge;
 
           let motorLabel = '';
           let motorTotal = 0;
