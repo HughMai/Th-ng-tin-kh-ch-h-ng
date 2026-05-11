@@ -322,23 +322,19 @@
         <label class="field-label">Phụ kiện</label>
         <div class="phukien-list">
           <div class="phukien-row">
-            <label class="phukien-check"><input type="checkbox" name="phukien" value="Motor" onchange="toggleQty(this)" /> Motor</label>
+            <label class="phukien-check"><input type="checkbox" name="phukien" value="Moto + rmoc" onchange="toggleQty(this)" /> Moto + rmoc</label>
             <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
           </div>
           <div class="phukien-row">
-            <label class="phukien-check"><input type="checkbox" name="phukien" value="Ắc Quy" onchange="toggleQty(this)" /> Ắc Quy</label>
+            <label class="phukien-check"><input type="checkbox" name="phukien" value="Moto + rmoc Úc" onchange="toggleQty(this)" /> Moto + rmoc Úc</label>
             <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
           </div>
           <div class="phukien-row">
-            <label class="phukien-check"><input type="checkbox" name="phukien" value="Remote" onchange="toggleQty(this)" /> Remote</label>
+            <label class="phukien-check"><input type="checkbox" name="phukien" value="Khóa ngang (tole)" onchange="toggleQty(this)" /> Khóa ngang (tole)</label>
             <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
           </div>
           <div class="phukien-row">
-            <label class="phukien-check"><input type="checkbox" name="phukien" value="Khóa Ngang" onchange="toggleQty(this)" /> Khóa Ngang</label>
-            <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
-          </div>
-          <div class="phukien-row">
-            <label class="phukien-check"><input type="checkbox" name="phukien" value="Lò Xo" onchange="toggleQty(this)" /> Lò Xo</label>
+            <label class="phukien-check"><input type="checkbox" name="phukien" value="Khóa ngang (Úc)" onchange="toggleQty(this)" /> Khóa ngang (Úc)</label>
             <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
           </div>
         </div>
@@ -807,6 +803,37 @@
       return PRICES[tier][key] || 0;
     }
 
+    function resolveMotorLabel(item, areaSqm) {
+      if (item === 'Moto + rmoc Úc') return 'Moto + rmoc Úc';
+      if (item === 'Moto + rmoc') {
+        if (areaSqm < 12)   return 'Moto + rmoc 300kg';
+        if (areaSqm < 14.5) return 'Moto + rmoc 400kg';
+        return 'Moto + rmoc 500kg';
+      }
+      return null;
+    }
+
+    function getMotorCost(resolvedLabel, customerType) {
+      const p = customerType === 'KH'
+        ? { 'Moto + rmoc 300kg':3300, 'Moto + rmoc 400kg':3500, 'Moto + rmoc 500kg':4000, 'Moto + rmoc Úc':4500 }
+        : { 'Moto + rmoc 300kg':3100, 'Moto + rmoc 400kg':3300, 'Moto + rmoc 500kg':3900, 'Moto + rmoc Úc':4300 };
+      return p[resolvedLabel] || 0;
+    }
+
+    function getSmallDoorSurcharge(loaiCua, areaSqm) {
+      if (loaiCua === 'Cửa Nhôm Kính') return 0;
+      if (areaSqm < 5) return 40;
+      if (areaSqm < 8) return 20;
+      return 0;
+    }
+
+    function getLockCost(item, qty, customerType) {
+      const p = customerType === 'KH'
+        ? { 'Khóa ngang (tole)':350, 'Khóa ngang (Úc)':450 }
+        : { 'Khóa ngang (tole)':300, 'Khóa ngang (Úc)':400 };
+      return (p[item] || 0) * qty;
+    }
+
     /* ---- Export to Excel ---- */
     async function exportToExcel() {
       const responses = loadResponses();
@@ -860,14 +887,52 @@
 
         rows.forEach((r, i) => {
           const mau = r.chonLoai || r.doDay || '';
-          const tt = getPrice(r.loaiCua, r.congNghe, mau, r.customerType) * (parseInt(r.ngang)||0) * (parseInt(r.cao)||0) / 1000000;
+          const ngang = parseInt(r.ngang) || 0;
+          const cao   = parseInt(r.cao)   || 0;
+          const areaSqm = ngang * cao / 1_000_000;
+
+          const surcharge = getSmallDoorSurcharge(r.loaiCua, areaSqm);
+          const unitPrice = getPrice(r.loaiCua, r.congNghe, mau, r.customerType) + surcharge;
+          const doorTotal = unitPrice * ngang * cao / 1_000_000;
+
+          let motorLabel = '';
+          let motorTotal = 0;
+          let lockTotal  = 0;
+          (base.phukien || '').split(', ').forEach(part => {
+            const m = part.match(/^(.+) x(\d+)$/);
+            if (!m) return;
+            const resolved = resolveMotorLabel(m[1], areaSqm);
+            if (resolved) {
+              if (r.loaiCua === 'Cửa Cuốn') {
+                motorLabel = resolved;
+                motorTotal += getMotorCost(resolved, r.customerType) * parseInt(m[2]);
+              }
+            } else if (i === 0) {
+              lockTotal += getLockCost(m[1], parseInt(m[2]), r.customerType);
+            }
+          });
+
+          const tt = doorTotal + motorTotal + lockTotal;
           total += tt || 0;
+
+          // Build phukien cell: resolve motor label for Cửa Cuốn rows
+          let phukienCell = '';
+          if (i === 0) {
+            phukienCell = (base.phukien || '').split(', ').map(part => {
+              const m = part.match(/^(.+) x(\d+)$/);
+              if (!m) return part;
+              const resolved = resolveMotorLabel(m[1], areaSqm);
+              if (resolved && r.loaiCua === 'Cửa Cuốn') return `${resolved} x${m[2]}`;
+              return part;
+            }).join(', ');
+          }
+
           ws.addRow({
             thoiGian:   i === 0 ? base.timestamp       : '',
             ten:        i === 0 ? base.name             : '',
             diaChi:     i === 0 ? base.address          : '',
             soDT:       i === 0 ? base.phone            : '',
-            phukien:    i === 0 ? base.phukien          : '',
+            phukien:    phukienCell,
             soBo:       i === 0 ? base.soBo             : '',
             bo:         r.bo,
             loaiCua:    r.loaiCua,
