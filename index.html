@@ -397,6 +397,14 @@
     const DOOR_CONFIG = {
       cuon: {
         label: 'Cửa Cuốn',
+        colorField: {
+          dependsOn: 'congNghe',
+          optionMap: {
+            'Cửa cuốn công nghệ Đức':     ['ghi sần', 'kem'],
+            'Cửa cuốn công nghệ Úc':      ['ghi sần', 'kem'],
+            'Cửa cuốn công nghệ Đài Loan': ['kem', 'xanh'],
+          }
+        },
         fields: [
           {
             key: 'congNghe', label: 'Công nghệ', required: true, type: 'select',
@@ -416,6 +424,7 @@
       },
       keo: {
         label: 'Cửa Kéo',
+        colorField: { options: ['xanh', 'kem', 'ghi sần', 'xám xingfa'] },
         fields: [
           {
             key: 'lau', label: 'Loại', required: true, type: 'select',
@@ -429,6 +438,13 @@
       },
       nhomkinh: {
         label: 'Cửa Nhôm Kính',
+        colorField: {
+          dependsOn: 'congNghe',
+          optionMap: {
+            'Nhôm Việt': ['xám xingfa', 'trắng', 'giả gỗ'],
+            'Nhôm Nhập': ['xám xingfa', 'trắng', 'giả gỗ'],
+          }
+        },
         fields: [
           {
             key: 'congNghe', label: 'Phân loại', required: true, type: 'select',
@@ -557,6 +573,7 @@
             <div class="unit-card-header">${title}</div>
             <div class="unit-card-body">
               ${cfg.fields.map(f => renderField(f, idx, type)).join('')}
+              ${renderColorField(cfg.colorField, idx)}
               <div class="dims-row">
                 <div class="unit-field">
                   <label>Ngang (mm)</label>
@@ -593,6 +610,24 @@
       return '';
     }
 
+    function renderColorField(colorField, idx) {
+      if (!colorField) return '';
+      if (colorField.options) {
+        const opts = ['', ...colorField.options]
+          .map(o => `<option value="${o}">${o || '— Chọn màu —'}</option>`).join('');
+        return `
+          <div class="unit-field" id="wrap_${idx}_mau_color">
+            <label>Màu</label>
+            <select id="u${idx}_mau_color">${opts}</select>
+          </div>`;
+      }
+      return `
+        <div class="unit-field" id="wrap_${idx}_mau_color" style="display:none">
+          <label>Màu</label>
+          <select id="u${idx}_mau_color"><option value="">— Chọn màu —</option></select>
+        </div>`;
+    }
+
     function onFieldChange(idx, key, type) {
       const val = document.getElementById(`u${idx}_${key}`).value;
       const cfg = DOOR_CONFIG[type];
@@ -617,16 +652,32 @@
           if (wrap) wrap.style.display = opts.length > 1 ? 'flex' : 'none';
         }
       });
+
+      // Update color dropdown when technology/classification changes
+      if (cfg.colorField && cfg.colorField.dependsOn === key) {
+        const colorWrap = document.getElementById(`wrap_${idx}_mau_color`);
+        const colorSel  = document.getElementById(`u${idx}_mau_color`);
+        const opts      = cfg.colorField.optionMap && cfg.colorField.optionMap[val];
+        if (opts && opts.length) {
+          colorSel.innerHTML = ['', ...opts]
+            .map(o => `<option value="${o}">${o || '— Chọn màu —'}</option>`).join('');
+          if (colorWrap) colorWrap.style.display = 'flex';
+        } else {
+          colorSel.innerHTML = '<option value="">— Chọn màu —</option>';
+          if (colorWrap) colorWrap.style.display = 'none';
+          colorSel.value = '';
+        }
+      }
     }
 
     /* ---- Submit ---- */
     function submitAll() {
-      const ngay = document.getElementById('ngayLapDat').value;
+      const ngay      = document.getElementById('ngayLapDat').value;
+      const staffNote = document.getElementById('ghiChu').value.trim();
       const finalInfo = {
         ngayLapDat: ngay ? new Date(ngay).toLocaleDateString('vi-VN') : '',
         datCoc: document.getElementById('datCoc').value.trim(),
         phukien: collectPhukien(),
-        ghiChu: document.getElementById('ghiChu').value.trim(),
       };
 
       const responses = loadResponses();
@@ -634,6 +685,11 @@
       const soBo = state.units.length;
 
       state.units.forEach((unit, idx) => {
+        const colorVal   = document.getElementById(`u${idx}_mau_color`)?.value || '';
+        const colorNote  = colorVal ? `Màu: ${colorVal}` : '';
+        const isLast     = idx === state.units.length - 1;
+        const unitGhiChu = [colorNote, isLast ? staffNote : ''].filter(Boolean).join('\n');
+
         const lauVal   = document.getElementById(`u${idx}_lau`)?.value   || '';
         const doDayVal = document.getElementById(`u${idx}_doDay`)?.value || '';
         // For Cửa Kéo combine lau + doDay into one composite mau for price lookup
@@ -642,6 +698,7 @@
         const row = {
           ...state.baseInfo,
           ...finalInfo,
+          ghiChu: unitGhiChu,
           soBo,
           bo: unit.bo,
           loaiCua:  unit.loaiCua,
@@ -949,7 +1006,7 @@
             cao:        r.cao,
             ngayLapDat: i === 0 ? base.ngayLapDat      : '',
             datCoc:     i === 0 ? base.datCoc           : '',
-            ghiChu:     i === 0 ? base.ghiChu           : '',
+            ghiChu:     r.ghiChu || '',
             loaiKhach:  i === 0 ? (base.customerType || '') : '',
             thanhTien:  doorTotal || '',
           });
