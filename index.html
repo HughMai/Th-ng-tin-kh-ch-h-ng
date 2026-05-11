@@ -187,6 +187,16 @@
     }
     .btn-export:hover { background: #1558b0; }
 
+    .customer-type-toggle { display: flex; gap: 0; margin-top: 8px; }
+    .type-btn {
+      flex: 1; padding: 10px 0; font-size: 14px; font-weight: 500;
+      border: 2px solid #673ab7; background: #fff; color: #673ab7;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .type-btn:first-child { border-radius: 4px 0 0 4px; border-right-width: 1px; }
+    .type-btn:last-child  { border-radius: 0 4px 4px 0; border-left-width: 1px; }
+    .type-btn.active { background: #673ab7; color: #fff; }
+
     .success-banner {
       background: #e8f5e9; border: 1px solid #a5d6a7;
       border-radius: 8px; padding: 24px;
@@ -226,6 +236,14 @@
 
     <!-- ===== STEP 1: Basic Info + Door Selection ===== -->
     <div class="step active" id="step1">
+
+      <div class="form-card">
+        <label class="field-label">Loại khách <span class="required-star">*</span></label>
+        <div class="customer-type-toggle">
+          <button type="button" class="type-btn active" id="typeKH" onclick="setCustomerType('KH')">Khách Hàng</button>
+          <button type="button" class="type-btn" id="typeDL" onclick="setCustomerType('ĐL')">Đại Lý</button>
+        </div>
+      </div>
 
       <div class="form-card">
         <label class="field-label" for="name">Tên <span class="required-star">*</span></label>
@@ -363,6 +381,7 @@
             <th>Phụ kiện</th><th>Số bộ</th><th>Bộ</th><th>Loại cửa</th>
             <th>Công nghệ</th><th>Mẫu</th>
             <th>Ngang</th><th>Cao</th><th>Ngày lắp đặt</th><th>Đã đặt cọc</th><th>Ghi chú</th>
+            <th>Loại khách</th>
           </tr>
         </thead>
         <tbody id="responsesBody"></tbody>
@@ -372,7 +391,7 @@
   </div>
 
   <script>
-    const STORAGE_KEY = 'surveyResponses_v4';
+    const STORAGE_KEY = 'surveyResponses_v5';
     const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyV7HykicmvzidE1sQTtxg8doPTsf8hZHK66noPlwZqdfHfrYkZ6tcrLooW5qxaOXWdmg/exec';
 
     function sendToSheets(rows) {
@@ -386,18 +405,27 @@
         fields: [
           {
             key: 'congNghe', label: 'Công nghệ', required: true, type: 'select',
-            options: ['', 'Cửa cuốn công nghệ Úc', 'Cửa cuốn công nghệ Đức', 'Cửa cuốn công nghệ Đài Loan']
+            options: ['', 'Cửa cuốn công nghệ Úc', 'Cửa cuốn công nghệ Đức', 'Cửa cuốn công nghệ Đài Loan', 'Inox']
           },
           {
-            key: 'chonLoai', label: 'Chọn loại', required: true, type: 'select',
-            showWhen: { key: 'congNghe', value: 'Cửa cuốn công nghệ Đức' },
-            options: ['', 'KV 412', 'KV 380', 'KV 422 R', 'KV 432 R', 'KV 468 R', 'OT 70', 'LQ 71', 'CT 5122', 'MT 500 R', 'CT 5222', 'CT 5222 R']
+            key: 'chonLoai', label: 'Chọn loại', required: true, type: 'select-dynamic',
+            dependsOn: 'congNghe',
+            optionMap: {
+              'Cửa cuốn công nghệ Đức':     ['', 'KV 412', 'KV 380', 'KV 422 R', 'KV 432 R', 'KV 468 R', 'OT 70', 'LQ 71', 'CT 5122', 'MT 500 R', 'CT 5222', 'CT 5222 R'],
+              'Inox':                        ['', '6zem', '8zem'],
+              'Cửa cuốn công nghệ Đài Loan': ['', '6zem', '8zem', '1ly'],
+              'Cửa cuốn công nghệ Úc':       ['', 'Tole màu 5.2 zem', 'Tole màu 5.2 zem blusc'],
+            }
           }
         ]
       },
       keo: {
         label: 'Cửa Kéo',
         fields: [
+          {
+            key: 'lau', label: 'Loại', required: true, type: 'select',
+            options: ['', 'Có lá', 'Không lá']
+          },
           {
             key: 'doDay', label: 'Chọn mẫu', required: true, type: 'select',
             options: ['', '6zem', '8zem', '1ly', '1.2ly', '1.4ly', '1.6ly']
@@ -433,6 +461,12 @@
     };
 
     let state = { step: 1, baseInfo: {}, units: [] };
+    let selectedCustomerType = 'KH';
+    function setCustomerType(type) {
+      selectedCustomerType = type;
+      document.getElementById('typeKH').classList.toggle('active', type === 'KH');
+      document.getElementById('typeDL').classList.toggle('active', type === 'ĐL');
+    }
 
     /* ---- Navigation ---- */
     function goStep(n) {
@@ -483,6 +517,7 @@
         name: document.getElementById('name').value.trim(),
         address: document.getElementById('address').value.trim(),
         phone: document.getElementById('phone').value.trim(),
+        customerType: selectedCustomerType,
       };
     }
 
@@ -610,15 +645,20 @@
       const soBo = state.units.length;
 
       state.units.forEach((unit, idx) => {
+        const lauVal   = document.getElementById(`u${idx}_lau`)?.value   || '';
+        const doDayVal = document.getElementById(`u${idx}_doDay`)?.value || '';
+        // For Cửa Kéo combine lau + doDay into one composite mau for price lookup
+        const doDay = unit.loaiCua === 'Cửa Kéo' && lauVal && doDayVal
+          ? `${lauVal} - ${doDayVal}` : doDayVal;
         const row = {
           ...state.baseInfo,
           ...finalInfo,
           soBo,
           bo: unit.bo,
-          loaiCua: unit.loaiCua,
+          loaiCua:  unit.loaiCua,
           congNghe: document.getElementById(`u${idx}_congNghe`)?.value || '',
           chonLoai: document.getElementById(`u${idx}_chonLoai`)?.value || '',
-          doDay:    document.getElementById(`u${idx}_doDay`)?.value    || '',
+          doDay,
           ngang:    document.getElementById(`u${idx}_ngang`)?.value    || '',
           cao:      document.getElementById(`u${idx}_cao`)?.value      || '',
         };
@@ -631,6 +671,7 @@
 
       // Reset step 1
       ['name','address','phone'].forEach(id => { document.getElementById(id).value = ''; });
+      setCustomerType('KH');
       ['cuon','keo','nhomkinh','xingfa'].forEach(t => {
         document.getElementById('chk_' + t).checked = false;
         const qty = document.getElementById('qty_' + t);
@@ -694,16 +735,57 @@
           <td>${r.chonLoai || r.doDay || '—'}</td>
           <td>${r.ngang || '—'}</td><td>${r.cao || '—'}</td>
           <td>${r.ngayLapDat || '—'}</td><td>${r.datCoc || '—'}</td><td>${r.ghiChu || '—'}</td>
+          <td>${r.customerType || '—'}</td>
         </tr>`).join('');
     }
 
-    /* ---- Price lookup ---- */
-    function getPrice(model) {
-      const prices = {
-        'KV412':1250,'KV380':1200,'KV422R':1500,'KV432R':1700,'KV468R':2000,
-        'OT70':1100,'LG71':1300,'CT5122':1500,'MT500R':1800,'CT5222':2100,'CT5222R':2200,
+    /* ---- Price lookup (returns price/1000 to match existing formula scale) ---- */
+    function getPrice(loaiCua, congNghe, mau, customerType) {
+      const tier = customerType === 'ĐL' ? 'dl' : 'kh';
+      // Key: congNghe|mau for Cửa Cuốn; loaiCua|mau for others
+      const key = (loaiCua === 'Cửa Kéo' ? 'Cửa Kéo' : (congNghe || '')) + '|' + (mau || '');
+      const PRICES = {
+        kh: {
+          // Cửa Kéo — Có lá
+          'Cửa Kéo|Có lá - 6zem':640, 'Cửa Kéo|Có lá - 8zem':700, 'Cửa Kéo|Có lá - 1ly':760,
+          'Cửa Kéo|Có lá - 1.2ly':820, 'Cửa Kéo|Có lá - 1.4ly':900,
+          // Cửa Kéo — Không lá
+          'Cửa Kéo|Không lá - 6zem':540, 'Cửa Kéo|Không lá - 8zem':600, 'Cửa Kéo|Không lá - 1ly':660,
+          'Cửa Kéo|Không lá - 1.2ly':720, 'Cửa Kéo|Không lá - 1.4ly':800,
+          // Cửa Cuốn Công nghệ Đức
+          'Cửa cuốn công nghệ Đức|KV 380':1450, 'Cửa cuốn công nghệ Đức|KV 422 R':1750,
+          'Cửa cuốn công nghệ Đức|KV 468 R':2150, 'Cửa cuốn công nghệ Đức|CT 5222 R':2200,
+          'Cửa cuốn công nghệ Đức|MT 5222 R':2300,
+          // Cửa Cuốn Inox
+          'Inox|6zem':1700, 'Inox|8zem':1900,
+          // Cửa Cuốn Đài Loan
+          'Cửa cuốn công nghệ Đài Loan|6zem':500, 'Cửa cuốn công nghệ Đài Loan|8zem':560,
+          'Cửa cuốn công nghệ Đài Loan|1ly':780,
+          // Cửa Cuốn Úc
+          'Cửa cuốn công nghệ Úc|Tole màu 5.2 zem':700,
+          'Cửa cuốn công nghệ Úc|Tole màu 5.2 zem blusc':900,
+        },
+        dl: {
+          // Cửa Kéo — Có lá
+          'Cửa Kéo|Có lá - 6zem':560, 'Cửa Kéo|Có lá - 8zem':620, 'Cửa Kéo|Có lá - 1ly':680,
+          'Cửa Kéo|Có lá - 1.2ly':740, 'Cửa Kéo|Có lá - 1.4ly':820,
+          // Cửa Kéo — Không lá
+          'Cửa Kéo|Không lá - 6zem':480, 'Cửa Kéo|Không lá - 8zem':540, 'Cửa Kéo|Không lá - 1ly':600,
+          'Cửa Kéo|Không lá - 1.2ly':620, 'Cửa Kéo|Không lá - 1.4ly':660,
+          // Cửa Cuốn Công nghệ Đức
+          'Cửa cuốn công nghệ Đức|KV 380':1300, 'Cửa cuốn công nghệ Đức|KV 422 R':1600,
+          'Cửa cuốn công nghệ Đức|KV 432 R':1800, 'Cửa cuốn công nghệ Đức|KV 468 R':2000,
+          'Cửa cuốn công nghệ Đức|CT 5222 R':2100, 'Cửa cuốn công nghệ Đức|MT 5222 R':2200,
+          // Cửa Cuốn Inox
+          'Inox|6zem':1600, 'Inox|8zem':1800,
+          // Cửa Cuốn Đài Loan
+          'Cửa cuốn công nghệ Đài Loan|6zem':400, 'Cửa cuốn công nghệ Đài Loan|8zem':460,
+          'Cửa cuốn công nghệ Đài Loan|1ly':700,
+          // Cửa Cuốn Úc
+          'Cửa cuốn công nghệ Úc|Tole màu 5.2 zem':550,
+        }
       };
-      return prices[(model || '').toUpperCase().replace(/\s/g, '')] || 0;
+      return PRICES[tier][key] || 0;
     }
 
     /* ---- Export to Excel ---- */
@@ -715,28 +797,29 @@
       const ws = wb.addWorksheet('Phản hồi');
 
       ws.columns = [
-        { header: 'Thời gian',     key: 'thoiGian',   width: 20 },
-        { header: 'Tên',           key: 'ten',         width: 20 },
-        { header: 'Địa chỉ',      key: 'diaChi',      width: 28 },
-        { header: 'Số điện thoại', key: 'soDT',        width: 16 },
-        { header: 'Phụ kiện',      key: 'phukien',     width: 20 },
-        { header: 'Số bộ',         key: 'soBo',        width: 6  },
-        { header: 'Bộ',            key: 'bo',          width: 5  },
-        { header: 'Loại cửa',      key: 'loaiCua',     width: 16 },
-        { header: 'Công nghệ',     key: 'congNghe',    width: 26 },
-        { header: 'Mẫu',           key: 'mau',         width: 16 },
-        { header: 'Ngang',         key: 'ngang',       width: 10 },
-        { header: 'Cao',           key: 'cao',         width: 10 },
-        { header: 'Ngày lắp đặt', key: 'ngayLapDat',  width: 14 },
-        { header: 'Đã đặt cọc',   key: 'datCoc',      width: 14 },
-        { header: 'Ghi chú',       key: 'ghiChu',      width: 24 },
-        { header: 'Thành tiền',    key: 'thanhTien',   width: 16 },
+        { header: 'Thời gian',     key: 'thoiGian',     width: 20 },
+        { header: 'Tên',           key: 'ten',           width: 20 },
+        { header: 'Địa chỉ',      key: 'diaChi',        width: 28 },
+        { header: 'Số điện thoại', key: 'soDT',          width: 16 },
+        { header: 'Phụ kiện',      key: 'phukien',       width: 20 },
+        { header: 'Số bộ',         key: 'soBo',          width: 6  },
+        { header: 'Bộ',            key: 'bo',            width: 5  },
+        { header: 'Loại cửa',      key: 'loaiCua',       width: 16 },
+        { header: 'Công nghệ',     key: 'congNghe',      width: 26 },
+        { header: 'Mẫu',           key: 'mau',           width: 16 },
+        { header: 'Ngang',         key: 'ngang',         width: 10 },
+        { header: 'Cao',           key: 'cao',           width: 10 },
+        { header: 'Ngày lắp đặt', key: 'ngayLapDat',    width: 14 },
+        { header: 'Đã đặt cọc',   key: 'datCoc',        width: 14 },
+        { header: 'Ghi chú',       key: 'ghiChu',        width: 24 },
+        { header: 'Loại khách',    key: 'loaiKhach',     width: 12 },
+        { header: 'Thành tiền',    key: 'thanhTien',     width: 16 },
       ];
 
       // Purple header row
       const hdr = ws.getRow(1);
       hdr.height = 22;
-      for (let c = 1; c <= 16; c++) {
+      for (let c = 1; c <= 17; c++) {
         const cell = hdr.getCell(c);
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF673AB7' } };
         cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
@@ -758,39 +841,40 @@
 
         rows.forEach((r, i) => {
           const mau = r.chonLoai || r.doDay || '';
-          const tt = getPrice(r.chonLoai) * (parseInt(r.ngang)||0) * (parseInt(r.cao)||0) / 1000000;
+          const tt = getPrice(r.loaiCua, r.congNghe, mau, r.customerType) * (parseInt(r.ngang)||0) * (parseInt(r.cao)||0) / 1000000;
           total += tt || 0;
           ws.addRow({
-            thoiGian:   i === 0 ? base.timestamp  : '',
-            ten:        i === 0 ? base.name        : '',
-            diaChi:     i === 0 ? base.address     : '',
-            soDT:       i === 0 ? base.phone       : '',
-            phukien:    i === 0 ? base.phukien     : '',
-            soBo:       i === 0 ? base.soBo        : '',
+            thoiGian:   i === 0 ? base.timestamp       : '',
+            ten:        i === 0 ? base.name             : '',
+            diaChi:     i === 0 ? base.address          : '',
+            soDT:       i === 0 ? base.phone            : '',
+            phukien:    i === 0 ? base.phukien          : '',
+            soBo:       i === 0 ? base.soBo             : '',
             bo:         r.bo,
             loaiCua:    r.loaiCua,
             congNghe:   r.congNghe,
             mau,
             ngang:      r.ngang,
             cao:        r.cao,
-            ngayLapDat: i === 0 ? base.ngayLapDat : '',
-            datCoc:     i === 0 ? base.datCoc      : '',
-            ghiChu:     i === 0 ? base.ghiChu      : '',
+            ngayLapDat: i === 0 ? base.ngayLapDat      : '',
+            datCoc:     i === 0 ? base.datCoc           : '',
+            ghiChu:     i === 0 ? base.ghiChu           : '',
+            loaiKhach:  i === 0 ? (base.customerType || '') : '',
             thanhTien:  tt || '',
           });
         });
 
         // Total row — light purple highlight
         const totalRow = ws.addRow({});
-        for (let c = 1; c <= 16; c++) {
+        for (let c = 1; c <= 17; c++) {
           totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDE7F6' } };
         }
-        totalRow.getCell(15).value = '▶ TỔNG CỘNG';
-        totalRow.getCell(15).font  = { bold: true, color: { argb: 'FF673AB7' } };
-        totalRow.getCell(15).alignment = { horizontal: 'right' };
-        totalRow.getCell(16).value  = total;
-        totalRow.getCell(16).numFmt = '#,##0.00';
-        totalRow.getCell(16).font   = { bold: true, color: { argb: 'FF673AB7' } };
+        totalRow.getCell(16).value = '▶ TỔNG CỘNG';
+        totalRow.getCell(16).font  = { bold: true, color: { argb: 'FF673AB7' } };
+        totalRow.getCell(16).alignment = { horizontal: 'right' };
+        totalRow.getCell(17).value  = total;
+        totalRow.getCell(17).numFmt = '#,##0.00';
+        totalRow.getCell(17).font   = { bold: true, color: { argb: 'FF673AB7' } };
 
         // Blank separator between customers (not after last)
         if (gi < customers.length - 1) ws.addRow({});
