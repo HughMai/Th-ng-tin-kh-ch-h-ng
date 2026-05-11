@@ -337,6 +337,10 @@
             <label class="phukien-check"><input type="checkbox" name="phukien" value="Khóa ngang (Úc)" onchange="toggleQty(this)" /> Khóa ngang (Úc)</label>
             <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
           </div>
+          <div class="phukien-row">
+            <label class="phukien-check"><input type="checkbox" name="phukien" value="Bình Tích Điện" onchange="toggleQty(this)" /> Bình Tích Điện</label>
+            <input type="number" class="qty-input" min="1" placeholder="SL" disabled />
+          </div>
         </div>
       </div>
 
@@ -739,6 +743,7 @@
           'Cửa Kéo|Không lá - 1.2ly':720, 'Cửa Kéo|Không lá - 1.4ly':800,
           // Cửa Cuốn Công nghệ Đức
           'Cửa cuốn công nghệ Đức|KV 380':1450, 'Cửa cuốn công nghệ Đức|KV 422 R':1750,
+          'Cửa cuốn công nghệ Đức|KV 432 R':1950,
           'Cửa cuốn công nghệ Đức|KV 468 R':2150, 'Cửa cuốn công nghệ Đức|CT 5222 R':2200,
           'Cửa cuốn công nghệ Đức|MT 5222 R':2300,
           // Cửa Cuốn Inox
@@ -829,8 +834,8 @@
 
     function getLockCost(item, qty, customerType) {
       const p = customerType === 'KH'
-        ? { 'Khóa ngang (tole)':350, 'Khóa ngang (Úc)':450 }
-        : { 'Khóa ngang (tole)':300, 'Khóa ngang (Úc)':400 };
+        ? { 'Khóa ngang (tole)':350, 'Khóa ngang (Úc)':450, 'Bình Tích Điện':2200 }
+        : { 'Khóa ngang (tole)':300, 'Khóa ngang (Úc)':400, 'Bình Tích Điện':2000 };
       return (p[item] || 0) * qty;
     }
 
@@ -883,7 +888,8 @@
       const customers = [...groups.values()];
       customers.forEach((rows, gi) => {
         const base = rows[0];
-        let total = 0;
+        let doorGrandTotal = 0;
+        let phukienTotal   = 0;
 
         rows.forEach((r, i) => {
           const mau = r.chonLoai || r.doDay || '';
@@ -912,8 +918,8 @@
             }
           });
 
-          const tt = doorTotal + motorTotal + lockTotal;
-          total += tt || 0;
+          doorGrandTotal += doorTotal || 0;
+          phukienTotal   += motorTotal + lockTotal;
 
           // Build phukien cell: resolve motor label for Cửa Cuốn rows
           let phukienCell = '';
@@ -944,21 +950,28 @@
             datCoc:     i === 0 ? base.datCoc           : '',
             ghiChu:     i === 0 ? base.ghiChu           : '',
             loaiKhach:  i === 0 ? (base.customerType || '') : '',
-            thanhTien:  tt || '',
+            thanhTien:  doorTotal || '',
           });
         });
 
-        // Total row — light purple highlight
-        const totalRow = ws.addRow({});
-        for (let c = 1; c <= 17; c++) {
-          totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDE7F6' } };
+        const tongCong = doorGrandTotal + phukienTotal;
+        const vat      = tongCong * 0.1;
+
+        function styleSubtotalRow(row, label, value, bold) {
+          for (let c = 1; c <= 17; c++)
+            row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDE7F6' } };
+          row.getCell(16).value     = label;
+          row.getCell(16).font      = { bold, italic: !bold, color: { argb: 'FF673AB7' } };
+          row.getCell(16).alignment = { horizontal: 'right' };
+          row.getCell(17).value     = value;
+          row.getCell(17).numFmt    = '#,##0.00';
+          row.getCell(17).font      = { bold, italic: !bold, color: { argb: 'FF673AB7' } };
         }
-        totalRow.getCell(16).value = '▶ TỔNG CỘNG';
-        totalRow.getCell(16).font  = { bold: true, color: { argb: 'FF673AB7' } };
-        totalRow.getCell(16).alignment = { horizontal: 'right' };
-        totalRow.getCell(17).value  = total;
-        totalRow.getCell(17).numFmt = '#,##0.00';
-        totalRow.getCell(17).font   = { bold: true, color: { argb: 'FF673AB7' } };
+
+        styleSubtotalRow(ws.addRow({}), 'Tiền phụ kiện',  phukienTotal,        false);
+        styleSubtotalRow(ws.addRow({}), '▶ TỔNG CỘNG',   tongCong,            true);
+        styleSubtotalRow(ws.addRow({}), 'VAT (10%)',      vat,                 false);
+        styleSubtotalRow(ws.addRow({}), '▶ TỔNG TIỀN',   tongCong + vat,      true);
 
         // Blank separator between customers (not after last)
         if (gi < customers.length - 1) ws.addRow({});
