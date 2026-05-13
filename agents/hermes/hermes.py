@@ -1,9 +1,11 @@
 import os
 import logging
+import anthropic
 from dotenv import load_dotenv
-from anthropic import Anthropic
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Response
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 load_dotenv()
 
@@ -13,13 +15,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL")
 MODEL = os.getenv("HERMES_MODEL", "claude-sonnet-4-6")
+PORT = int(os.getenv("PORT", 8080))
+
+client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 ALLOWED_CHAT_IDS = set()
 raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")
 if raw:
-    ALLOWED_CHAT_IDS = {int(id.strip()) for id in raw.split(",") if id.strip()}
+    ALLOWED_CHAT_IDS = {int(i.strip()) for i in raw.split(",") if i.strip()}
 
 conversation_history: dict[int, list] = {}
 
@@ -65,23 +71,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply = response.content[0].text
     history.append({"role": "assistant", "content": reply})
-
     await update.message.reply_text(reply)
 
 
-def main():
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN is not set")
-
-    app = ApplicationBuilder().token(token).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    logger.info(f"Hermes running with model {MODEL}")
-    app.run_polling()
+ptb_app = Application.builder().token(TELEGRAM_TOKEN).updater(None).build()
+ptb_app.add_handler(CommandHandler("start", start))
+ptb_app.add_handler(CommandHandler("clear", clear))
+ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 
-if __name__ == "__main__":
-    main()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await ptb_app.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+    await ptb_app.initialize()
+    await ptb_app.start()
+    logger.info(f"Hermes online | model={MODEL} | webhook={WEBHOOK_URL}/webhook")
+    yield
+    await ptb_app.stop()
+    await ptb_app.shutdown()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "model": MODEL}
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    data = await request.json()
+    update = Update.de_json(data, ptb_app.bot)
+    await ptb_app.process_update(update)
+    return Response(status_code=200)
