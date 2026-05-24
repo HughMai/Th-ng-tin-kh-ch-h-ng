@@ -220,3 +220,68 @@ Maintenance after handoff is **monitoring, not babysitting** — every failure m
 
 **Owner:** Hughie
 
+---
+
+## 2026-05-24 — Business entity: sole trader under personal name, GST deferred
+
+**Decision:** Trade as a **sole trader** under Hughie's personal name. Apply for an ABN immediately (free, instant via abr.gov.au). **Do not register for GST** until turnover hits the $75k/yr threshold. **Do not register a business name** until a trading-as name is actually needed. Revisit the Pty Ltd question only when liability exposure or revenue warrants it.
+
+**Why:** Sole trader is the cheapest, simplest entity to stand up — zero setup cost, no annual ASIC fees, profits flow straight onto the personal tax return. The job at v1 is landing the first paying client, not optimising for tax structures that only matter post-revenue. GST registration below $75k is optional admin overhead with no upside for a service business selling to GST-registered SMBs (who don't care either way pre-threshold). A Pty Ltd structure adds ~$500 setup + ~$310/yr ASIC fee + accountant complexity, and its main benefit (limited liability) is largely covered by Professional Indemnity + Public Liability insurance at this stage. What would change this: hitting $75k turnover (forces GST), signing a client whose contract requires Pty Ltd, or taking on enough risk/staff that personal liability becomes material.
+
+**Alternatives considered:**
+- *Pty Ltd from day 1* — rejected; ~$500 setup, ~$310/yr ASIC, separate tax return, accountant overhead. Liability protection real but premature; insurance covers the early-stage risk.
+- *Register for GST voluntarily* — rejected; adds BAS lodgement every quarter for zero net benefit until $75k. Trades clients don't care about GST status pre-threshold.
+- *Register a business name now* — deferred; only needed if trading as something other than "Hugh Mai." Decide at branding time, not before.
+
+**Next actions:** Apply for ABN at [abr.gov.au](https://abr.gov.au); open a business transaction account; get Professional Indemnity + Public Liability quote via BizCover before first signed client.
+
+**Owner:** Hughie
+
+---
+
+## 2026-05-24 — AU carriers silently filter human-sounding outbound SMS from US long-codes
+
+**Decision:** Treat outbound SMS from the US demo number `+19129785856` to AU mobiles as **unreliable for conversational/persona-matched content** and reliable only for terse system messages (test pings, internal alerts). Use the web simulator (`https://stl.187-77-133-39.sslip.io/`) for all engine iteration; reserve real SMS tests for smoke-checking the wire. Real AU-phone tests of the engine's actual replies are deferred until production replaces the US demo number with a ported AU number (per the 2026-05-22 porting decision).
+
+**Why:** Empirical evidence from slice 1 deploy day — four outbound messages from the same Twilio US number to the same AU mobile (+61402129328) in one afternoon, all with Twilio `status=sent` and **no Twilio-side error**:
+
+| # | Body | Style | Delivered |
+|---|---|---|---|
+| 1 | "Speed-to-lead deploy test 2 — full account check…" | Generic test | ✅ |
+| 2 | "NEW LEAD — Power out. Still qualifying…" | Terse internal alert | ✅ |
+| 3 | "Hey, no worries — I'll get Dave onto it. Quick check…" | Engine reply, persona-matched | ❌ |
+| 4 | "Hi, it's Dave from Dave's Electrical — sorry I missed your call…" | Static opener, persona-matched | ❌ |
+
+Pattern fits AU carriers' tightened anti-foreign-long-code filtering (active since 2024 under ACMA's anti-scam codes): system-style messages pass; marketing/conversational text from a US long code to an AU mobile is silently dropped at the carrier with no upstream error. The technical pipeline (app → Twilio API → carrier accept) is **fully proven**; the carrier-to-handset leg is the unreliable bit, and only for this specific US-long-code → AU-mobile configuration.
+
+This is a **testing limitation, not a product limitation**: in production the SMS originates from a *ported AU number* (decision 2026-05-22), which is AU-to-AU and not filtered. The go-to-market path is unchanged — only how slice 1 is exercised on the operator's own AU phone.
+
+**Alternatives considered:**
+- *AU Sender ID registration on the US number* — weeks of paperwork and additional cost, throwaway work the moment a real client's AU number is ported. Rejected.
+- *Buy an AU number for testing now* — Twilio AU local numbers need a regulatory bundle (ID, address proof, ABN for mobile-class numbers) and 1–5 days approval. Throwaway given the production plan. Rejected.
+- *Test conversational delivery with a US-mobile recipient (friend / burner)* — would prove the carrier-leg works for US-to-US; useful as a one-off sanity check, not a daily workflow.
+
+**Implication for the demo / sales path:** the **web simulator IS the demo** for prospect pitches — same engine, same prompts, zero per-message cost, zero carrier risk. Real SMS is a smoke test, not a workflow.
+
+**Owner:** Hughie
+
+---
+
+## 2026-05-24 — Slice 1 deploy lessons (env_file reload, ZeroSSL fallback, TwiML Bin scope)
+
+**Decision:** Capture three operational facts surfaced during the slice 1 production deploy so future client onboardings (or a fresh deploy) don't relitigate them. Each is a 1-line runbook pin that saves a 30-minute debug cycle.
+
+**Lessons:**
+
+1. **`docker compose restart` does NOT reload `env_file`.** Restarting a container preserves its existing env; `.env` changes only take effect on container *recreation*. The right command after editing `.env` is `docker compose up -d` (or `--force-recreate <service>` for an explicit reload). Slice 1 lost ~30 minutes debugging "why is Twilio signature validation failing?" because the running container still had the placeholder `your-auth-token` after a `restart`. Pin to the per-client runbook.
+
+2. **`sslip.io` is Let's Encrypt rate-limited.** Caddy's first cert request hit HTTP 429 ("too many certificates issued for sslip.io in the last 168h") because LE treats sslip.io as one registered domain and the shared community blows through the per-domain limit. Caddy fell back to LE *staging* (works but staging certs aren't publicly trusted → TLS internal-error alert in clients). Fix: set a global `email` directive in the Caddyfile, which engages Caddy's automatic **ZeroSSL** fallback (separate ACME CA, no shared rate limit). ZeroSSL is now the de-facto cert provider for `stl.187-77-133-39.sslip.io`. A real registered domain wouldn't hit this — sslip.io is the only place it bites.
+
+3. **Twilio TwiML Bins are Console-only.** No REST API to create them — clicked through in 2 minutes. Wiring the Bin's URL as a number's Voice **Fallback URL** *can* be done via API and was. Per-client runbook: TwiML Bin = manual click; wiring = API.
+
+**Why log this:** all three cost time during slice 1 and all three will recur for every future client onboarding. Each is a 1-sentence pin to the runbook.
+
+**Spec file:** to fold into a "Deploy lessons" section of `references/electrician-speed-to-lead-workflow.md` alongside the existing delivery pipeline.
+
+**Owner:** Hughie
+
