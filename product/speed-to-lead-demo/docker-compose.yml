@@ -1,0 +1,41 @@
+# Production stack for the speed-to-lead app.
+#
+# - app:   the FastAPI engine + Twilio webhooks. Internal only.
+# - caddy: reverse proxy on 80/443 with auto-TLS via Let's Encrypt. The only
+#          service exposed to the internet.
+#
+# Twilio reaches the app at https://${PUBLIC_HOSTNAME}/twilio/*. Caddy
+# terminates TLS and forwards to the app container on its internal port.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Built from PUBLIC_HOSTNAME so the user only sets one variable; the app
+      # uses this URL to verify Twilio webhook signatures.
+      PUBLIC_BASE_URL: "https://${PUBLIC_HOSTNAME}"
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:

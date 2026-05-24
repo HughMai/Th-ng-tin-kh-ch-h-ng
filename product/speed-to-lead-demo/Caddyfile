@@ -1,0 +1,11 @@
+# Global options.
+# With an email set, Caddy automatically chains issuers: tries Let's Encrypt
+# first, then falls back to ZeroSSL — which side-steps LE's per-domain rate
+# limit on the shared sslip.io domain.
+{
+    email hiddenservices1983@gmail.com
+}
+
+{$PUBLIC_HOSTNAME} {
+    reverse_proxy app:8000
+}

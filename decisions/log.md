@@ -204,3 +204,19 @@ Maintenance after handoff is **monitoring, not babysitting** — every failure m
 
 **Owner:** Hughie
 
+---
+
+## 2026-05-22 — Drop n8n: production layer extends the FastAPI engine directly
+
+**Decision:** The Twilio production layer is built by **extending the existing FastAPI conversation engine** (`product/speed-to-lead-demo/`) with Twilio webhook endpoints, SQLite conversation-state persistence, and escalation-SMS routing. **No n8n.** Supersedes the n8n orchestration choice in the build-stack table of the electrician spec and the "one n8n instance" element of the 2026-05-22 hosting decision. The single Hostinger VPS, Docker deployment, and the fail-open telephony decision all still stand.
+
+**Why:** A working, production-quality conversation engine already exists in Python — `workflow.py` runs the full qualify→triage→book/escalate workflow with structured Pydantic output and prompt caching. Building "in n8n" would mean either rebuilding that engine as n8n nodes (discards working code; n8n is weaker at structured-LLM logic) or running n8n purely as Twilio glue — a second always-on service to deploy, patch, and monitor for ~100 lines of work. Adding the glue to the FastAPI service that already exists is smaller and leaves one service, not two — the "run solo / minimize boxes" principle the hosting decision is built on. n8n's real value (visual, clonable, non-coder-maintainable workflows) is an agency-scale benefit; with zero clients and a capable coder it is premature. SQLite (a file, no extra service) replaces the planned Postgres for v1; Postgres stays the upgrade path. What would change this: client volume large enough that visual, delegate-able workflow management is worth a second service — revisit n8n then.
+
+**Alternatives considered:**
+- *n8n as glue calling the Python engine* — rejected; a second always-on service for a job Python does in ~100 lines, against the minimize-boxes principle.
+- *Rebuild the engine as n8n nodes* — rejected outright; discards working code and moves structured-LLM logic into a weaker tool.
+
+**Affects:** `product/speed-to-lead-demo/` — Twilio endpoints, SQLite store, escalation routing added. The build-stack table in `references/electrician-speed-to-lead-workflow.md` still says n8n — to be corrected (n8n → FastAPI) with the other pending spec folds.
+
+**Owner:** Hughie
+
