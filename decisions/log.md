@@ -267,21 +267,73 @@ This is a **testing limitation, not a product limitation**: in production the SM
 
 ---
 
-## 2026-05-24 — Slice 1 deploy lessons (env_file reload, ZeroSSL fallback, TwiML Bin scope)
+## 2026-05-24 — Speed-to-lead deploy lessons (env_file, image rebuild, ZeroSSL, TwiML Bin, Hermes env)
 
-**Decision:** Capture three operational facts surfaced during the slice 1 production deploy so future client onboardings (or a fresh deploy) don't relitigate them. Each is a 1-line runbook pin that saves a 30-minute debug cycle.
+**Decision:** Capture five operational facts surfaced during real deploys (slice 1 plus the lead-capture layer) so future client onboardings (or a fresh deploy) don't relitigate them. Each is a 1-line runbook pin that saves a 30-minute debug cycle.
 
 **Lessons:**
 
 1. **`docker compose restart` does NOT reload `env_file`.** Restarting a container preserves its existing env; `.env` changes only take effect on container *recreation*. The right command after editing `.env` is `docker compose up -d` (or `--force-recreate <service>` for an explicit reload). Slice 1 lost ~30 minutes debugging "why is Twilio signature validation failing?" because the running container still had the placeholder `your-auth-token` after a `restart`. Pin to the per-client runbook.
 
-2. **`sslip.io` is Let's Encrypt rate-limited.** Caddy's first cert request hit HTTP 429 ("too many certificates issued for sslip.io in the last 168h") because LE treats sslip.io as one registered domain and the shared community blows through the per-domain limit. Caddy fell back to LE *staging* (works but staging certs aren't publicly trusted → TLS internal-error alert in clients). Fix: set a global `email` directive in the Caddyfile, which engages Caddy's automatic **ZeroSSL** fallback (separate ACME CA, no shared rate limit). ZeroSSL is now the de-facto cert provider for `stl.187-77-133-39.sslip.io`. A real registered domain wouldn't hit this — sslip.io is the only place it bites.
+2. **`docker compose up -d` does NOT rebuild the image.** Recreates the container with the current `.env` (fixing lesson 1's gap) but reuses the existing image. After **code** changes, use `docker compose up -d --build`. The two flags pair: `--force-recreate` for env-only changes, `--build` for code changes (which implies recreate). Hit during the lead-capture deploy when `POST /api/lead` returned 404 because the running image was stale.
 
-3. **Twilio TwiML Bins are Console-only.** No REST API to create them — clicked through in 2 minutes. Wiring the Bin's URL as a number's Voice **Fallback URL** *can* be done via API and was. Per-client runbook: TwiML Bin = manual click; wiring = API.
+3. **`sslip.io` is Let's Encrypt rate-limited.** Caddy's first cert request hit HTTP 429 ("too many certificates issued for sslip.io in the last 168h") because LE treats sslip.io as one registered domain and the shared community blows through the per-domain limit. Caddy fell back to LE *staging* (works but staging certs aren't publicly trusted → TLS internal-error alert in clients). Fix: set a global `email` directive in the Caddyfile, which engages Caddy's automatic **ZeroSSL** fallback (separate ACME CA, no shared rate limit). ZeroSSL is now the de-facto cert provider for `stl.187-77-133-39.sslip.io`. A real registered domain wouldn't hit this — sslip.io is the only place it bites.
 
-**Why log this:** all three cost time during slice 1 and all three will recur for every future client onboarding. Each is a 1-sentence pin to the runbook.
+4. **Twilio TwiML Bins are Console-only.** No REST API to create them — clicked through in 2 minutes. Wiring the Bin's URL as a number's Voice **Fallback URL** *can* be done via API and was. Per-client runbook: TwiML Bin = manual click; wiring = API.
+
+5. **Hermes' `.env` is inside the container, not on the host.** The `references/hermes-setup.md` notes describe paths like `/opt/data/.env` — those paths are *inside* the `hermes-agent-…` container, not at `/opt/data/` on the host VPS. To pull a value (e.g., for reuse between containers): `docker exec hermes-agent-5c1k-hermes-agent-1 sh -c 'grep ^KEY= /opt/data/.env'`. Hit during the lead-capture deploy when pulling Hermes' `TELEGRAM_BOT_TOKEN` to reuse `@BaoBei09bot` for `[NEW LEAD]` notifications.
+
+**Why log this:** all five surfaced during a real deploy and all five will recur for every future deploy. Each is a 1-sentence pin to the runbook.
 
 **Spec file:** to fold into a "Deploy lessons" section of `references/electrician-speed-to-lead-workflow.md` alongside the existing delivery pipeline.
 
 **Owner:** Hughie
+
+---
+
+## 2026-05-24 — /level-up Method spec: demo→lead capture on the live simulator
+
+**Decision:** Add a deterministic lead-capture surface to the live speed-to-lead simulator (`https://stl.187-77-133-39.sslip.io/`). After a prospect exchanges 2+ messages with the demo, a CTA banner surfaces asking for name + business + contact. Submission writes a lead record to `/app/data/leads.jsonl` on the VPS and pings Hughie's Telegram via the existing `@BaoBei09bot` (Hermes bot reused for notifications, `[NEW LEAD]` prefix differentiates from Hermes traffic). Hughie manually transfers each captured lead from Telegram into `outreach/leads.md` to enter the `/outreach` follow-up pipeline. Autonomy **L0 throughout** — no AI in the capture loop.
+
+**Method spec (3Ms / `/level-up`):**
+1. *Constraint:* Without a capture surface, prospects sent to the simulator URL (Chamber events, in-person follow-ups, link-in-bio) vanish without a follow-up vector. Serves priority #2 (land first paying client).
+2. *EAD:* **Automate**. Eliminate rejected (URL goes to people whose contact isn't already on hand); delegate doesn't fit (small deterministic surface). 60/30/10 split: capture loop is ~100% deterministic; AI-drafted follow-up belongs in `/outreach`.
+3. *Process map:*
+   - **Trigger:** prospect engages simulator → after 2nd customer message, CTA banner surfaces
+   - **Sources:** form fields (name, business, contact) + browser-held conversation thread
+   - **Transformations:** bundle into a JSONL record (identity + 1-line conversation summary + UTC timestamp + message count)
+   - **Decision points:** CTA timing (after 2 messages); destinations (Telegram ping + JSONL log on VPS)
+   - **Destination:** VPS `/app/data/leads.jsonl` (persistent volume) + Telegram chat with Hughie via `@BaoBei09bot`
+4. *Autonomy:* **L0** throughout. Pure deterministic. AI-drafted follow-up belongs in `/outreach` (separate skill, separate `/level-up` run).
+5. *KPI:* Bucket = **More customers**. Metric = captured leads per week (raw count for now; conversion rates once volume exists).
+
+**Machine:** deterministic code change to the existing live product:
+- `index.html` — CTA banner (hidden until 2nd customer message) + lead modal + JS submit handler
+- `app.py` — new `POST /api/lead` endpoint (writes JSONL, sends Telegram)
+- `.env.example` — adds `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `LEADS_PATH`
+- `LEAD-CAPTURE.md` — runbook with `bike-method-phase: 1` frontmatter + Three Ms attribution
+
+Telegram reuses the existing `@BaoBei09bot` token (read from `/opt/data/.env`, the Hermes env). One bot, two senders — distinguished by `[NEW LEAD]` prefix.
+
+**Bike Method Phase 1 (training wheels):** capture runs live; Hughie manually reviews each Telegram ping and copies the lead into `outreach/leads.md` before `/outreach` picks it up. After ~10 captured leads, decide whether to automate the VPS → `leads.md` sync (Phase 2).
+
+**Why:** First `/level-up` run. Priorities playbook says months 1–3 = Chamber events + in-person → warm leads. Web simulator IS the demo (per the 2026-05-24 AU SMS filtering decision). Capture surface is the missing layer between "tries the demo" and "Hughie follows up via `/outreach`."
+
+**Alternatives considered:**
+- *Google Form linked from simulator* — easiest, but loses conversation context + breaks UX flow. Rejected.
+- *Notion direct write via MCP* — cross-device access, queryable, but adds Notion API dependency + DB schema work. Rejected for slice 1; revisit after Phase 1 review.
+- *Persistent or exit-intent CTA* — captures more visitors but lower intent. Rejected; intent quality > volume at this stage.
+- *Build AI-drafted follow-up inline* — scope creep; `/outreach` already handles drafting, would duplicate.
+
+**Deferred** (future `/level-up` runs):
+- VPS → `outreach/leads.md` sync automation (eliminate the manual copy-paste)
+- AI-drafted personalised follow-up referencing the prospect's actual demo conversation
+- Analytics on the simulator (visit count, message-count per visit, conversion funnel)
+- Dedicated `@LeadsBot` if same-thread Telegram traffic gets noisy
+
+**Artifact:** code changes in `product/speed-to-lead-demo/` (index.html, app.py, .env.example) + `product/speed-to-lead-demo/LEAD-CAPTURE.md` (runbook with Bike Method Phase 1 frontmatter).
+
+**Owner:** Hughie
+
+> Adapted from The Three Ms of AI™ © 2026 Nate Herk.
 

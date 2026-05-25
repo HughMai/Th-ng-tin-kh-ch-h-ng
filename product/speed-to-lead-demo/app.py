@@ -9,7 +9,11 @@ Two front doors onto the same conversation engine (`workflow.py`):
 Run locally:  python -m uvicorn app:app --reload   (then http://127.0.0.1:8000)
 """
 
+import json
 import os
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -189,3 +193,74 @@ async def twilio_sms(request: Request) -> Response:
     mr = MessagingResponse()
     mr.message(turn.reply)
     return _twiml(str(mr))
+
+
+# --- Lead capture (demo simulator -> Telegram + JSONL) ----------------------
+# When a prospect engages the simulator and submits the CTA form, capture
+# their identity + a 1-line summary of what they asked the demo. Land it in
+# the persistent JSONL log AND ping Hughie's Telegram via the existing
+# @BaoBei09bot (the Hermes bot — see references/hermes-setup.md). No AI in
+# this loop; /outreach handles AI-drafted follow-up.
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+LEADS_PATH = Path(os.environ.get("LEADS_PATH", "data/leads.jsonl"))
+
+
+class LeadRequest(BaseModel):
+    name: str
+    business: str
+    contact: str  # phone or email — single field, prospect's choice
+    messages: list[Msg]  # the demo conversation thread so far
+
+
+@app.post("/api/lead")
+def lead(req: LeadRequest) -> dict:
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "name": req.name.strip(),
+        "business": req.business.strip(),
+        "contact": req.contact.strip(),
+        "summary": _summarize_for_lead(req.messages),
+        "n_messages": len(req.messages),
+    }
+    _append_lead(record)
+    _telegram_notify(record)
+    return {"ok": True}
+
+
+def _summarize_for_lead(messages: list[Msg]) -> str:
+    """1-line summary: the prospect's first message + the engine's last reply."""
+    first_c = next((m.text for m in messages if m.role == "customer"), "")
+    last_ai = next((m.text for m in reversed(messages) if m.role == "ai"), "")
+    return f"First: {first_c[:80]} | Last reply: {last_ai[:80]}"
+
+
+def _append_lead(record: dict) -> None:
+    LEADS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LEADS_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def _telegram_notify(record: dict) -> None:
+    """Ping Hughie via the existing Hermes bot. Lead is logged regardless."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(f"[lead] no Telegram creds — saved to file only: {record['name']}")
+        return
+    text = (
+        f"[NEW LEAD] {record['name']} ({record['business']})\n"
+        f"Contact: {record['contact']}\n"
+        f"Demo: {record['summary']}\n"
+        f"({record['n_messages']} msgs)"
+    )
+    try:
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data=urllib.parse.urlencode(
+                {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+            ).encode(),
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=10).close()
+    except Exception as exc:
+        print(f"[lead] Telegram notify failed (lead is still in JSONL): {exc}")

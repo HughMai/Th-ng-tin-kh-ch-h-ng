@@ -205,6 +205,56 @@
 
   footer { margin-top: 26px; color: var(--muted); font-size: 12.5px;
     line-height: 1.55; max-width: 660px; }
+
+  /* --- lead capture (CTA banner + modal) --------------------------- */
+  .cta {
+    display: flex; align-items: center; gap: 14px;
+    margin-top: 20px; padding: 14px 18px;
+    background: #eaf1ff; border: 1px solid #b9d2ff; border-radius: 12px;
+    animation: slidein 0.4s ease;
+  }
+  .cta[hidden] { display: none; }
+  .cta-text { flex: 1; font-size: 14px; color: #1d4ed8; line-height: 1.4; }
+  .cta-text strong { font-weight: 700; }
+  .cta-btn {
+    flex: none; background: var(--blue); color: #fff; border: none;
+    border-radius: 8px; font-size: 13px; font-weight: 700;
+    padding: 10px 16px; cursor: pointer; font-family: inherit;
+  }
+  .cta-btn:hover { filter: brightness(1.08); }
+  .cta.submitted { background: #eaf6ef; border-color: #b6dec5; }
+  .cta.submitted .cta-text { color: var(--green); }
+
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(24,24,27,0.55);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px; z-index: 100;
+  }
+  .modal-overlay[hidden] { display: none; }
+  .modal {
+    background: #fff; border-radius: 16px; padding: 24px;
+    max-width: 420px; width: 100%;
+    box-shadow: 0 24px 48px -16px rgba(0,0,0,0.35);
+  }
+  .modal h2 { font-size: 18px; margin-bottom: 4px; }
+  .modal .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .modal label { display: block; font-size: 12px; font-weight: 600;
+    color: #3f3f46; margin-top: 12px; margin-bottom: 4px; }
+  .modal input {
+    width: 100%; border: 1px solid #d4d4d8; border-radius: 8px;
+    padding: 9px 12px; font-size: 14px; font-family: inherit; outline: none;
+  }
+  .modal input:focus { border-color: var(--blue); }
+  .modal-actions { display: flex; gap: 9px; margin-top: 20px; }
+  .modal-cancel, .modal-submit {
+    flex: 1; border: none; border-radius: 8px; padding: 11px;
+    font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  .modal-cancel { background: #f4f4f5; color: var(--ink); }
+  .modal-cancel:hover { background: #ececee; }
+  .modal-submit { background: var(--blue); color: #fff; }
+  .modal-submit:hover:not(:disabled) { filter: brightness(1.08); }
+  .modal-submit:disabled { background: #bcd9fb; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -274,6 +324,14 @@
     </div>
   </div>
 
+  <!-- lead-capture: CTA banner (revealed after 2+ customer messages) -->
+  <div class="cta" id="cta" hidden>
+    <div class="cta-text" id="ctaText">
+      <strong>Liked what you saw?</strong> Tell us about your business and we'll get this running on your number.
+    </div>
+    <button class="cta-btn" id="ctaBtn">Get this for my business</button>
+  </div>
+
   <div class="scorecard">
     <div class="score-head">
       <h3>Speed-to-Lead scorecard</h3>
@@ -295,6 +353,26 @@
     exact qualify → triage → book workflow runs. Nothing about the engine
     changes — only the front door.
   </footer>
+
+  <!-- lead-capture: modal overlay -->
+  <div class="modal-overlay" id="leadModal" hidden>
+    <div class="modal">
+      <h2>Run this on your business number</h2>
+      <div class="sub">We'll be in touch within 24 hours.</div>
+      <form id="leadForm">
+        <label for="leadName">Your name</label>
+        <input id="leadName" type="text" autocomplete="name" required />
+        <label for="leadBusiness">Business name</label>
+        <input id="leadBusiness" type="text" autocomplete="organization" required />
+        <label for="leadContact">Phone or email</label>
+        <input id="leadContact" type="text" autocomplete="tel email" required />
+        <div class="modal-actions">
+          <button type="button" class="modal-cancel" id="leadCancel">Not now</button>
+          <button type="submit" class="modal-submit" id="leadSubmit">Send</button>
+        </div>
+      </form>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -306,6 +384,7 @@ const SCENARIOS = {
 
 const state = {
   messages: [], busy: false, complete: false,
+  ctaSeen: false, leadSubmitted: false,   // lead-capture
   followUpAttempt: 0, followUpStopped: false,
   outcome: { caught: false, emergency: false, booked: false, quote: false },
   stats: { caught: 0, emergency: 0, booked: 0, quote: 0, value: 0 },
@@ -473,6 +552,54 @@ function renderFollowUp() {
   }
 }
 
+// --- Lead capture (CTA + modal) -------------------------------------
+function maybeShowCta() {
+  if (state.leadSubmitted || state.ctaSeen) return;
+  const customerCount = state.messages.filter((m) => m.role === "customer").length;
+  if (customerCount >= 2) {
+    state.ctaSeen = true;
+    $("cta").hidden = false;
+  }
+}
+
+function openLeadModal() {
+  $("leadModal").hidden = false;
+  setTimeout(() => $("leadName").focus(), 50);
+}
+
+function closeLeadModal() {
+  $("leadModal").hidden = true;
+}
+
+async function submitLead(e) {
+  e.preventDefault();
+  const data = {
+    name: $("leadName").value.trim(),
+    business: $("leadBusiness").value.trim(),
+    contact: $("leadContact").value.trim(),
+    messages: apiMessages(),
+  };
+  if (!data.name || !data.business || !data.contact) return;
+  $("leadSubmit").disabled = true;
+  try {
+    const res = await fetch("/api/lead", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error("submit failed: " + res.status);
+    state.leadSubmitted = true;
+    closeLeadModal();
+    $("ctaText").innerHTML = "Thanks — we'll be in touch within 24 hours.";
+    $("ctaBtn").hidden = true;
+    $("cta").classList.add("submitted");
+  } catch (err) {
+    $("leadSubmit").disabled = false;
+    console.error("lead submit error:", err.message);
+    alert("Something went wrong — please try again.");
+  }
+}
+
 async function followUp() {
   if (state.busy) return;
   const attempt = state.followUpAttempt + 1;
@@ -554,6 +681,7 @@ async function send(text) {
     renderInsight(turn);
     updateOutcome(turn);
     renderDashboard();
+    maybeShowCta();  // lead-capture: reveal CTA once prospect has engaged
   } catch (err) {
     state.busy = false;
     renderCustomer();
@@ -587,6 +715,16 @@ function clearConversation() {
 function reset() {
   clearConversation();
   state.stats = { caught: 0, emergency: 0, booked: 0, quote: 0, value: 0 };
+  // lead-capture: clear CTA state without rebuilding DOM (preserves bindings)
+  state.ctaSeen = false;
+  state.leadSubmitted = false;
+  $("cta").hidden = true;
+  $("cta").classList.remove("submitted");
+  $("ctaText").innerHTML = "<strong>Liked what you saw?</strong> Tell us about your business and we'll get this running on your number.";
+  $("ctaBtn").hidden = false;
+  $("leadModal").hidden = true;
+  $("leadForm").reset();
+  $("leadSubmit").disabled = false;
   electricianMsgs.innerHTML =
     '<div class="empty">No alerts yet.<br>The moment a customer texts in, this phone buzzes.</div>';
   renderDashboard();
@@ -606,6 +744,14 @@ document.querySelectorAll(".chip").forEach((chip) => {
     clearConversation();    // fresh customer thread; Dave's phone + score persist
     send(SCENARIOS[chip.dataset.s]);
   });
+});
+
+// lead-capture: CTA + modal event bindings
+$("ctaBtn").addEventListener("click", openLeadModal);
+$("leadCancel").addEventListener("click", closeLeadModal);
+$("leadForm").addEventListener("submit", submitLead);
+$("leadModal").addEventListener("click", (e) => {
+  if (e.target.id === "leadModal") closeLeadModal();  // backdrop click closes
 });
 
 reset();
