@@ -337,3 +337,196 @@ Telegram reuses the existing `@BaoBei09bot` token (read from `/opt/data/.env`, t
 
 > Adapted from The Three Ms of AI™ © 2026 Nate Herk.
 
+---
+
+## 2026-05-25 — /onboard-client skill: Stage 0 intake interview
+
+**Decision:** Ship `/onboard-client` as a dedicated skill (`.claude/skills/onboard-client/SKILL.md`) that conducts the Stage 0 intake interview from the delivery pipeline (`references/electrician-speed-to-lead-workflow.md`). Skill is **data-collection only** — asks the questions in the right order across 8 sections (business basics, persona, service offer, numbers, hours, calendar, quote-first jobs, compliance), writes answers to `clients/<slug>/intake.md`, and produces a "what's blocking build" block listing every TBD and external dependency. **No `.env` generation, no Twilio API calls, no auto-build.** Those are Stage 1+ and remain manual in Phase 1.
+
+**Why now (not "when client #1 signs"):** Pre-building the intake structure before the first signed client converts the discovery call from extraction to confirmation. Without it, the first intake call risks freelancing the questions, missing fields, and triggering rework. Scoped tight enough that there's no over-engineering risk — the skill is essentially a structured question list with an output contract.
+
+**Method spec (3Ms / `/level-up`):**
+1. *Constraint:* No structured per-client intake → every new client = ad-hoc discovery call, forgotten fields, post-call back-and-forth, slow time-to-build. Serves priority #2 (land + ship first paying client cleanly).
+2. *EAD:* **Automate**. Eliminate rejected (intake is non-skippable per the delivery pipeline). Delegate doesn't fit (Hughie does the call; the skill structures the capture). Mostly deterministic (~90%) — just ordered Q&A → markdown file. AI's only role is conversational pacing.
+3. *Process map:*
+   - **Trigger:** new signed client → Hughie invokes `/onboard-client`
+   - **Sources:** answers from Hughie's discovery call (typed/pasted), workflow spec defaults (callout-fee-disclose default, 3h window default, etc.)
+   - **Transformations:** structured into 8-section markdown + "what's blocking build" block
+   - **Decision points:** TBD-vs-answered (skill doesn't guess); license-held check (blocks intake if no)
+   - **Destination:** `clients/<slug>/intake.md` + one-line entry in `decisions/log.md`
+4. *Autonomy:* **L1 — Suggested.** Skill asks; Hughie answers, decides, and does every downstream step manually. L0 would be a static template (rejected — loses ordering + completeness check). L2+ would auto-generate `.env` (deferred to Phase 2 after ≥2 manual intakes).
+5. *KPI:* Bucket = **Less cost** (per-client setup time). Metric = minutes of Hughie's time from "yes" to "intake.md complete with no TBDs." Target: <30 min. Secondary metric over time: % of fields TBD'd at first pass (proxy for discovery-call quality).
+
+**Machine:**
+- `.claude/skills/onboard-client/SKILL.md` — frontmatter (`bike-method-phase: 1`, three-ms-attribution), 8-section interview spec, output contract, deferred list
+- No code, no other files. Skill writes its outputs at run-time into `clients/<slug>/` (created on first use).
+
+**Bike Method Phase 1 (training wheels):** every captured value reviewed by Hughie; secrets and external dependencies (Twilio sub-account creation, calendar OAuth, port form submission, license verification) all manual. Phase 2 = auto-generate `.env` from intake. Advance only after ≥2 real intakes where the manual translation step felt redundant on both.
+
+**Alternatives considered:**
+- *Defer until client #1 signs (the prior queue position)* — risks freelancing the first intake; reversed because the skill is small and the structure is genuinely portable across clients regardless of which client is first.
+- *Notion form / Google Form for the client to fill themselves* — better for steady-state (client #3+) but the first 2 intakes need conversational extraction; client doesn't know what fields matter. Deferred to a future Phase as "pre-call discovery questionnaire."
+- *Bundle `.env` generation into the same skill* — would cross the L1→L2 line on first ship; explicitly rejected per the user's "(a) only" scope pick.
+- *Multi-skill split (intake / build / port / handoff as separate skills)* — premature. Don't write the full delivery runbook before client #1 (explicit guidance in workflow spec line 181). Intake is the only stage with enough pattern certainty to skill-ify today.
+
+**Deferred** (future `/level-up` runs):
+- Phase 2: auto-generate `clients/<slug>/.env` from intake (with secrets blanked)
+- Phase 2: auto-create Twilio sub-account via Twilio API
+- Phase 3: pre-flight checklist generator (verifies all TBDs cleared before build)
+- Pre-call discovery questionnaire the client fills before the intake call
+- Client-facing intake confirmation (their copy of what was captured)
+
+**Artifact:** `.claude/skills/onboard-client/SKILL.md` (only file created). `clients/<slug>/` directories created at run-time per intake.
+
+**Owner:** Hughie
+
+> Adapted from The Three Ms of AI™ © 2026 Nate Herk.
+
+---
+
+## 2026-05-25 — Intake run: `test-client`
+
+Intake complete: `test-client` — status: **intake-pending-tbds** (11 items in the "What's blocking build" block: 7 TBDs, 4 verifications/clarifications, 4 external dependencies). First dry-run of `/onboard-client` skill — verifies the 8-section flow holds together and the TBD-over-guess rule fires cleanly. Artifact: `clients/test-client/intake.md`.
+
+---
+
+## 2026-05-25 — Pricing + service model: flat fee, managed-service (Model A)
+
+**Decision (LOCKED):**
+1. **Pricing model: flat monthly fee.** Single recurring charge per client. Rules out per-lead, per-feature tiers, and success/revenue-share.
+2. **Service model: Model A (Managed).** Hughie's accounts hold VPS, Twilio master + per-client sub-account, Anthropic key. Client logs into nothing. One invoice. Failure mode: the moment a client logs into Twilio Console, the model has broken — find out what they actually needed instead.
+
+**Decisions PROPOSED (not yet locked — Hughie's call on real numbers after client #1–3):**
+- Standard tier: **$497/mo AUD** flat
+- Fair-use cap: **100 inbound leads/month**, with conversation-not-surcharge above
+- Setup fee: **$0 for clients #1–3** (case-study clients, lower friction wins); **$497–997 from #4 onward** once build is templated
+- Cancellation: **30-day notice**, free port-out, data export within 7 days, deletion within 30 days, no pro-rata refund
+
+**Why flat:**
+- Predictable for client (no surprise bills on a busy month) AND predictable for Hughie (no lead-volume forecasting for cash flow)
+- Per-lead = punishes growth + fraud-dispute exposure ("that lead was junk")
+- % of revenue = unverifiable on a tradie's books
+- Tiered-by-feature = decision fatigue on the sales call
+
+**Why Model A for client #1:**
+- Trades electricians don't want to manage SaaS — the entire pitch is "you keep your job, I handle the digital"
+- Splitting bills breaks the managed-service framing
+- Unit economics (direct cost ~$60/mo dominated by Twilio SMS, ~$440/mo gross margin at $497) make absorbing variability safe through ~3× lead surge
+
+**Unit economics (steady state, per client, AUD/month):**
+- VPS share: ~$1–2 (Hostinger box amortised across clients + Hermes)
+- Anthropic API: ~$2 (Haiku 4.5, ~$0.04/conversation × ~50 leads)
+- Twilio AU number rental: ~$1.50
+- Twilio SMS: ~$50 (~$0.10/msg × ~10 msgs/lead × ~50 leads) ← dominant variable
+- **Total recurring direct cost: ~$55–60/mo**
+- Gross margin at $497 PROPOSED tier: ~$440/mo
+
+**Risk safeguards Hughie must action before client #1:**
+1. Per-sub-account Twilio daily spend cap (loop-runaway protection)
+2. Anthropic API key spend limit + quarterly rotation
+3. UptimeRobot free tier → `/health` every 5 min → Telegram alert
+4. Failover TwiML Bin already shipped (decisions log 2026-05-23)
+
+**Out-of-scope for this policy (deferred):**
+- Client service agreement (IP, liability cap, indemnity, GST, dispute resolution) — needs lawyer or template before client #1 signs; do NOT self-draft
+- Pricing revision for client #4+ — revisit when 3 clients live and SMS distribution is observed
+- Multi-tenant refactor — current 1-container-per-client fine through ~10 clients
+- Client-facing proposal template — separate artifact, drives shorter sales cycles
+
+**Artifact:** `references/pricing-ops-policy.md` (10 sections — pricing, service model, tiers, fair-use, SLAs, onboarding timeline, cancellation, outage policy, deferred items, operating constraints).
+
+**Owner:** Hughie
+
+---
+
+## 2026-05-25 — Free Missed-Call Audit shipped (first attraction offer per Hormozi Money Model)
+
+**Decision:** Ship the **Free Missed-Call Audit** as the speed-to-lead attraction offer. Two artifacts: `outreach/missed-call-audit-template.md` (the audit one-pager template Hughie clones per prospect) + `outreach/missed-call-audit-loom-script.md` (the 5–7 min walk-through script).
+
+**Why:** Hormozi review of the pricing+ops policy (same date) flagged the Money Model gap — the policy assumes the prospect is already a client and skips the attraction-offer layer. Per *$100M Leads* Lead Magnet framework (Free Audit / Diagnostic): give the strongest hit first, create a *custom dollar number for each prospect* before the sales call, so the conversation shifts from "is this worth $X" to "is this worth recovering $Y." Without this layer, every cold outreach starts at price defensiveness; with it, every cold outreach starts at problem recognition.
+
+**Mechanism:**
+1. 15 min of research per prospect (3 test calls + GBP scan + review scan + benchmark lookup)
+2. Fill the template → personalised PDF with custom dollar figure
+3. Record 5–7 min Loom walking through the findings live
+4. Send email/DM with Loom link + PDF attached
+5. Log to `outreach/leads.md` → `/outreach` handles the follow-up cadence
+
+**Money Model position (per Hormozi $100M Money Models):**
+- **Attraction offer:** Free Missed-Call Audit ← NEW, this artifact
+- **Core offer:** Speed-to-Lead install + retainer (currently $497/mo PROPOSED — under repricing review per same-date Hormozi entry)
+- **Upsell offer:** TBD (Review Reactivation Engine, Quote Follow-Up Bot — named, not built)
+- **Downsell offer:** TBD ("DIY Setup + 30-day support")
+- **Continuity offer:** monthly retainer (present)
+
+**Bike Method Phase 1:** Hughie does every step manually for the first ~5 prospects — the research, the writing, the Loom recording, the send. Phase 2 candidates (future `/level-up` runs):
+- Auto-research script (GBP scrape + test-call dialer + benchmark fetch → pre-filled template)
+- Audit JSONL log keyed by prospect (mirrors the `outreach/leads.md` schema)
+- Loom-view-rate → outreach prioritisation (anyone past 50% watched = warm)
+
+**Why now (not deferred):** Hormozi pushback identified this as the single highest-leverage move blocking the rest of the pricing conversation. Without an attraction offer, the underpriced $497 retainer (separate decision) can't be raised — there's nothing creating the value perception that justifies a higher price. Attraction offer + repricing are paired moves.
+
+**Alternatives considered:**
+- *Defer until pricing is finalised* — rejected; the audit IS what enables the repricing conversation. Order matters: build the value mechanism first, then raise the price.
+- *Ship a generic 1-pager (not personalised)* — rejected; per Hormozi, custom is the entire mechanism. A generic PDF is just a brochure.
+- *Skip the Loom and just send the PDF* — rejected; the face-cam Loom is the trust delta. Tradies trust the bloke they can see talk.
+
+**Deferred** (named, not built):
+- Auto-research script
+- Auto-fill of the template from scraped data
+- Loom analytics → `/outreach` prioritisation
+- Audit metrics tracking (send → watch rate → reply rate → call-booked rate)
+
+**Artifacts:**
+- `outreach/missed-call-audit-template.md` — the audit template + pre-fill checklist + workflow + anti-patterns
+- `outreach/missed-call-audit-loom-script.md` — the 5–7 min Loom script with timing beats, variations, and after-Loom workflow
+
+**Owner:** Hughie
+
+> Adapted from Alex Hormozi's *$100M Leads* (Lead Magnet framework) and *$100M Money Models* (Four Types of Offers).
+
+---
+
+## 2026-06-17 — Hermes LLM swapped to NVIDIA DeepSeek V4 Flash (free) — supersedes 2026-05-16 provider
+
+**Decision:** Run Hermes Agent on **`deepseek-ai/deepseek-v4-flash`** via NVIDIA's **native `nvidia` provider** (`base_url: https://integrate.api.nvidia.com/v1`, key in `NVIDIA_API_KEY`). Supersedes the 2026-05-16 OpenRouter/Claude-Sonnet setup. The box had silently drifted to `meta-llama/llama-3.3-70b-instruct:free` on OpenRouter's free tier and was throwing **HTTP 429** (rate-limited) — effectively down under any load.
+
+**Why:** DeepSeek V4 Flash is free on NVIDIA's endpoint (no per-token charge, no card on file → can't bill, only throttles), is strong at **tool calling** (verified live — returned a correct `tool_call`), and is low-latency, which matters for Hermes's tool-heavy loop (up to 90 iterations). Net effect: inference cost dropped to **$0** (was about to pay OpenRouter/Anthropic rates). Trade-off: NVIDIA free tier is rate-limited (~40 req/min) — fine for demo/testing, **must move to a paid endpoint before a paying client pushes real lead volume.**
+
+**The load-bearing lesson (cost ~6 debug cycles):** Hermes's **`model.base_url` field is IGNORED when `model.provider` is a named provider** (`openrouter`, etc.) — the provider plugin hardcodes its own URL. Setting `provider: openrouter` + `base_url: nvidia` sent the NVIDIA key to **openrouter.ai** → `HTTP 401 Missing Authentication header`. Fix: set `provider:` to the **matching native provider name** (`nvidia`), which supplies the correct base_url and reads the right key env var. Hermes ships native provider plugins under `/opt/hermes/plugins/model-providers/` (nvidia, deepseek, openai, gemini, xai, custom, etc.) — `_URL_TO_PROVIDER` in `agent/model_metadata.py` maps host → provider name. The earlier "Nous Research base_url" in config was always decorative for the same reason (provider was openrouter → it hit OpenRouter all along).
+
+**Also learned:**
+- Live config + real `.env` are on the **host** at `/docker/hermes-agent-5c1k/data/` (the `/opt/data/...` paths are the in-container view).
+- `request_dump_*.json` files are written **only on errors** — absence of a fresh dump after a message = clean success.
+- `chown hermes:hermes` fails on the host (no such user there) but is harmless; the gateway reads the bind-mounted config fine. Restart via `docker restart hermes-agent-5c1k-hermes-agent-1`.
+
+**Alternatives considered:**
+- *DeepSeek V4 Pro / Nemotron Ultra 550B / Qwen3.5-397b* — stronger but likely partner (paid) endpoints and heavier → more rate-limit pressure on a free tier.
+- *Stay on OpenRouter free Llama* — rejected; that's the 429 status quo we were fixing.
+- *Keep paid Claude via OpenRouter* — reliable but costs money; deferred to "before first client" as the paid-endpoint upgrade path.
+- *Qwen3-next-80b* — kept as the automatic fallback pick if deepseek-v4-flash had been partner-gated (it wasn't — tested 200 OK).
+
+**Verification:** direct API test (200 OK + valid tool_call) → config swap → live Telegram message answered cleanly on `provider=nvidia` with no 401/429.
+
+**Affects:** `references/hermes-setup.md` and `references/vps-access.md` updated to the live DeepSeek/NVIDIA config; `agents/hermes/.env` records `NVIDIA_API_KEY` + `HERMES_MODEL`.
+
+**Open / next:** NVIDIA free `nvapi` key is now exposed (pasted in chat) — **rotate it** and add an SSH key to the VPS, then rotate the root password. Move to a paid endpoint before client #1.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-17 — Seeded Hermes persistent memory with Hughie's context
+
+**Decision:** Populate Hermes Agent's persistent memory so it acts as a context-aware personal assistant, not a blank-slate chatbot. Wrote two files to `/docker/hermes-agent-5c1k/data/memories/` (injected into every turn):
+- **`USER.md`** (1164/1375 chars) — identity profile: 22, Wollongong, solo founder, the two businesses (own AI service + HTP), 3-year north star, decision-paralysis blocker, and working-style preferences (direct, action-first, "to what extent could AI do this?").
+- **`MEMORY.md`** (1410/2200 chars) — durable facts: Q2 priorities, trades/electricians locked, flat-fee managed-service pricing, Free Missed-Call Audit attraction offer, Chamber/in-person channel, HTP's KH/ĐL tiers, Hormozi-first + 3Ms frameworks.
+
+Both distilled from `context/about-me.md`, `context/about-business.md`, `context/priorities.md`. Old `USER.md` (stale "prefers Claude Haiku" note) backed up on the box.
+
+**Why:** Hermes injects `USER.md`/`MEMORY.md` into every turn (char-capped: 1375 / 2200), so the highest-leverage facts must be distilled, not dumped. A context-loaded agent reduces repeated steering — it already knows the businesses, priorities, and preferred register. Wrote files directly (owned UID 10000 = in-container hermes user); no restart needed since memory is read fresh per turn. Hermes also self-updates memory as it learns from chats, so this is a seed, not a freeze.
+
+**Open / deferred:** optional one-command (or cron) sync to re-push `context/` → Hermes memory whenever the repo files change — not built yet; current state is a manual seed.
+
+**Owner:** Hughie
+
