@@ -530,3 +530,234 @@ Both distilled from `context/about-me.md`, `context/about-business.md`, `context
 
 **Owner:** Hughie
 
+---
+
+## 2026-06-17 — OPEN QUESTION: white-label GoHighLevel vs. the already-built custom stack (NOT decided)
+
+**Status:** OPEN — strategic reconsideration, *not* a decision. Logged so it doesn't float in conversation. Conflicts with locked decisions below; resolve before any money is spent or any GHL account is created.
+
+**The question:** Should v1 delivery be **white-labeled GoHighLevel** (resell + configure GHL sub-accounts per client, Agency/SaaS tier ~$297–497/mo) instead of the **custom-built stack already shipped**? Hughie is energized by the white-label model (ship fast, enterprise-grade on day one, snapshot = clonable per-client template, GHL Conversation AI for the agentic layer).
+
+**Why this is a real fork, not an add-on — what GHL would SUPERSEDE if chosen:**
+- *2026-05-22 "Drop n8n":* the custom **FastAPI conversation engine** (`product/speed-to-lead-demo/`) already runs qualify→book/escalate with structured output + prompt caching. GHL replaces this with its own workflows + Conversation AI.
+- *2026-05-22/23 telephony:* **ported AU number on Hughie's Twilio**, fail-open TwiML Bin, single Hostinger VPS. GHL brings its own telephony/Twilio rebilling — different ownership model.
+- *2026-05-25 pricing/ops:* Model A managed-service, ~$60/mo direct cost → ~$440 margin at $497. GHL adds a ~$297–497/mo *platform floor* before client #1, compressing margin and changing the unit economics.
+- *2026-05-24/25 moat:* outcome-labeled data + custom engine = the stated differentiator vs. "thin wrapper." White-labeling GHL makes Hughie "just another GHL agency" — weaker moat, but faster to a paying client.
+
+**The genuine tension (why it's worth asking despite the sunk work):**
+- *For GHL:* speed-to-cash. Land + deliver a Wollongong electrician faster; the North Star filter (documented, repeatable audit→configure→deliver loop via GHL snapshot) passes. Sidesteps the AU SMS carrier-filter pain (2026-05-24) via GHL's A2P registration flow. Lower maintenance than self-hosting.
+- *Against GHL:* a working custom stack already exists and is *deployed* — switching discards real shipped code, hands the moat to a platform, and adds a fixed monthly cost. Classic decision-paralysis trap: forking to a new path before the built one has a client.
+
+**What would resolve it (decide BEFORE building/buying):**
+1. Unit-economics comparison: custom (~$60/mo cost) vs. GHL (~$297–497 floor + Twilio) → margin per client at 1 / 3 / 10 clients.
+2. Honest read: is the blocker *delivery tech* (then GHL helps) or *getting client #1 to say yes* (then GHL changes nothing — the custom stack already works)?
+3. If GHL wins, this entry is rewritten as a decision that explicitly supersedes the 2026-05-22/23/25 stack decisions.
+
+**Recommendation (mine, not locked):** The custom stack is already shipped and the simulator *is* the demo (2026-05-24). The bottleneck is client #1, not delivery tech — so don't switch yet. Use GHL only if a concrete blocker in the built stack proves it. Keep this OPEN.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-19 — Hermes LLM swapped to OpenRouter GLM-4.7-flash — supersedes 2026-06-17 NVIDIA
+
+**Decision:** Run Hermes Agent on **`z-ai/glm-4.7-flash`** via the native **`openrouter`** provider (`base_url: https://openrouter.ai/api/v1`, key in `OPENROUTER_API_KEY`). Supersedes the 2026-06-17 NVIDIA DeepSeek V4 Flash setup. The NVIDIA free endpoint was throwing **HTTP 429** under normal use (~40 req/min cap) — the bot was effectively down.
+
+**Why:** A ChatGPT subscription gives **no API access** (it's the chat app only), so it can't power Hermes — the real options are pay-per-token API keys. Used the `OPENROUTER_API_KEY` already on the box (no new account/billing). GLM-4.7-flash is a cheap **execution-tier** model: **$0.06 in / $0.40 out per Mtok** (~20× cheaper than GLM 5.2, which is the *priciest* GLM despite the higher version number), 200K context, strong tool-calling. Reasonable reliability + tiny cost vs. NVIDIA's free-but-throttled tier. Trade-off: now paying per token (cents/day at this volume) instead of $0; GLM does light reasoning so replies are a touch slower than NVIDIA.
+
+**The wasted cycle (logged so it doesn't recur):** First attempt edited `agents/hermes/hermes.py` + `agents/hermes/.env` in the repo — but **those files are NOT the live bot.** The live Hermes is the Nous Research **product** on the VPS, configured by `/docker/hermes-agent-5c1k/data/config.yaml`. The repo `hermes.py` is an unrelated/abandoned custom FastAPI script. Editing repo files changes nothing live. The retry/"trying fallback" text in Telegram is the *product's* built-in handling, not our code — its absence from `hermes.py` was the tell.
+
+**How the switch was actually made:** edited `config.yaml` on the host — `model.default → z-ai/glm-4.7-flash`, `model.provider → openrouter`, `model.base_url → openrouter URL` (per 2026-06-17 lesson: `base_url` is decorative for named providers; `provider:` is what routes). Backed up config, `docker restart hermes-agent-5c1k-hermes-agent-1`. Verified: container Up, Telegram reconnected, zero errors. `providers: {}` stays empty — `openrouter` is a native plugin like `nvidia`, no explicit block needed.
+
+**Alternatives considered:**
+- *OpenAI API direct* — needs a new funded API account; OpenRouter key already existed → no setup.
+- *GLM 5.2 (what Hughie named)* — most expensive GLM ($1.20/$4.10); overkill for an execution bot. Flash chosen; one-line switch to 5.2/4.6 documented.
+- *Stay on free NVIDIA* — rejected; that's the 429 status quo we were fixing.
+
+**Open / next:** still must rotate exposed secrets (NVIDIA keys, VPS root password) + add SSH key. Watch OpenRouter spend at openrouter.ai/activity.
+
+**Affects:** live `config.yaml` on VPS; `references/hermes-setup.md` + `references/vps-access.md` updated to the OpenRouter/GLM config.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-19 — Gmail + Calendar wired to Hermes via Google Workspace MCP
+
+**Decision:** Give Hermes Gmail (read+send) and Calendar (read/write) by connecting it — as an MCP client — to the **Google Workspace MCP server** (`taylorwilsdon/google_workspace_mcp`, PyPI `workspace-mcp`, run via `uvx` inside the Hermes container, stdio transport, `--single-user --permissions gmail:send calendar:full`). Uses Hughie's own Google Cloud OAuth client (Desktop app, project `hermes-gmail`, account `mth9703@gmail.com`). Verified live: read 3 latest emails + 3 upcoming calendar events through Telegram.
+
+**Why:** Hermes has no native Gmail; MCP is its supported extension path (`hermes mcp add`). The Workspace MCP is the most complete Google MCP and keeps the data path entirely Hughie's infra → Google (no third party). Chose Gmail+Calendar together (one server) since Calendar was the next CLAUDE.md integration anyway. Read+send (not read-only) so Hermes can act on outreach later; Calendar full for scheduling.
+
+**ChatGPT subscription dead-end (logged so it's not re-asked):** a ChatGPT/OpenAI *subscription* grants no API or automation access — irrelevant to wiring tools. The only credential that mattered was a Google OAuth client, which only Hughie could create (his account + browser consent).
+
+**CLI vs MCP (considered, rejected CLI):** a CLI via Hermes's terminal tool has lower idle token cost but is less reliable (model hand-writes shell + parses text) and still needs the identical OAuth consent. MCP overhead (~5k tokens/msg ≈ $0.0003 on GLM-4.7-flash) is negligible. **Mitigation:** trimmed enabled tools 20→10 (kept search/read/send/draft/label, list-calendars/get-events/manage-event, re-auth; disabled batch-fetch, attachments, label-admin, OOO, focus-time, free/busy, create-calendar) — ~half the overhead, full reliability. Reversible via `hermes tools enable`.
+
+**Load-bearing lessons (full writeup: `references/gmail-hermes-setup.md`):**
+1. **Creds dir must be owned by uid 10000** (the gateway/MCP user). A `./hermes -z` test run via `docker exec` defaults to **root** and wrote a root-owned `oauth_states.json` → MCP got `Errno 13 Permission denied` and couldn't start auth. Fix: `chown -R 10000:10000 /opt/data/google_creds`.
+2. **Headless OAuth callback** (`localhost:8000/oauth2callback`, callback server inside the container, port unpublished) needs a bridge: a temporary in-container TCP forwarder (`0.0.0.0:8765 → 127.0.0.1:8000`) + laptop SSH tunnel `-L 8000:172.16.1.2:8765`. Removed after consent.
+3. Token persists at `/opt/data/google_creds/` (bind-mounted → survives restarts). `python3` not on container PATH (use `/opt/hermes/.venv/bin/python3`); background via `docker exec -d`. `hermes mcp add` prompts to enable tools → pipe `printf 'Y\n'`.
+
+**Open / next:**
+- **7-day token expiry:** app is in OAuth "testing" mode → refresh token expires weekly. Hughie to click **Publish app** on the consent screen to make it permanent. Re-auth runbook in the reference file if it lapses.
+- Still pending from 2026-06-19 OpenRouter switch: rotate exposed secrets (NVIDIA keys, VPS root password) + add SSH key.
+
+**Artifacts:** live MCP config on VPS (`config.yaml` server `google-workspace`, wrapper `/opt/data/google-workspace-mcp.sh`); new `references/gmail-hermes-setup.md`.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-19 — /level-up Method spec: Missed-Call Audit research bot (Hermes skill)
+
+**Decision:** Ship `missed-call-audit` as a **Hermes skill** (on the VPS, triggered from Telegram) that automates the research + drafting of the Free Missed-Call Audit attraction offer. Autonomy **L2** — Hermes scrapes public data, computes the dollar-loss, and drafts the audit one-pager with evidence; Hughie reviews, adds the 3 test-call results, records the Loom, and sends.
+
+**Method spec (3Ms / `/level-up`):**
+1. *Constraint:* ~15 min of manual research per prospect throttles audit volume — and audits-sent is the top of the only client-acquisition funnel (priority #2, and the "audit SMBs" front of the north-star loop).
+2. *EAD:* **Automate.** Not eliminate (the custom $-number is the entire Hormozi mechanism); not delegate (solo). 60/30/10: ~60% deterministic (GBP scrape, competitor benchmark, review-text scan, $-loss formula), ~30% AI-assisted (drafting findings in voice), ~10% manual & retained by Hughie (the 3 phone test-calls — Hermes has no telephony — and the face-cam Loom).
+3. *Process map:* **Trigger** = Hughie gives a business name/suburb (or GBP URL) to @BaoBei09bot. **Sources** = GBP, website, top-2 local competitors, review corpus. **Transform** = scrape → compute weekly/monthly $-loss → fill template. **Decision point** = evidence-gating (write a finding only with real evidence, else `<<NEEDS: …>>`; never fabricate). **Destination** = drafted `<<slug>>-audit.md` back in Telegram → Hughie finishes → `/make-pdf` → Loom → send → log to `outreach/leads.md`.
+4. *Autonomy:* **L2 — Drafted.** L3 (auto-send) rejected: sending unreviewed audits risks fabricated findings reaching prospects. Bike Method Phase 1 (review every output).
+5. *KPI:* Bucket = **More customers.** Metric = research time per audit (~15 min → <5 min of Hughie's time) + audits-sent/week.
+
+**Machine:** AI-assisted Hermes skill (Boring-is-Beautiful: mostly deterministic, one drafting pass, no sub-agent). Self-contained — embeds the audit template, the $-loss formula + benchmarks, evidence-gating, and the anti-fabrication rules. Source-of-truth copy in repo; deployed to VPS.
+
+**Boundaries:** Hermes cannot make the 3 phone test-calls (no telephony) — it leaves placeholders. Current Google scope is Gmail+Calendar only (no Sheets/Drive), which this skill doesn't need.
+
+**Deferred** (future `/level-up` runs): auto-log the prospect into `outreach/leads.md` + set a Calendar follow-up (ties into the proposed lead follow-up engine); pull live AU benchmark figures instead of the static ones; auto-record/host the Loom.
+
+**Artifacts:** `agents/hermes/skills/missed-call-audit/SKILL.md` (repo source) + deployed to `/opt/data/skills/missed-call-audit/SKILL.md` on the VPS (Hermes shows it `enabled`).
+
+**Owner:** Hughie
+
+> Adapted from The Three Ms of AI™ © 2026 Nate Herk.
+
+
+## 2026-06-21 — Onboard GHL clients via Snapshot + API, not Playwright
+
+**Decision:** Provision each new client's GHL sub-account by cloning a saved "Speed-to-Lead v1" Snapshot via the v2 API (`agents/onboarder/clone_client.py`), then swapping per-client custom values. Build the template once in the UI; never script the UI per client.
+
+**Why:** Snapshots are GHL's native "build-once, clone-per-client" mechanism — stable, fast, scriptable. Playwright-per-client is brittle (breaks on every UI change, fights 2FA, slow to debug) and re-does work the platform already does for free. Fits the "one well-built agent beats five manual workflows" rule.
+
+**What stays manual (API can't):** phone-number provisioning + AU A2P/compliance, and final go-live approval. Snapshots also don't carry phone numbers, sending domains, or A2P registration — those are per-location.
+
+**Open risk:** snapshot-assign-on-create (`snapshotId` on `POST /locations/`) is flagged TODO-VERIFY in code — may be gated to SaaS-mode agencies, or need a separate "load snapshot into location" call. Verify on one throwaway sub-account before relying on it.
+
+**Auth:** agency-level Private Integration token (`pit-...`). Company ID `WBcLFKbpX2Dh0Kvvix0l` retrieved via `clone_client.py --check`. Token was exposed in chat during setup — rotate before going live.
+
+**Alternatives considered:**
+- Playwright per client → brittle, slow, rejected.
+- Fully custom FastAPI/Twilio build (no GHL) → the long-term moat, but slower to client #1; GHL validates first.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-21 — Connect client numbers via AU Conditional Call Forwarding (GSM codes), not porting or US codes
+
+**Decision:** Wire each client's existing business number into the GHL missed-call→AI-text-back flow using **Conditional Call Forwarding (CCF)** — divert on no-answer/busy/unreachable to a GHL AU mobile number. Use the **GSM standard codes** (`*61*`, `*67*`, `*62*`), which work on every AU carrier (Telstra/Optus/Vodafone + MVNOs). No number porting. SOP + onboarding email at `references/ccf-setup-au.md`.
+
+**Why:** CCF keeps the client's number, lets their phone ring normally first, and only hands off on a miss — lowest-friction, no porting risk. AU is all-GSM so one code set covers every carrier (unlike the US, which needs carrier-specific codes). This is also the concrete edge over LeadSaver, which only catches Google-listing calls; CCF on the client's own mobile catches *every* missed call (referrals, repeats, van signage).
+
+**Key gotcha (verify per client):** carrier voicemail/MessageBank competes with the divert. If voicemail picks up before the no-answer divert fires, nothing forwards. Fix: set divert timer short (`*61*[N]**20#`) or disable carrier voicemail. Test every go-live.
+
+**Also locked:** first text-back is a STATIC instant SMS (speed + reliability); Conversation AI (stable, non-BETA) handles the reply/qualify/book — not the first message.
+
+**Alternatives considered:**
+- US carrier codes from the original Gemini playbook → wrong country, don't work in AU. Rejected.
+- Number porting → slow, scary, breaks things; unnecessary with CCF.
+- AI-generated first text → adds latency + hallucination risk on the one message that must always send. Rejected.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-22 — 🔒 LOCKED: Build own self-hosted platform; GHL demoted to fallback (supersedes 2026-06-21 GHL onboarding)
+
+**Status:** LOCKED.
+
+**Decision:** Build and ship Hughie's **own self-hosted speed-to-lead platform** on the existing `product/speed-to-lead-demo/` engine (FastAPI + Twilio + Claude + SQLite, on the Hostinger VPS), and make it **configurable by describing workflows to an AI**. **GHL is demoted to a fallback** — used only to land client #1 fast *if* a client says yes before the own-platform path is client-ready. The own platform is the primary build. Source-of-truth plan: `product/speed-to-lead-demo/OWN-PLATFORM-PLAN.md`.
+
+**Why:** Three driving reasons — (1) kill GHL's ~$297/mo subscription floor (own stack costs only Twilio + LLM *usage*); (2) own the client relationship end-to-end, signups into Hughie's own system, no third-party app dependency; (3) build/edit each client's workflow by *talking to an AI* — a capability GHL structurally cannot offer, and the real moat. Decisive enabler: the audit (2026-06-22) found the core is **already ~80% built** — `workflow.py` runs qualify→triage→book/escalate with the no-quote guardrail already enforced (line 123), and `app.py` already does missed-call→text-back via Twilio (the exact thing the GHL build got stuck on in `draft`). So this is **not** a from-scratch rebuild that risks the "fork before client #1" trap — it extends shipped, working code. What would change this: a client signs and needs delivery *now* before Phases 1-3 are ready → use the GHL fallback for that one, migrate later.
+
+**Honest cost caveat:** "no external fees" is not literally achievable — telephony (Twilio) and the LLM API are irreducible usage costs. What dies is the subscription floor + commodity-reseller positioning.
+
+**The build (phases in the plan doc):**
+1. Externalize workflow into per-tenant config (keystone refactor — unlocks multi-tenancy + AI editing).
+2. AI workflow-builder — describe in English → AI rewrites tenant config → validate → hot-reload. ⭐ the moat.
+3. Multi-tenant routing + owner dashboard (replaces GHL's app).
+4. Self-serve signup that provisions a tenant.
+
+**Alternatives considered:**
+- Stay on GHL as primary → recurring platform tax + commodity moat + the build kept getting stuck (draft/publish/token friction); rejected as primary, kept as fallback.
+- Full rebuild of every GHL feature before a client → the decision-paralysis trap flagged 2026-06-17; avoided by building only the differentiated slice on the existing engine and serving one real client.
+
+**Supersedes:** 2026-06-21 "Onboard GHL clients via Snapshot + API" and the GHL-primary stance — those are now the fallback path, not the main one.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-23 — 🏁 MILESTONE: own platform v1 feature-complete (Phases 0–3 shipped)
+
+**Status:** Milestone log. Built in one session on `product/speed-to-lead-demo/`. Plan + status: `product/speed-to-lead-demo/OWN-PLATFORM-PLAN.md`.
+
+**What shipped (all verified, mostly against the live model):**
+- **Phase 1 — config-driven tenants.** Per-client config (`tenants/<id>.json`) renders the engine prompt; `dave` stays byte-identical. `tenants.py` loads/validates.
+- **Phase 2 — AI workflow-builder + trade-neutral engine.** `build_tenant.py`: describe a business in plain English → Claude writes a full validated tenant config (identity, trade-specific triage/examples, quoting policy). All trade-specific content moved out of the shared prompt into config (sentinels in `workflow.py`), so a locksmith no longer talks like an electrician. Per-tenant `quoting_policy` (never/ranges/full) with a high-salience override (single clause-swap was insufficient — found via smoke test). New outcomes `callback` + `not_a_job`.
+- **Phase 3a — multi-tenant telephony.** Inbound routes by `To` number → tenant (`tenants.find_by_number`); engine runs per-tenant (`run_turn(system=…)`, cached); store keyed by `(tenant_id, phone)`; `provision_number.py` assigns a number + wires webhooks.
+- **Phase 3b — Google Calendar booking.** `connect_calendar.py` (one-time OAuth → per-tenant refresh token); engine returns ISO `booking_start`/`booking_end`; `app.py` creates the event (fail-open, `gcal.py`). Bookings are forced forward in time by both prompt rule and a deterministic `_roll_to_future` guard (never books the past).
+- **Phase 3c — owner dashboard.** Read-only token-gated console at `/dashboard`: tenants + counts → per-tenant pipeline grouped by stage → conversation transcript. Server-rendered, XSS-safe.
+
+**Honest state / what's NOT done:**
+- The irreducible **manual/live steps** (need real creds, cost money, regulatory): buy Twilio number + **AU A2P SMS registration**; create Google OAuth client + run `connect_calendar.py` per client.
+- **Phase 4 (self-serve signup)** not built.
+- Dashboard auth is a single shared `DASHBOARD_TOKEN` — harden to per-client logins before any client-facing access.
+- Minor refinements logged: `full` quoting needs a per-tenant price list; callback alert fires after collecting a name (could be immediate).
+- **Deploy debt:** new deps (`google-api-python-client`, `google-auth`, `google-auth-oauthlib`, `tzdata`) → `pip install -r requirements.txt` on the VPS; set `DASHBOARD_TOKEN`; new tenant configs are live SMS state (DB auto-migrates `conversations` to `(tenant_id, phone)`).
+
+**Why log as a milestone:** large surface shipped in one session; this is the checkpoint to resume from and the basis for the next decision (Phase 4 vs deploy-and-land-client-#1).
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-23 — Client logins (operator-provisioned); supersedes "client logs into nothing"
+
+**Decision:** Clients get their **own login** to a tenant-scoped dashboard. Signup is **operator-provisioned**, not self-serve: when a client agrees, Hughie builds + customizes their tenant (`build_tenant.py` → `provision_number.py` → `connect_calendar.py`), then runs `create_account.py --tenant <id> --username <u>` to mint credentials and hands over the username + password. The client logs in at `/login` and sees ONLY their own leads. **Public self-serve signup + payment is deferred** (Phase 4b) — not needed for client #1–N. This supersedes the 2026-05-25 managed-service stance of "client sees one invoice, logs into nothing."
+
+**Why:** Letting a client see their own lead inbox / pipeline / booked jobs makes the ROI visible, which is a retention and upsell asset (and a live sales proof for the next prospect). Operator-provisioned (vs self-serve) avoids building a public signup + billing flow before there's volume to justify it — Hughie controls account creation, which is fine at this stage and keeps the build small. What would change this: enough inbound that manual account creation is a bottleneck → build 4b (self-serve + Stripe).
+
+**Auth model:** signed session cookie (HMAC via `SECRET_KEY`); two roles — admin (Hughie, sees every tenant, can also `?key=DASHBOARD_TOKEN`) and tenant (a client, hard-scoped to their own `tenant_id`, 403 on any other). Client passwords are pbkdf2-hashed in `data/accounts.json` (gitignored). Verified: client blocked from other tenants, logout clears, admin sees all.
+
+**Security fix (same day):** tenant configs (`tenants/*.json`) hold per-client secrets (Google refresh token, numbers) and are now **gitignored** (with a committed `tenants/example.json` template); they live on the VPS as per-deployment data, never committed. No secrets were ever tracked. Before going client-facing: set a strong random `SECRET_KEY`, serve over HTTPS only, and consider rotating tokens that appeared in chat during setup.
+
+**Alternatives considered:**
+- *Keep "logs into nothing" (operator-only dashboard)* — simpler, but the client never sees their ROI; weaker retention and no self-serve proof. Rejected now that the dashboard exists.
+- *Public self-serve signup now* — over-build before volume; needs billing + abuse handling. Deferred to 4b.
+- *Secrets in tenant config, committed* — leaks Google tokens; rejected. Secrets stay in gitignored files on the VPS.
+
+**Artifacts:** `accounts.py`, `create_account.py`, `/login`+`/logout`+scoped `/dashboard` in `app.py`, `.gitignore` (tenants), `tenants/example.json`.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-23 — Speed-to-lead demo proven END-TO-END on a live AU number
+
+**Decision:** The first fully-wired, live demo of the speed-to-lead product is running on a real AU Twilio number (`+61468089224`) against a demo tenant (`rapidflow-plumbing` — a fictional Wollongong plumbing business, "RapidFlow Plumbing & Gas"). Verified end-to-end with **real Conditional Call Forwarding**: missed call → carrier forwards to Twilio → AI greeting → instant text-back to the caller → AI qualify/book → owner-alert SMS. Demo to prospects via the Twilio number directly; CCF stays a per-client onboarding step.
+
+**Verified against Twilio logs (2026-06-23):**
+- Direct call + direct SMS to the number → AI flow runs, text-back delivered.
+- Real CCF: a forwarding phone diverted an unanswered call to Twilio → text-back delivered to the **original caller** (correct `From` routing, no loop).
+
+**Key findings:**
+- **amaysim (Optus MVNO) does NOT complete forwarded calls.** The divert activates (immediate, no ring) but the leg never reaches Twilio. Worked perfectly on a different carrier. → Carrier limitation, not a product bug. CCF belongs to per-client onboarding on the client's (typically Telstra/Optus postpaid) line.
+- **App now sends outbound SMS from the AU number.** It was sending from a leftover US number (`+19129785856`) via the VPS `.env` `TWILIO_NUMBER`; that would have broken reply routing (replies must come back to the tenant's own number). Fixed.
+- **US test number released** (de-activated → deleted): stops billing, useless for an AU trades business.
+- **New `voice_textback_only` tenant flag.** For CCF safety-net tenants, the Twilio voice handler must NOT dial the owner back (the caller already missed them) — it greets + texts back only, preventing a forward→dial-back loop (`ccf-setup-au.md` gotcha #2). Default `false` preserves the ring-owner behaviour for other tenants.
+- **Regulatory bundle:** using an Individual bundle for now (Business bundle needs a website); switch to Business under the entity before the first paying client.
+
+**Deploy note (cost ~1 cycle):** tenants are baked into the image (only `./data` is a volume). New/edited tenants need a `docker cp` into the running container (live, ephemeral) **and** an image rebuild (`docker compose up -d --build app`) to persist. `docker restart` / `--force-recreate` alone **reverts** cp'd changes and does **not** reload `.env`.
+
+**Artifacts:** `tenants/rapidflow-plumbing.json`, `voice_textback_only` branch in `app.py` `/twilio/voice`, VPS `/opt/speed-to-lead` rebuilt + redeployed.
+
+**Owner:** Hughie
