@@ -18,6 +18,7 @@
   "knowledge_file": null,
   "twilio_number": "+61480000000",
   "owner_mobile": "+61400000000",
+  "telegram_chat_id": null,
   "dashboard": {
     "columns": ["job_type", "suburb", "urgency", "triage", "booking", "updated_at"],
     "stage_labels": {"missed_call": "📞 Missed call — awaiting reply"},

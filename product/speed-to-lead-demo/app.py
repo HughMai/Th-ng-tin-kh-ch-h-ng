@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo
 
 import gcal
 import store
+import telegram_io
 import tenants
 import twilio_io
 from workflow import DEFAULT_TENANT, run_followup, run_turn, system_for
@@ -63,6 +64,46 @@ def _resolve_tenant(form: dict) -> dict:
 
 def _owner_mobile(t: dict) -> str:
     return t.get("owner_mobile") or FALLBACK_OWNER_MOBILE
+
+
+# --- Telegram lead mirror (per-tenant owner notifications + two-way takeover) -
+TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+
+
+def _tg_chat(tenant: dict):
+    """The tenant's Telegram chat id, or None if they haven't connected one."""
+    return tenant.get("telegram_chat_id")
+
+
+def _tenant_for_chat(chat_id) -> dict | None:
+    """Find the tenant a Telegram chat belongs to (reverse of _tg_chat)."""
+    for t in tenants.all_tenants():
+        if t.get("telegram_chat_id") == chat_id:
+            return t
+    return None
+
+
+def _mirror(tenant: dict, phone: str, prefix: str, content: str, label: str | None = None) -> None:
+    """Post a line to the tenant's Telegram chat and remember which lead it's
+    about, so an owner reply routes back to the right customer. `label` is the
+    header shown after the emoji — the customer's number on inbound lines, the
+    business name on the AI's lines. No-op if no Telegram chat is connected."""
+    chat = _tg_chat(tenant)
+    if not chat:
+        return
+    mid = telegram_io.send_message(chat, f"{prefix} {label or phone}\n{content}")
+    if mid:
+        store.tg_map(chat, mid, tenant["tenant_id"], phone)
+
+
+def _tg_new_lead(tenant: dict, phone: str, how: str) -> None:
+    """Header card announcing a brand-new lead in the tenant's Telegram chat."""
+    chat = _tg_chat(tenant)
+    if not chat:
+        return
+    mid = telegram_io.send_message(chat, f"🆕 New lead — {phone}\n({how})")
+    if mid:
+        store.tg_map(chat, mid, tenant["tenant_id"], phone)
 
 
 def _now_line(t: dict) -> str:
@@ -202,7 +243,11 @@ async def twilio_voice(request: Request) -> Response:
         caller = form.get("From")
         if caller:
             twilio_io.send_sms(caller, tenant["opener_sms"])
+            is_new = not store.lead_exists(tenant["tenant_id"], caller)
             store.log_missed_call(tenant["tenant_id"], caller)
+            if is_new:
+                _tg_new_lead(tenant, caller, "missed call — texted back")
+            _mirror(tenant, caller, "🤖", tenant["opener_sms"], label=tenant["business_name"])
         vr.hangup()
         return _twiml(str(vr))
     dial = vr.dial(
@@ -224,7 +269,11 @@ async def twilio_voice_status(request: Request) -> Response:
         if caller:
             tenant = _resolve_tenant(form)
             twilio_io.send_sms(caller, tenant["opener_sms"])
+            is_new = not store.lead_exists(tenant["tenant_id"], caller)
             store.log_missed_call(tenant["tenant_id"], caller)
+            if is_new:
+                _tg_new_lead(tenant, caller, "missed call — texted back")
+            _mirror(tenant, caller, "🤖", tenant["opener_sms"], label=tenant["business_name"])
     return _twiml("<Response/>")
 
 
@@ -237,8 +286,20 @@ async def twilio_sms(request: Request) -> Response:
     owner = _owner_mobile(tenant)
     customer = form.get("From", "")
     body = (form.get("Body") or "").strip()
+    tid = tenant["tenant_id"]
 
-    thread = store.load_thread(tenant["tenant_id"], customer)
+    # Mirror the inbound text to the owner's Telegram (and announce a new lead).
+    if not store.lead_exists(tid, customer):
+        _tg_new_lead(tenant, customer, "via SMS")
+    _mirror(tenant, customer, "👤", body)
+
+    # If the owner has taken this lead over from Telegram, the AI stays quiet —
+    # just record the customer's message; the owner is replying by hand.
+    if store.is_human_handling(tid, customer):
+        store.append_message(tid, customer, "user", body)
+        return _twiml(str(MessagingResponse()))
+
+    thread = store.load_thread(tid, customer)
     thread.append({"role": "user", "content": body})
 
     try:
@@ -265,6 +326,7 @@ async def twilio_sms(request: Request) -> Response:
 
     thread.append({"role": "assistant", "content": turn.reply})
     store.save_turn(tenant["tenant_id"], customer, thread, turn)
+    _mirror(tenant, customer, "🤖", turn.reply, label=tenant["business_name"])
 
     # On a confirmed booking, create the calendar event. Best-effort: a calendar
     # failure must never break the customer reply or the owner alert.
@@ -291,6 +353,61 @@ async def twilio_sms(request: Request) -> Response:
     mr = MessagingResponse()
     mr.message(turn.reply)
     return _twiml(str(mr))
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request) -> Response:
+    """Owner acts from Telegram. Replying to a lead's message texts that
+    customer as the business and pauses the AI for that lead; `/resume` hands
+    control back to the AI; `/done` closes the lead (stops follow-ups)."""
+    if (
+        TELEGRAM_WEBHOOK_SECRET
+        and request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        != TELEGRAM_WEBHOOK_SECRET
+    ):
+        raise HTTPException(status_code=403, detail="bad secret")
+    update = await request.json()
+    msg = update.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    text = (msg.get("text") or "").strip()
+    reply = msg.get("reply_to_message") or {}
+    if not chat_id or not text:
+        return Response(status_code=200)
+
+    tenant = _tenant_for_chat(chat_id)
+    if not tenant:
+        return Response(status_code=200)
+
+    # The owner identifies the lead by replying to one of the bot's messages.
+    phone = store.tg_lookup(chat_id, reply.get("message_id")) if reply else None
+    if not phone:
+        telegram_io.send_message(
+            chat_id,
+            "↩️ Reply to a lead's message to text that customer (or /resume, /done).",
+        )
+        return Response(status_code=200)
+
+    tid = tenant["tenant_id"]
+    rid = reply.get("message_id")
+    cmd = text.split("@", 1)[0].lower()  # tolerate /done@LeadCapturev1_bot
+    if cmd in ("/resume", "resume"):
+        store.set_human_handling(tid, phone, False)
+        telegram_io.send_message(chat_id, f"🤖 AI resumed for {phone}.", rid)
+    elif cmd in ("/done", "done", "/close"):
+        store.close_lead(tid, phone)
+        telegram_io.send_message(chat_id, f"✅ {phone} marked done — follow-ups off.", rid)
+    else:
+        try:
+            twilio_io.send_sms(phone, text)
+        except Exception as exc:  # noqa: BLE001
+            telegram_io.send_message(chat_id, f"⚠️ Couldn't text {phone}: {exc}", rid)
+            return Response(status_code=200)
+        store.append_message(tid, phone, "assistant", text)
+        store.set_human_handling(tid, phone, True)
+        telegram_io.send_message(
+            chat_id, f"🧑‍🔧 Sent to {phone}. AI paused — /resume to hand back.", rid
+        )
+    return Response(status_code=200)
 
 
 # --- Lead capture (demo simulator -> Telegram + JSONL) ----------------------
@@ -410,17 +527,76 @@ def _dashboard_cfg(t: dict) -> tuple[list[str], dict, list[str], bool]:
     return order, labels, (cols or DEFAULT_COLUMNS), bool(cfg.get("stage_order"))
 
 
-def _cell(lead: dict, field: str) -> str:
-    """Render one pipeline table cell for a lead field."""
-    if field == "triage":
-        tri = lead.get("triage") or ""
-        if not tri:
-            return "<td></td>"
+def _ago(ts: str) -> str:
+    """Human 'time ago' from a stored UTC 'YYYY-MM-DD HH:MM:SS' timestamp."""
+    if not ts:
+        return ""
+    try:
+        when = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return _esc(ts)
+    secs = (datetime.now(timezone.utc) - when).total_seconds()
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs // 60)} min ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)} h ago"
+    if secs < 7 * 86400:
+        return f"{int(secs // 86400)} d ago"
+    return when.strftime("%d %b")
+
+
+def _stat_cards(leads: list) -> str:
+    """At-a-glance ROI cards above the pipeline."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cards = (
+        ("🆕", sum(1 for l in leads if (l.get("created_at") or "").startswith(today)), "new today"),
+        ("📞", sum(1 for l in leads if l.get("stage") == "missed_call"), "missed calls"),
+        ("📅", sum(1 for l in leads if l.get("booking")), "booked"),
+        ("📋", len(leads), "total leads"),
+    )
+    return "<div class=cards>" + "".join(
+        f"<div class=stat><b>{n}</b><span>{_esc(f'{e} {label}')}</span></div>"
+        for e, n, label in cards
+    ) + "</div>"
+
+
+def _lead_card(tenant_id: str, lead: dict, k: str, cols: list) -> str:
+    """A single mobile-friendly lead card: number (tap to open), badges,
+    qualified fields, booking, relative time, and one-tap Call / Text."""
+    ph = lead["phone"]
+    ph_q = urllib.parse.quote(ph)
+    badges = ""
+    tri = lead.get("triage") or ""
+    if "triage" in cols and tri:
         cls = "emergency" if tri == "emergency" else ""
-        return f"<td><span class='badge {cls}'>{_esc(tri)}</span></td>"
-    if field == "updated_at":
-        return f"<td class=muted>{_esc(lead.get('updated_at'))}</td>"
-    return f"<td>{_esc(lead.get(field))}</td>"
+        badges += f"<span class='badge {cls}'>{_esc(tri)}</span> "
+    cc = lead.get("call_count") or 0
+    if cc > 1 or (cc >= 1 and lead.get("stage") != "missed_call"):
+        times = f" ×{cc}" if cc > 1 else ""
+        badges += f"<span class='badge recall'>📞 called again{times}</span> "
+    info_fields = [c for c in cols if c not in ("updated_at", "booking", "triage")]
+    meta = " · ".join(
+        f"{COLUMN_DEFS[c]}: {_esc(lead.get(c))}" for c in info_fields if lead.get(c)
+    )
+    booking_line = (
+        f"<div class='meta booked'>📅 {_esc(lead.get('booking'))}</div>"
+        if "booking" in cols and lead.get("booking")
+        else ""
+    )
+    return (
+        "<div class=lead><div class=top>"
+        f"<a class=ph href='/dashboard/{_esc(tenant_id)}/lead?phone={ph_q}&key={k}'>{_esc(ph)}</a>"
+        f"<span>{badges}</span></div>"
+        + (f"<div class=meta>{meta}</div>" if meta else "")
+        + booking_line
+        + "<div class=foot>"
+        f"<span class=muted>{_ago(lead.get('updated_at'))}</span>"
+        f"<span><a class=btn href='tel:{_esc(ph)}'>Call</a> "
+        f"<a class='btn alt' href='sms:{_esc(ph)}'>Text</a></span>"
+        "</div></div>"
+    )
 
 
 def _sign(payload: dict) -> str:
@@ -464,10 +640,19 @@ def _esc(x) -> str:
     return html.escape(str(x if x is not None else ""))
 
 
-def _page(title: str, body: str, brand: str = "Speed-to-Lead — Owner Dashboard") -> HTMLResponse:
+def _page(
+    title: str,
+    body: str,
+    brand: str = "Speed-to-Lead — Owner Dashboard",
+    auto_refresh: int = 0,
+) -> HTMLResponse:
+    refresh = f"<meta http-equiv=refresh content={auto_refresh}>" if auto_refresh else ""
     return HTMLResponse(
         "<!doctype html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width, initial-scale=1'>"
+        "<link rel=icon href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'"
+        " viewBox='0 0 100 100'><text y='.9em' font-size='90'>%F0%9F%93%9E</text></svg>\">"
+        f"{refresh}"
         f"<title>{_esc(title)}</title><style>"
         "body{font:15px/1.5 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1a1a1a}"
         "header{background:#111;color:#fff;padding:14px 20px;font-weight:600}"
@@ -480,11 +665,28 @@ def _page(title: str, body: str, brand: str = "Speed-to-Lead — Owner Dashboard
         "h1{font-size:20px;margin:6px 0}h2{margin:18px 0 6px;font-size:15px}"
         ".badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:#eef}"
         ".emergency{background:#fde8e8;color:#b91c1c}.muted{color:#888}"
+        ".recall{background:#fff3cd;color:#92600a}"
         ".bubble{max-width:78%;padding:8px 12px;border-radius:12px;margin:6px 0;white-space:pre-wrap}"
         ".cust{background:#eef1f6}.ai{background:#dcf5e6;margin-left:auto}"
         ".row{display:flex;flex-direction:column}"
+        # Tier 1 dashboard UI: stat cards, lead cards, one-tap action buttons.
+        ".cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:12px 0 18px}"
+        ".stat{background:#fff;border-radius:10px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}"
+        ".stat b{display:block;font-size:26px;line-height:1.1}.stat span{font-size:12px;color:#666}"
+        ".lead{background:#fff;border-radius:10px;padding:12px 14px;margin:8px 0;box-shadow:0 1px 3px rgba(0,0,0,.08)}"
+        ".lead .top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}"
+        ".ph{font-weight:600;font-size:16px}"
+        ".lead .meta{color:#555;font-size:14px;margin:4px 0}.booked{color:#0a7d33;font-weight:600}"
+        ".foot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}"
+        ".btn{display:inline-block;padding:7px 14px;border-radius:6px;background:#1558d6;color:#fff;font-size:13px}"
+        ".btn:hover{text-decoration:none;opacity:.92}.btn.alt{background:#eef;color:#1558d6}"
         f"</style></head><body><header>{_esc(brand)}</header><main>{body}</main></body></html>"
     )
+
+
+@app.get("/favicon.ico")
+def favicon() -> Response:
+    return Response(status_code=204)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -574,8 +776,9 @@ def dashboard_tenant(tenant_id: str, request: Request, key: str = "") -> Respons
     except (FileNotFoundError, ValueError):
         raise HTTPException(status_code=404, detail="Unknown tenant")
     k = urllib.parse.quote(key)
+    all_leads = store.list_leads(tenant_id)
     groups: dict[str, list] = {}
-    for lead in store.list_leads(tenant_id):
+    for lead in all_leads:
         groups.setdefault(lead.get("stage") or "other", []).append(lead)
 
     # Admins get a back-link to all businesses; clients just get log out.
@@ -584,34 +787,30 @@ def dashboard_tenant(tenant_id: str, request: Request, key: str = "") -> Respons
         if user["role"] == "admin"
         else "<a href='/logout'>log out</a>"
     )
-    body = f"<p class=muted>{nav}</p><h1>{_esc(t['business_name'])}</h1>"
     order, labels, cols, explicit = _dashboard_cfg(t)
+    body = (
+        f"<p class=muted>{nav}</p><h1>{_esc(t['business_name'])}</h1>"
+        + _stat_cards(all_leads)
+    )
     # An explicit stage_order hides any stage not listed; otherwise show extras.
     stages_seq = list(order) if explicit else order + [s for s in groups if s not in order]
-    header = "<tr><th>Customer</th>" + "".join(
-        f"<th>{_esc(COLUMN_DEFS[c])}</th>" for c in cols
-    ) + "</tr>"
     shown = False
     for stage in stages_seq:
         items = groups.get(stage)
         if not items:
             continue
         shown = True
-        rows = ""
-        for lead in items:
-            ph = urllib.parse.quote(lead["phone"])
-            cells = "".join(_cell(lead, c) for c in cols)
-            rows += (
-                f"<tr><td><a href='/dashboard/{_esc(tenant_id)}/lead?phone={ph}&key={k}'>"
-                f"{_esc(lead['phone'])}</a></td>{cells}</tr>"
-            )
         label = labels.get(stage, stage.title())
-        body += (
-            f"<h2>{_esc(label)} ({len(items)})</h2><table>{header}{rows}</table>"
-        )
+        body += f"<h2>{_esc(label)} ({len(items)})</h2>"
+        body += "".join(_lead_card(tenant_id, lead, k, cols) for lead in items)
     if not shown:
-        body += "<p class=muted>No leads yet.</p>"
-    return _page(t["business_name"], body, brand=f"{t['business_name']} — Leads")
+        body += (
+            "<p class=muted>No leads yet — your next missed call or text "
+            "lands here automatically.</p>"
+        )
+    return _page(
+        t["business_name"], body, brand=f"{t['business_name']} — Leads", auto_refresh=30
+    )
 
 
 @app.get("/dashboard/{tenant_id}/lead")

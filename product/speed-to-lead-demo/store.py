@@ -53,6 +53,28 @@ def configure(db_path: str) -> None:
             )
             """
         )
+        # Additive migrations: add later columns to an existing table in place.
+        existing = [r[1] for r in db.execute("PRAGMA table_info(conversations)").fetchall()]
+        for col, ddl in (
+            ("call_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_call_at", "TEXT"),
+            ("human_handling", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if col not in existing:
+                db.execute(f"ALTER TABLE conversations ADD COLUMN {col} {ddl}")
+        # Maps a Telegram message we posted -> the lead it's about, so when the
+        # owner replies to that message we know which customer to text.
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tg_messages (
+                chat_id    INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                tenant_id  TEXT NOT NULL,
+                phone      TEXT NOT NULL,
+                PRIMARY KEY (chat_id, message_id)
+            )
+            """
+        )
 
 
 @contextmanager
@@ -87,7 +109,8 @@ def list_leads(tenant_id: str) -> list[dict]:
         rows = db.execute(
             """
             SELECT phone, thread_json, stage, triage, job_type, urgency,
-                   suburb, property_type, booking, created_at, updated_at
+                   suburb, property_type, booking, created_at, updated_at,
+                   call_count, last_call_at
             FROM conversations WHERE tenant_id = ?
             ORDER BY updated_at DESC
             """,
@@ -119,16 +142,21 @@ def lead_detail(tenant_id: str, phone: str) -> dict | None:
 
 
 def log_missed_call(tenant_id: str, phone: str) -> None:
-    """Record an inbound/forwarded call as a lead the moment it lands, so the
-    owner sees it even if the caller never texts back. No-op if a conversation
-    already exists for this caller — never downgrade an active lead to a missed
-    call. When the caller does reply, the normal SMS flow upgrades this row."""
+    """Record an inbound/forwarded call. A brand-new caller becomes a
+    `missed_call` lead so the owner sees it even if they never text back. A
+    caller who's already a lead is NOT downgraded — instead we bump them to the
+    top (newest `updated_at`) and increment `call_count`, so a repeat caller
+    surfaces as a hot lead. `last_call_at` records the most recent ring."""
     with _connect() as db:
         db.execute(
             """
-            INSERT INTO conversations (tenant_id, phone, thread_json, stage)
-            VALUES (?, ?, '[]', 'missed_call')
-            ON CONFLICT(tenant_id, phone) DO NOTHING
+            INSERT INTO conversations
+                (tenant_id, phone, thread_json, stage, call_count, last_call_at)
+            VALUES (?, ?, '[]', 'missed_call', 1, datetime('now'))
+            ON CONFLICT(tenant_id, phone) DO UPDATE SET
+                call_count   = call_count + 1,
+                last_call_at = datetime('now'),
+                updated_at   = datetime('now')
             """,
             (tenant_id, phone),
         )
@@ -171,3 +199,85 @@ def save_turn(tenant_id: str, phone: str, thread: list[dict], turn) -> None:
                 turn.booking,
             ),
         )
+
+
+def lead_exists(tenant_id: str, phone: str) -> bool:
+    """True if we already have any record for this (tenant, caller)."""
+    with _connect() as db:
+        row = db.execute(
+            "SELECT 1 FROM conversations WHERE tenant_id = ? AND phone = ?",
+            (tenant_id, phone),
+        ).fetchone()
+    return row is not None
+
+
+def append_message(tenant_id: str, phone: str, role: str, content: str) -> None:
+    """Append one message to a lead's thread and bump updated_at, without
+    touching the qualified fields. Used when a human (the owner) is driving the
+    conversation, or to persist a customer text while the AI is paused."""
+    with _connect() as db:
+        row = db.execute(
+            "SELECT thread_json FROM conversations WHERE tenant_id = ? AND phone = ?",
+            (tenant_id, phone),
+        ).fetchone()
+        thread = json.loads(row["thread_json"]) if row else []
+        thread.append({"role": role, "content": content})
+        db.execute(
+            """
+            INSERT INTO conversations (tenant_id, phone, thread_json, stage)
+            VALUES (?, ?, ?, 'qualifying')
+            ON CONFLICT(tenant_id, phone) DO UPDATE SET
+                thread_json = excluded.thread_json,
+                updated_at  = datetime('now')
+            """,
+            (tenant_id, phone, json.dumps(thread)),
+        )
+
+
+def set_human_handling(tenant_id: str, phone: str, on: bool) -> None:
+    """Pause (or resume) the AI for one lead. While paused, inbound customer
+    texts are mirrored to the owner but not auto-answered."""
+    with _connect() as db:
+        db.execute(
+            "UPDATE conversations SET human_handling = ? WHERE tenant_id = ? AND phone = ?",
+            (1 if on else 0, tenant_id, phone),
+        )
+
+
+def is_human_handling(tenant_id: str, phone: str) -> bool:
+    with _connect() as db:
+        row = db.execute(
+            "SELECT human_handling FROM conversations WHERE tenant_id = ? AND phone = ?",
+            (tenant_id, phone),
+        ).fetchone()
+    return bool(row and row["human_handling"])
+
+
+def close_lead(tenant_id: str, phone: str) -> None:
+    """Mark a lead closed (owner is done with it) so follow-ups won't fire."""
+    with _connect() as db:
+        db.execute(
+            "UPDATE conversations SET stage = 'closed', human_handling = 0, "
+            "updated_at = datetime('now') WHERE tenant_id = ? AND phone = ?",
+            (tenant_id, phone),
+        )
+
+
+def tg_map(chat_id: int, message_id: int, tenant_id: str, phone: str) -> None:
+    """Remember which lead a posted Telegram message is about."""
+    with _connect() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO tg_messages (chat_id, message_id, tenant_id, phone) "
+            "VALUES (?, ?, ?, ?)",
+            (chat_id, message_id, tenant_id, phone),
+        )
+
+
+def tg_lookup(chat_id: int, message_id: int) -> str | None:
+    """The customer phone a replied-to Telegram message belongs to, or None."""
+    with _connect() as db:
+        row = db.execute(
+            "SELECT phone FROM tg_messages WHERE chat_id = ? AND message_id = ?",
+            (chat_id, message_id),
+        ).fetchone()
+    return row["phone"] if row else None
