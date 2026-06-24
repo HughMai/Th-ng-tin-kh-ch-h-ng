@@ -9,6 +9,7 @@ The engine does not change between demo and production — only the front door
 does. See references/electrician-speed-to-lead-workflow.md for the full plan.
 """
 
+import os
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -18,6 +19,8 @@ load_dotenv()  # load ANTHROPIC_API_KEY from .env before the client is built
 
 import anthropic  # noqa: E402  (must import after load_dotenv)
 from pydantic import BaseModel  # noqa: E402
+
+from tenants import load_tenant  # noqa: E402  (local module, no env needed)
 
 MODEL = "claude-haiku-4-5"
 
@@ -32,6 +35,7 @@ class Qualified(BaseModel):
     job_type: Optional[str]
     urgency: Optional[Literal["emergency", "this_week", "flexible"]]
     suburb: Optional[str]
+    address: Optional[str]  # full street address — needed before a job can be booked
     property_type: Optional[Literal["home", "business", "rental"]]
 
 
@@ -43,8 +47,12 @@ class AgentTurn(BaseModel):
     triage: Optional[Literal["emergency", "bookable", "quote_first"]]
     qualified: Qualified
     electrician_notification: Optional[str]  # message shown on the sparky's phone
-    notification_kind: Optional[Literal["new_lead", "emergency", "quote", "booked"]]
-    booking: Optional[str]  # confirmed arrival window, once booked
+    notification_kind: Optional[
+        Literal["new_lead", "emergency", "quote", "booked", "callback"]
+    ]
+    booking: Optional[str]  # confirmed arrival window, human-readable, once booked
+    booking_start: Optional[str]  # ISO 8601 w/ offset, when a window is locked
+    booking_end: Optional[str]  # ISO 8601 w/ offset, when a window is locked
     conversation_complete: bool
 
 
@@ -88,19 +96,15 @@ several things at once, use them all and don't re-ask what you already know.
 1. QUALIFY — find out, conversationally:
    - what the electrical job actually is
    - how urgent it is (emergency now / sometime this week / flexible)
-   - what suburb they're in
-   - whether it's a home, a business, or a rental
+   - the full street address of the job (you need this before you can book —
+     get the actual address, not just the suburb; the suburb is implied by it)
+   - whether it's a home, a business, or a rental (only matters for the rental
+     rule below — don't make a point of asking it; infer it if you can)
 
 2. TRIAGE — once you know the job and how urgent it is, classify it:
-   - emergency — anything dangerous or a genuine power emergency: sparks, a \
-burning smell, smoke, exposed or live wires, a switchboard tripping over and \
-over, total loss of power. When in doubt on safety, treat it as an emergency.
-   - quote_first — bigger or open-ended work where Dave needs to see it or \
-price it before committing: rewires, renovation wiring, switchboard upgrades, \
-additions, or any time the customer is asking "how much".
-   - bookable — standard work with a clear, contained scope: replacing \
-powerpoints or switches, installing a supplied fan or light fitting, \
-fault-finding a single circuit, a safety inspection.
+   - emergency — <<emergency_def>>
+   - quote_first — <<quote_def>>
+   - bookable — <<bookable_def>>
 
 3. ACT on the triage:
    - emergency -> Reassure the customer and tell them you're getting Dave to \
@@ -112,12 +116,33 @@ needs to know now. Send the alert with whatever details you have and note \
 what is still unknown, then keep chatting to fill in the rest.
    - bookable -> Offer TWO specific arrival windows (electricians work in \
 windows like "Tuesday 8-11am", not exact times). When the customer picks one, \
-confirm it clearly and set booking.
+make sure you have the street address (ask for it if you don't), then confirm \
+the window clearly and set booking + booking_start + booking_end. \
+If the customer asks to book a specific time, treat that as picking a window — \
+confirm a window around their time and lock it in.
    - quote_first -> Get a short description of the scope, ask them to text \
 through a photo or two if they can, and let them know Dave will review it and \
 come back to them with a price today.
 
+# Other outcomes
+Not every chat ends in a booking. Handle these cleanly too:
+- callback — if the customer would rather a person just rang them (they don't \
+want to sort it over text), acknowledge it warmly and let them know Dave will \
+call them back. Set electrician_notification with a CALLBACK heads-up (name, \
+number, what they want) and notification_kind "callback".
+- not a job — if it is clearly not a real enquiry (spam, a wrong number, a \
+sales pitch, or someone already redirected as out of area), close it politely, \
+set stage to "closed" and conversation_complete to true, and do NOT notify \
+Dave. Don't waste his attention on noise.
+
 # Hard rules
+- NEVER ask the customer for their phone number — you already have it (it is \
+given to you with the conversation). Asking for it makes you look broken. You \
+may ask for their name once, if you don't have it.
+- If a job would normally be quote-first but the customer clearly wants to lock \
+in a time anyway ("just book it", "book it in"), book a window for the visit and \
+note that the exact price/scope gets sorted at that visit — do NOT refuse a \
+willing customer or bounce them to a phone callback.
 - NEVER give electrical advice, troubleshooting steps, or DIY instructions. It \
 is unsafe and unlicensed. If asked, tell them Dave will sort it out.
 - NEVER quote a price or estimate. Dave prices the work.
@@ -126,7 +151,7 @@ is unsafe and unlicensed. If asked, tell them Dave will sort it out.
 or agent usually has to approve non-emergency work — but still capture the job \
 and pass it to Dave.
 - Service area is Wollongong and the northern Illawarra. If the customer is \
-clearly well outside it, tell them honestly and suggest a closer sparky.
+clearly well outside it, tell them honestly and suggest a closer <<trade_slang>>.
 - Stay on task — you book electrical work for Dave's Electrical. Politely \
 redirect anything unrelated.
 
@@ -136,34 +161,30 @@ as a tight, scannable handoff — not a paragraph. Lead with a tag, then the \
 customer's name (if known), suburb, the job, the urgency, and what Dave should \
 do. Keep it to a couple of lines. For example:
 
-  NEW LEAD — enquiry just in: wants a price to rewire a house. Still getting \
-the details — will update you.
+<<notification_examples>>
 
-  URGENT — Sarah, Fairy Meadow. Burning smell + sparks from a kitchen \
-powerpoint, power still on. Told her to call 000 if it worsens. Call her back \
-now.
-
-  QUOTE — Tom, Corrimal. Wants a price to rewire a 3-bed house mid-reno. \
-Photos coming through. Review and quote today.
-
-  BOOKED — Jess, Woonona. Install 1 supplied ceiling fan, main bedroom. Tue \
-8-11am. Home, owner-occupied.
-
-Dave gets a notification at these four moments, and no others:
-- The customer's FIRST message — always. The instant a new enquiry lands, \
-send a short NEW LEAD heads-up with whatever they have told you, so Dave knows \
-a lead has come in even though you are only starting to qualify it. If that \
-first message is itself an emergency, send the URGENT alert instead — that \
-covers the heads-up.
+Dave gets a notification at these moments, and no others. In EVERY case send it \
+immediately, on the SAME turn the moment happens — never delay an alert to \
+collect a name, number, or suburb first (you already have their number). Send \
+with whatever you have and note what is still unknown.
+- The customer's FIRST message — ALWAYS, no exceptions. On your very first \
+reply to a new enquiry, set electrician_notification with a NEW LEAD heads-up, \
+EVEN IF you are also triaging or booking in that same turn. The only swap: if \
+that first message is itself an emergency, send the URGENT alert instead (it \
+covers the heads-up).
 - An emergency — the instant you spot one, even mid-qualifying and even if \
 details are still missing.
+- A confirmed booking — the moment the customer picks a window, send the \
+BOOKED alert on that same turn. Do NOT wait until you have their name.
+- A callback request — the moment they ask for a person to ring them, send the \
+CALLBACK alert on that same turn. Do NOT wait to qualify first.
 - A quote handed to Dave to price.
-- A confirmed booking.
-Between the first-message heads-up and the real handoff, keep \
-electrician_notification null — do not buzz Dave on every turn.
+After the first-message heads-up, between that and the next real handoff \
+(emergency / booking / callback / quote), keep electrician_notification null — \
+do not buzz Dave on every turn.
 
 Whenever you set electrician_notification, also set notification_kind to the \
-matching tag: new_lead, emergency, quote, or booked.
+matching tag: new_lead, emergency, quote, booked, or callback.
 
 # Following up on a quiet lead
 A customer who stops replying mid-conversation is usually just busy, not gone \
@@ -195,53 +216,153 @@ notes in here.
 - stage — qualifying / triaging / booking / escalated / closed.
 - triage — emergency / bookable / quote_first, or null if you don't know yet.
 - qualified — job_type, urgency (emergency / this_week / flexible), suburb, \
-property_type (home / business / rental). Fill in what you know; use null for \
-what you don't yet.
+address (full street address), property_type (home / business / rental). Fill \
+in what you know; use null for what you don't yet.
 - electrician_notification — the message for Dave's phone, or null. "The \
 notification to Dave" above sets out exactly when to send it.
 - notification_kind — when electrician_notification is set, what kind of \
-alert it is: new_lead / emergency / quote / booked. null otherwise.
+alert it is: new_lead / emergency / quote / booked / callback. null otherwise.
 - booking — the confirmed arrival window once the job is booked, otherwise \
 null.
+- booking_start / booking_end — when (and only when) a specific window is \
+locked in, also return these as ISO 8601 datetimes with the timezone offset \
+(e.g. 2026-06-24T08:00:00+10:00), worked out from the current date and time \
+provided to you. ALWAYS resolve to the NEXT upcoming occurrence from now — \
+never a date or time in the past. If the customer names a weekday that has \
+already passed this week (or is today but the time has gone), use the following \
+week. Leave both null until a window is actually confirmed.
 - conversation_complete — true once the job is booked or escalated as an \
 emergency, or the customer clearly ends the chat. A quote handed to Dave to \
 price is NOT complete — the customer still has to decide and come back, so \
 leave it false while anything is still in play.
 
-# Example exchanges (for tone and judgement — these are not scripts)
-
-Customer: "power's just gone out in half the house and i can smell something \
-hot near the meter box"
-You: "That definitely needs Dave on it fast — I'm getting him to call you \
-right now. If you spot any smoke or sparks at the meter box, ring 000 straight \
-away. Can I grab your name and suburb so he's got it?"
-(triage: emergency, stage: escalated)
-
-Customer: "how much to put in a couple of extra powerpoints in the garage"
-You: "Yep, Dave can sort that. Quick one so I get it to the right person — are \
-you in the Wollongong area, and is it a home or a business?"
-(still qualifying — get the basics before triaging or talking price)
-
-Customer: "just need an exhaust fan swapped in the bathroom, we've got the new \
-one here. home in Bulli."
-You: "Easy — that's a standard job. Dave's got two windows this week: \
-Wednesday 8-11am or Thursday 1-4pm. Which one suits you?"
-(triage: bookable, offer two windows)
-
-Customer: "are you an actual person?"
-You: "Good question — I'm an AI assistant helping Dave's team keep up with \
-messages so nothing slips through. Happy to get Dave to call you direct if \
-you'd prefer. What's the job you need done?"
-(honest disclosure, then back on task)
+<<examples_block>>
 """
 
-# Domain knowledge base — electrical-trades facts the assistant draws on.
-# Edit knowledge.md to update domain knowledge without touching code.
-KNOWLEDGE = (Path(__file__).parent / "knowledge.md").read_text(encoding="utf-8")
+# --- Per-tenant rendering (Phase 1) -----------------------------------------
+# SYSTEM_PROMPT above is authored for the reference tenant ("Dave's Electrical").
+# render_for_tenant swaps the identity terms for another tenant's values. For
+# the reference tenant every swap maps a value to itself, so the rendered prompt
+# is byte-identical to the original — behaviour is unchanged. This is the seam
+# the AI workflow-builder (Phase 2) edits, via the tenant config, not the code.
 
-# Full system prompt = behaviour/workflow rules + domain knowledge base.
-# Both are static, so the whole thing stays one stable, cacheable prefix.
-SYSTEM = SYSTEM_PROMPT + "\n\n" + KNOWLEDGE
+def render_for_tenant(text: str, t: dict) -> str:
+    """Render the prompt for tenant `t`. First inject the trade-specific blocks
+    (so a locksmith stops talking like an electrician), then swap the identity
+    terms. Order matters: trade blocks first (they may contain identity words),
+    then most-specific identity strings before shorter ones."""
+    owner = t["owner_name"]
+    return (
+        text
+        # trade-specific blocks (sentinels) — injected first
+        .replace("<<emergency_def>>", t["emergency_def"])
+        .replace("<<quote_def>>", t["quote_def"])
+        .replace("<<bookable_def>>", t["bookable_def"])
+        .replace("<<trade_slang>>", t["trade_slang"])
+        .replace("<<notification_examples>>", t["notification_examples"])
+        .replace("<<examples_block>>", t["examples_block"])
+        # identity terms
+        .replace("Dave's Electrical", t["business_name"])
+        .replace("Dave’s", f"{owner}’s")  # possessive, curly apostrophe
+        .replace("Dave's", f"{owner}'s")            # possessive, straight apostrophe
+        .replace("Dave", owner)
+        .replace(
+            "Wollongong and the northern Illawarra suburbs of NSW, Australia",
+            t["service_area"],
+        )
+        .replace("Wollongong and the northern Illawarra", t["service_area_short"])
+        .replace("Wollongong", t["city"])
+        .replace("electricians", f"{t['trade_noun']}s")
+        .replace("electrician", t["trade_noun"])
+        .replace("electrical", t["trade_adj"])
+    )
+
+
+# Per-tenant pricing behaviour. The reference prompt's hard rule is the "never"
+# wording, so a "never" tenant is unchanged; "ranges"/"full" swap the clause.
+QUOTING_RULES = {
+    "never": "NEVER quote a price or estimate. {owner} prices the work.",
+    "ranges": (
+        "You may give a rough ballpark range to set expectations, but make "
+        "clear {owner} confirms the exact price on site — never commit to a "
+        "firm figure."
+    ),
+    "full": (
+        "You may quote firm prices for jobs covered by your price list; for "
+        "anything not on the list, defer to {owner}."
+    ),
+}
+
+
+# For non-"never" tenants the single clause swap isn't enough — the rest of the
+# prompt (quote_first routing, examples) still pushes no-quote, so the model
+# follows the majority signal. A high-salience override at the very top wins.
+PRICING_OVERRIDE = {
+    "ranges": (
+        "# PRICING POLICY (this overrides any other guidance or example below)\n"
+        "This business gives rough price ranges. When the customer asks what "
+        "something will cost and you have enough detail to estimate, GIVE a "
+        "ballpark range (for example \"usually around $X-$Y\") and add that "
+        "{owner} confirms the exact price on site. Never flatly refuse to give "
+        "a number, and never commit to a firm figure.\n\n"
+    ),
+    "full": (
+        "# PRICING POLICY (this overrides any other guidance or example below)\n"
+        "This business quotes firm prices. When the customer asks what "
+        "something will cost and the job is covered by your price list, GIVE "
+        "the price directly. For anything not on the list, say {owner} will "
+        "confirm. Never flatly refuse to give a number.\n\n"
+    ),
+}
+
+
+def apply_quoting_policy(text: str, t: dict) -> str:
+    """Apply the tenant's quoting policy: swap the hard-rule pricing sentence,
+    and for non-"never" policies prepend a high-salience override so the model
+    actually quotes. "never" leaves the prompt unchanged."""
+    owner = t["owner_name"]
+    policy = t.get("quoting_policy", "never")
+    base = f"NEVER quote a price or estimate. {owner} prices the work."
+    clause = QUOTING_RULES.get(policy, QUOTING_RULES["never"]).format(owner=owner)
+    text = text.replace(base, clause)
+    override = PRICING_OVERRIDE.get(policy)
+    if override:
+        text = override.format(owner=owner) + text
+    return text
+
+
+def build_system(t: dict) -> str:
+    """Full system prompt for a tenant = rendered behaviour rules (identity +
+    quoting policy) + domain knowledge. Static per tenant, so it stays one
+    stable, cacheable prefix."""
+    text = apply_quoting_policy(render_for_tenant(SYSTEM_PROMPT, t), t)
+    # Domain knowledge is optional and trade-specific. A tenant without its own
+    # knowledge file (e.g. a freshly AI-built locksmith) gets none rather than
+    # inheriting another trade's facts.
+    knowledge_file = t.get("knowledge_file")
+    if knowledge_file:
+        kpath = Path(__file__).parent / knowledge_file
+        if kpath.exists():
+            return text + "\n\n" + kpath.read_text(encoding="utf-8")
+    return text
+
+
+# The fallback tenant when an inbound number doesn't match any configured
+# tenant (e.g. single-number deploys). TENANT_ID env override picks it.
+DEFAULT_TENANT = load_tenant(os.getenv("TENANT_ID", "dave"))
+SYSTEM = build_system(DEFAULT_TENANT)
+
+# Built system prompts are static per tenant, so cache them by tenant_id rather
+# than rebuilding on every inbound message.
+_SYSTEM_CACHE: dict[str, str] = {}
+
+
+def system_for(t: dict) -> str:
+    """The cached system prompt for a tenant (built once per tenant_id)."""
+    tid = t["tenant_id"]
+    if tid not in _SYSTEM_CACHE:
+        _SYSTEM_CACHE[tid] = build_system(t)
+    return _SYSTEM_CACHE[tid]
 
 
 def _log_usage(usage) -> None:
@@ -254,25 +375,34 @@ def _log_usage(usage) -> None:
     )
 
 
-def run_turn(messages: list[dict]) -> AgentTurn:
+def run_turn(
+    messages: list[dict], system: str | None = None, now_line: str | None = None
+) -> AgentTurn:
     """Run one turn of the conversation.
 
     `messages` is the full SMS thread so far in Anthropic format (a list of
-    alternating user/assistant messages). Returns the structured AgentTurn.
+    alternating user/assistant messages). `system` is the tenant's prompt
+    (defaults to the fallback tenant). `now_line` is an optional current-time
+    note (kept out of the cached prefix) so the model can compute ISO booking
+    times. Returns the structured AgentTurn.
     """
+    system_blocks = [
+        {
+            "type": "text",
+            "text": system or SYSTEM,
+            # Caches the workflow prompt so repeat turns pay ~0.1x for it
+            # instead of full price. On Haiku 4.5 this engages once the
+            # cached prefix is >= 4096 tokens — see README for detail.
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    if now_line:
+        # Volatile — must NOT be cached, so it goes in its own trailing block.
+        system_blocks.append({"type": "text", "text": now_line})
     response = client.messages.parse(
         model=MODEL,
         max_tokens=1024,
-        system=[
-            {
-                "type": "text",
-                "text": SYSTEM,
-                # Caches the workflow prompt so repeat turns pay ~0.1x for it
-                # instead of full price. On Haiku 4.5 this engages once the
-                # cached prefix is >= 4096 tokens — see README for detail.
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
+        system=system_blocks,
         messages=messages,
         output_format=AgentTurn,
     )
@@ -287,12 +417,13 @@ def run_turn(messages: list[dict]) -> AgentTurn:
     return response.parsed_output
 
 
-def run_followup(messages: list[dict], attempt: int) -> FollowUp:
+def run_followup(messages: list[dict], attempt: int, system: str | None = None) -> FollowUp:
     """Compose a follow-up for a lead that has gone quiet.
 
     `messages` is the conversation so far — it must end with the assistant's
     last reply. `attempt` is 1 for the first nudge (~2 hours later) or 2 for
-    the second (~24 hours later, the last). Returns the structured FollowUp.
+    the second (~24 hours later, the last). `system` is the tenant's prompt.
+    Returns the structured FollowUp.
     """
     gap = "about 2 hours" if attempt == 1 else "about a day"
     nudge_prompt = (
@@ -309,7 +440,7 @@ def run_followup(messages: list[dict], attempt: int) -> FollowUp:
         system=[
             {
                 "type": "text",
-                "text": SYSTEM,
+                "text": system or SYSTEM,
                 "cache_control": {"type": "ephemeral"},
             }
         ],

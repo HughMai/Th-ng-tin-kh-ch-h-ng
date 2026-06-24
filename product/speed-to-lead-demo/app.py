@@ -1,10 +1,9 @@
 """FastAPI server for the electrician speed-to-lead product.
 
-Two front doors onto the same conversation engine (`workflow.py`):
-
-- The web simulator (`index.html` + `/api/*`) — the laptop sales demo.
-- The Twilio webhooks (`/twilio/*`) — the live product. A real missed call or
-  SMS to the business number runs the same qualify -> triage -> book workflow.
+The conversation engine (`workflow.py`) is fronted by the Twilio webhooks
+(`/twilio/*`) — the live product. A real missed call or SMS to the business
+number runs the qualify -> triage -> book workflow. Owners watch their pipeline
+and take over leads from the dashboard (`/dashboard/*`).
 
 Run locally:  python -m uvicorn app:app --reload   (then http://127.0.0.1:8000)
 """
@@ -18,19 +17,21 @@ import os
 import secrets
 import time
 import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
 
-import anthropic
 from dotenv import load_dotenv
+
+# Load .env before the first-party imports below — gcal reads GOOGLE_CLIENT_ID at
+# import time, so the .env must be in os.environ first (matters for local dev;
+# in production Docker injects env vars directly).
+load_dotenv()
+
 from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 import accounts
-from pydantic import BaseModel
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.twiml.voice_response import VoiceResponse
 
@@ -41,9 +42,7 @@ import store
 import telegram_io
 import tenants
 import twilio_io
-from workflow import DEFAULT_TENANT, run_followup, run_turn, system_for
-
-load_dotenv()
+from workflow import DEFAULT_TENANT, run_turn, system_for
 
 HERE = Path(__file__).parent
 app = FastAPI(title="Speed-to-Lead")
@@ -54,6 +53,18 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 FALLBACK_OWNER_MOBILE = os.environ.get("ELECTRICIAN_MOBILE", "")
 
 store.configure(os.environ.get("DB_PATH", "data/leads.db"))
+
+
+def _base_url(request: Request) -> str:
+    """Public origin (scheme + host, no trailing slash) for building OAuth
+    redirect URIs. Prefer the configured public URL (production behind Caddy);
+    fall back to the request's own origin for local dev."""
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL
+    host = os.environ.get("PUBLIC_HOSTNAME", "").strip("/")
+    if host:
+        return f"https://{host}"
+    return str(request.base_url).rstrip("/")
 
 
 def _resolve_tenant(form: dict) -> dict:
@@ -143,55 +154,15 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-# --- Web simulator (the laptop sales demo) ----------------------------------
-
-class Msg(BaseModel):
-    role: Literal["customer", "ai"]
-    text: str
-
-
-class ChatRequest(BaseModel):
-    messages: list[Msg]
-
-
-class FollowUpRequest(BaseModel):
-    messages: list[Msg]
-    attempt: int  # 1 = first nudge (~2h later), 2 = second nudge (~24h later)
-
+# --- Root -> owner dashboard -------------------------------------------------
 
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(HERE / "index.html")
-
-
-@app.post("/api/message")
-def message(req: ChatRequest) -> dict:
-    # The browser holds the whole SMS thread and sends it each turn — the
-    # workflow engine is stateless, exactly as it will be behind a webhook.
-    conversation = [
-        {"role": "user" if m.role == "customer" else "assistant", "content": m.text}
-        for m in req.messages
-    ]
-    try:
-        turn = run_turn(conversation)
-    except anthropic.APIError as exc:
-        raise HTTPException(status_code=502, detail=f"Claude API error: {exc}")
-    return turn.model_dump()
-
-
-@app.post("/api/followup")
-def followup(req: FollowUpRequest) -> dict:
-    # The customer has gone quiet. Ask the engine to compose a nudge — or to
-    # decide the lead has had enough chasing and stop.
-    conversation = [
-        {"role": "user" if m.role == "customer" else "assistant", "content": m.text}
-        for m in req.messages
-    ]
-    try:
-        result = run_followup(conversation, req.attempt)
-    except anthropic.APIError as exc:
-        raise HTTPException(status_code=502, detail=f"Claude API error: {exc}")
-    return result.model_dump()
+def index(key: str = "") -> Response:
+    # The owner dashboard is the main board: hitting the site lands you there
+    # (it gates on login). Preserve the admin ?key= quick-access token across
+    # the redirect.
+    dest = "/dashboard" + (f"?key={urllib.parse.quote(key)}" if key else "")
+    return RedirectResponse(dest, status_code=303)
 
 
 # --- Twilio webhooks (the live product) -------------------------------------
@@ -305,9 +276,15 @@ async def twilio_sms(request: Request) -> Response:
     try:
         # Blocking Claude call — run it off the event loop so concurrent texts
         # aren't held up behind it. Use the tenant's own system prompt, plus a
-        # current-time note so it can compute ISO booking times.
+        # current-time note (for ISO booking times) and the customer's number
+        # (so the engine never has to ask the customer for it).
+        context_note = (
+            f"{_now_line(tenant)}\n\n"
+            f"The customer's mobile number is {customer}. You already have it — "
+            f"never ask the customer for their phone number."
+        )
         turn = await run_in_threadpool(
-            run_turn, thread, system_for(tenant), _now_line(tenant)
+            run_turn, thread, system_for(tenant), context_note
         )
     except Exception as exc:
         # Engine or API failure: fail open. Never drop a lead — reassure the
@@ -318,11 +295,15 @@ async def twilio_sms(request: Request) -> Response:
             f'[ATTN] Automation hiccup — {customer} texted in and needs a '
             f'callback. Their message: "{body}"',
         )
-        mr = MessagingResponse()
-        mr.message(
-            f"Thanks for your message — {tenant['owner_name']} will get back to you shortly."
+        # Same REST-not-TwiML reasoning as the success path below: if the engine
+        # failure was itself a timeout, a TwiML reassurance would already be too
+        # late for Twilio to deliver. Send from the tenant's own number.
+        twilio_io.send_sms(
+            customer,
+            f"Thanks for your message — {tenant['owner_name']} will get back to you shortly.",
+            from_=tenant.get("twilio_number"),
         )
-        return _twiml(str(mr))
+        return _twiml(str(MessagingResponse()))
 
     thread.append({"role": "assistant", "content": turn.reply})
     store.save_turn(tenant["tenant_id"], customer, thread, turn)
@@ -334,12 +315,23 @@ async def twilio_sms(request: Request) -> Response:
     if turn.booking_start and turn.booking_end and gcal.is_connected(tenant):
         start_iso, end_iso = _roll_to_future(turn.booking_start, turn.booking_end)
         try:
+            addr = turn.qualified.address or turn.qualified.suburb or ""
+            summary = f"{turn.qualified.job_type or 'Job'} — {customer}"
+            if addr:
+                summary += f" @ {addr}"
+            description = "\n".join(
+                p for p in (
+                    f"Address: {addr}" if addr else "",
+                    f"Customer: {customer}",
+                    turn.electrician_notification or turn.booking or "",
+                ) if p
+            )
             booking_link = gcal.create_event(
                 tenant,
-                summary=f"{turn.qualified.job_type or 'Job'} — {customer}",
+                summary=summary,
                 start_iso=start_iso,
                 end_iso=end_iso,
-                description=turn.electrician_notification or turn.booking or "",
+                description=description,
             )
         except Exception as exc:
             print(f"[gcal] booking failed for {tenant['tenant_id']}: {exc}")
@@ -350,9 +342,16 @@ async def twilio_sms(request: Request) -> Response:
             note += f"\nCalendar: {booking_link}"
         twilio_io.send_sms(owner, note)
 
-    mr = MessagingResponse()
-    mr.message(turn.reply)
-    return _twiml(str(mr))
+    # Deliver the customer reply via the REST API, not the webhook's TwiML
+    # response. A TwiML reply only reaches the customer if we answer before
+    # Twilio's ~15s webhook timeout — and the blocking Claude call above can blow
+    # past it on a slow turn, so Twilio discards the reply and never even logs an
+    # outbound message. The Telegram mirror is a separate call that still fires:
+    # exactly the "appears in Telegram but never hits the phone" bug. A REST send
+    # is decoupled from the response, so the reply lands regardless of timing.
+    # Send from the tenant's own number so the customer's thread stays intact.
+    twilio_io.send_sms(customer, turn.reply, from_=tenant.get("twilio_number"))
+    return _twiml(str(MessagingResponse()))
 
 
 @app.post("/telegram/webhook")
@@ -408,77 +407,6 @@ async def telegram_webhook(request: Request) -> Response:
             chat_id, f"🧑‍🔧 Sent to {phone}. AI paused — /resume to hand back.", rid
         )
     return Response(status_code=200)
-
-
-# --- Lead capture (demo simulator -> Telegram + JSONL) ----------------------
-# When a prospect engages the simulator and submits the CTA form, capture
-# their identity + a 1-line summary of what they asked the demo. Land it in
-# the persistent JSONL log AND ping Hughie's Telegram via the existing
-# @BaoBei09bot (the Hermes bot — see references/hermes-setup.md). No AI in
-# this loop; /outreach handles AI-drafted follow-up.
-
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-LEADS_PATH = Path(os.environ.get("LEADS_PATH", "data/leads.jsonl"))
-
-
-class LeadRequest(BaseModel):
-    name: str
-    business: str
-    contact: str  # phone or email — single field, prospect's choice
-    messages: list[Msg]  # the demo conversation thread so far
-
-
-@app.post("/api/lead")
-def lead(req: LeadRequest) -> dict:
-    record = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "name": req.name.strip(),
-        "business": req.business.strip(),
-        "contact": req.contact.strip(),
-        "summary": _summarize_for_lead(req.messages),
-        "n_messages": len(req.messages),
-    }
-    _append_lead(record)
-    _telegram_notify(record)
-    return {"ok": True}
-
-
-def _summarize_for_lead(messages: list[Msg]) -> str:
-    """1-line summary: the prospect's first message + the engine's last reply."""
-    first_c = next((m.text for m in messages if m.role == "customer"), "")
-    last_ai = next((m.text for m in reversed(messages) if m.role == "ai"), "")
-    return f"First: {first_c[:80]} | Last reply: {last_ai[:80]}"
-
-
-def _append_lead(record: dict) -> None:
-    LEADS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with LEADS_PATH.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
-
-
-def _telegram_notify(record: dict) -> None:
-    """Ping Hughie via the existing Hermes bot. Lead is logged regardless."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"[lead] no Telegram creds — saved to file only: {record['name']}")
-        return
-    text = (
-        f"[NEW LEAD] {record['name']} ({record['business']})\n"
-        f"Contact: {record['contact']}\n"
-        f"Demo: {record['summary']}\n"
-        f"({record['n_messages']} msgs)"
-    )
-    try:
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            data=urllib.parse.urlencode(
-                {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-            ).encode(),
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=10).close()
-    except Exception as exc:
-        print(f"[lead] Telegram notify failed (lead is still in JSONL): {exc}")
 
 
 # --- Owner dashboard + client logins ----------------------------------------
@@ -560,6 +488,30 @@ def _stat_cards(leads: list) -> str:
         f"<div class=stat><b>{n}</b><span>{_esc(f'{e} {label}')}</span></div>"
         for e, n, label in cards
     ) + "</div>"
+
+
+def _calendar_banner(tenant_id: str, t: dict, k: str) -> str:
+    """Self-serve Google Calendar status: connected ✓ or a Connect button."""
+    if not gcal.is_configured():
+        return ""  # OAuth not set up on this deployment — hide the control.
+    tid = _esc(tenant_id)
+    if gcal.is_connected(t):
+        cal = _esc((t.get("google_calendar") or {}).get("calendar_id", "primary"))
+        inner = (
+            f"<span>📅 Google Calendar connected ✓ <span class=muted>({cal})</span></span>"
+            f"<a class='btn alt' href='/dashboard/{tid}/calendar/connect?key={k}'>Reconnect</a>"
+        )
+    else:
+        inner = (
+            "<span>📅 Calendar not connected — confirmed jobs won't auto-book.</span>"
+            f"<a class=btn href='/dashboard/{tid}/calendar/connect?key={k}'>Connect Google Calendar</a>"
+        )
+    return (
+        "<div style='display:flex;justify-content:space-between;align-items:center;"
+        "gap:10px;flex-wrap:wrap;background:#fff;border-radius:10px;padding:12px 14px;"
+        "margin:0 0 14px;box-shadow:0 1px 3px rgba(0,0,0,.08)'>"
+        f"{inner}</div>"
+    )
 
 
 def _lead_card(tenant_id: str, lead: dict, k: str, cols: list) -> str:
@@ -790,6 +742,7 @@ def dashboard_tenant(tenant_id: str, request: Request, key: str = "") -> Respons
     order, labels, cols, explicit = _dashboard_cfg(t)
     body = (
         f"<p class=muted>{nav}</p><h1>{_esc(t['business_name'])}</h1>"
+        + _calendar_banner(tenant_id, t, k)
         + _stat_cards(all_leads)
     )
     # An explicit stage_order hides any stage not listed; otherwise show extras.
@@ -851,3 +804,57 @@ def dashboard_lead(
         f"<div class=row>{bubbles}</div>"
     )
     return _page(lead["phone"], body, brand=brand)
+
+
+# --- Self-serve Google Calendar connect -------------------------------------
+# The client clicks "Connect" on their dashboard -> we redirect them to Google
+# -> Google redirects back to /oauth/google/callback with a code -> we exchange
+# it for a refresh token and store it on their tenant. The `state` we sign is a
+# capability scoped to one tenant (short TTL): only this server can mint it, and
+# only after the connect route confirmed the caller may see that tenant.
+
+OAUTH_CALLBACK_PATH = "/oauth/google/callback"
+OAUTH_STATE_TTL = 600  # 10 minutes to complete the consent screen
+
+
+@app.get("/dashboard/{tenant_id}/calendar/connect")
+def calendar_connect(tenant_id: str, request: Request, key: str = "") -> Response:
+    user = _current_user(request, key)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not _can_see(user, tenant_id):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        tenants.load_tenant(tenant_id)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(status_code=404, detail="Unknown tenant")
+    if not gcal.is_configured():
+        raise HTTPException(status_code=503, detail="Google OAuth not configured")
+    redirect_uri = _base_url(request) + OAUTH_CALLBACK_PATH
+    state = _sign({"tenant_id": tenant_id, "key": key, "exp": int(time.time()) + OAUTH_STATE_TTL})
+    return RedirectResponse(gcal.authorization_url(redirect_uri, state), status_code=303)
+
+
+@app.get(OAUTH_CALLBACK_PATH)
+def google_callback(request: Request, code: str = "", state: str = "", error: str = "") -> Response:
+    if error:
+        return _page("Calendar", f"<h1>Connection cancelled</h1><p class=muted>{_esc(error)}</p>")
+    payload = _unsign(state)
+    if not payload or "tenant_id" not in payload:
+        raise HTTPException(status_code=400, detail="Invalid or expired state")
+    tenant_id = payload["tenant_id"]
+    key = payload.get("key", "")
+    redirect_uri = _base_url(request) + OAUTH_CALLBACK_PATH
+    try:
+        refresh_token = gcal.exchange_code(redirect_uri, code)
+    except Exception as exc:  # surface Google errors as a friendly page, not a 500
+        return _page("Calendar", f"<h1>Couldn't connect</h1><p class=muted>{_esc(exc)}</p>")
+    if not refresh_token:
+        return _page(
+            "Calendar",
+            "<h1>Almost there</h1><p>Google didn't return a refresh token. "
+            "Please click Connect again and approve the consent screen.</p>",
+        )
+    tenants.save_google_calendar(tenant_id, refresh_token)
+    dest = f"/dashboard/{tenant_id}" + (f"?key={urllib.parse.quote(key)}" if key else "")
+    return RedirectResponse(dest, status_code=303)

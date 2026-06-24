@@ -18,16 +18,25 @@ from twilio.request_validator import RequestValidator
 from twilio.rest import Client
 
 
+def _credential(primary: str, legacy: str) -> str:
+    """Read the documented env name, with the original local name as fallback."""
+    value = os.environ.get(primary) or os.environ.get(legacy)
+    if not value:
+        raise KeyError(primary)
+    return value
+
+
 @lru_cache(maxsize=1)
 def _client() -> Client:
     return Client(
-        os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"]
+        _credential("TWILIO_ACCOUNT_SID", "Twilio_SID"),
+        _credential("TWILIO_AUTH_TOKEN", "Twilio_Auth"),
     )
 
 
 @lru_cache(maxsize=1)
 def _validator() -> RequestValidator:
-    return RequestValidator(os.environ["TWILIO_AUTH_TOKEN"])
+    return RequestValidator(_credential("TWILIO_AUTH_TOKEN", "Twilio_Auth"))
 
 
 def is_valid_twilio_request(url: str, form: dict, signature: str) -> bool:
@@ -39,8 +48,10 @@ def is_valid_twilio_request(url: str, form: dict, signature: str) -> bool:
     return _validator().validate(url, form, signature)
 
 
-def send_sms(to: str, body: str) -> None:
-    """Send an SMS from the business number."""
+def send_sms(to: str, body: str, from_: str | None = None) -> None:
+    """Send an SMS. Defaults to the platform number (TWILIO_NUMBER); pass
+    `from_` to send from a specific tenant's own number — customer-facing replies
+    must come from the number the customer originally texted."""
     _client().messages.create(
-        to=to, from_=os.environ["TWILIO_NUMBER"], body=body
+        to=to, from_=from_ or os.environ["TWILIO_NUMBER"], body=body
     )

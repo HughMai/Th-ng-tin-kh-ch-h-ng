@@ -2,3 +2,8 @@
 .env
 __pycache__/
 data/
+
+# Tenant configs hold per-client secrets (Google refresh tokens, numbers) and are
+# per-deployment data, not source. They live on the VPS. Keep only the template.
+tenants/*.json
+!tenants/example.json
