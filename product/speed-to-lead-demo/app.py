@@ -476,18 +476,28 @@ def _ago(ts: str) -> str:
 
 
 def _stat_cards(leads: list) -> str:
-    """At-a-glance ROI cards above the pipeline."""
+    """At-a-glance pipeline counts above the lead list. Each card jumps to its
+    stage section."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    total = len(leads)
+    booked = sum(1 for l in leads if l.get("booking"))
+    missed = sum(1 for l in leads if l.get("stage") == "missed_call")
+    new_today = sum(1 for l in leads if (l.get("created_at") or "").startswith(today))
     cards = (
-        ("🆕", sum(1 for l in leads if (l.get("created_at") or "").startswith(today)), "new today"),
-        ("📞", sum(1 for l in leads if l.get("stage") == "missed_call"), "missed calls"),
-        ("📅", sum(1 for l in leads if l.get("booking")), "booked"),
-        ("📋", len(leads), "total leads"),
+        ("🆕", new_today, "new today", ""),
+        ("📞", missed, "missed calls", "#stage-missed_call"),
+        ("✅", booked, "booked", "#stage-booking"),
+        ("📋", total, "total leads", "#top"),
     )
-    return "<div class=cards>" + "".join(
-        f"<div class=stat><b>{n}</b><span>{_esc(f'{e} {label}')}</span></div>"
-        for e, n, label in cards
-    ) + "</div>"
+    cells = ""
+    for e, n, label, href in cards:
+        inner = f"<b>{n}</b><span>{_esc(f'{e} {label}')}</span>"
+        cells += (
+            f"<a class='stat link' href='{href}'>{inner}</a>"
+            if href
+            else f"<div class=stat>{inner}</div>"
+        )
+    return "<div class=cards>" + cells + "</div>"
 
 
 def _calendar_banner(tenant_id: str, t: dict, k: str) -> str:
@@ -497,21 +507,18 @@ def _calendar_banner(tenant_id: str, t: dict, k: str) -> str:
     tid = _esc(tenant_id)
     if gcal.is_connected(t):
         cal = _esc((t.get("google_calendar") or {}).get("calendar_id", "primary"))
+        cls = "banner ok"
         inner = (
             f"<span>📅 Google Calendar connected ✓ <span class=muted>({cal})</span></span>"
             f"<a class='btn alt' href='/dashboard/{tid}/calendar/connect?key={k}'>Reconnect</a>"
         )
     else:
+        cls = "banner warn"
         inner = (
             "<span>📅 Calendar not connected — confirmed jobs won't auto-book.</span>"
             f"<a class=btn href='/dashboard/{tid}/calendar/connect?key={k}'>Connect Google Calendar</a>"
         )
-    return (
-        "<div style='display:flex;justify-content:space-between;align-items:center;"
-        "gap:10px;flex-wrap:wrap;background:#fff;border-radius:10px;padding:12px 14px;"
-        "margin:0 0 14px;box-shadow:0 1px 3px rgba(0,0,0,.08)'>"
-        f"{inner}</div>"
-    )
+    return f"<div class='{cls}'>{inner}</div>"
 
 
 def _lead_card(tenant_id: str, lead: dict, k: str, cols: list) -> str:
@@ -537,8 +544,9 @@ def _lead_card(tenant_id: str, lead: dict, k: str, cols: list) -> str:
         if "booking" in cols and lead.get("booking")
         else ""
     )
+    card_cls = "lead emergency-card" if tri == "emergency" else "lead"
     return (
-        "<div class=lead><div class=top>"
+        f"<div class='{card_cls}'><div class=top>"
         f"<a class=ph href='/dashboard/{_esc(tenant_id)}/lead?phone={ph_q}&key={k}'>{_esc(ph)}</a>"
         f"<span>{badges}</span></div>"
         + (f"<div class=meta>{meta}</div>" if meta else "")
@@ -597,6 +605,7 @@ def _page(
     body: str,
     brand: str = "Speed-to-Lead — Owner Dashboard",
     auto_refresh: int = 0,
+    header_extra: str = "",
 ) -> HTMLResponse:
     refresh = f"<meta http-equiv=refresh content={auto_refresh}>" if auto_refresh else ""
     return HTMLResponse(
@@ -606,33 +615,74 @@ def _page(
         " viewBox='0 0 100 100'><text y='.9em' font-size='90'>%F0%9F%93%9E</text></svg>\">"
         f"{refresh}"
         f"<title>{_esc(title)}</title><style>"
-        "body{font:15px/1.5 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1a1a1a}"
-        "header{background:#111;color:#fff;padding:14px 20px;font-weight:600}"
-        "main{max-width:980px;margin:0 auto;padding:20px}"
-        "a{color:#1558d6;text-decoration:none}a:hover{text-decoration:underline}"
-        "table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;"
-        "overflow:hidden;margin:8px 0 22px;box-shadow:0 1px 3px rgba(0,0,0,.08)}"
-        "th,td{text-align:left;padding:9px 12px;border-bottom:1px solid #eee;font-size:14px;vertical-align:top}"
-        "th{background:#fafafa;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:#666}"
-        "h1{font-size:20px;margin:6px 0}h2{margin:18px 0 6px;font-size:15px}"
-        ".badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:#eef}"
-        ".emergency{background:#fde8e8;color:#b91c1c}.muted{color:#888}"
-        ".recall{background:#fff3cd;color:#92600a}"
-        ".bubble{max-width:78%;padding:8px 12px;border-radius:12px;margin:6px 0;white-space:pre-wrap}"
-        ".cust{background:#eef1f6}.ai{background:#dcf5e6;margin-left:auto}"
-        ".row{display:flex;flex-direction:column}"
-        # Tier 1 dashboard UI: stat cards, lead cards, one-tap action buttons.
-        ".cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:12px 0 18px}"
-        ".stat{background:#fff;border-radius:10px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}"
-        ".stat b{display:block;font-size:26px;line-height:1.1}.stat span{font-size:12px;color:#666}"
-        ".lead{background:#fff;border-radius:10px;padding:12px 14px;margin:8px 0;box-shadow:0 1px 3px rgba(0,0,0,.08)}"
+        # Clean SaaS (light) design system — tokens.
+        ":root{--bg:#f4f5f7;--card:#fff;--line:#e8e9ee;--ink:#15171c;--muted:#6b7280;"
+        "--accent:#2563eb;--accent-soft:#eef3ff;--ok:#15803d;--ok-soft:#e8f6ec;"
+        "--danger:#dc2626;--danger-soft:#fdeceb;--warn:#b45309;--warn-soft:#fff4e2;"
+        "--shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08)}"
+        "*{box-sizing:border-box}"
+        "body{font:15px/1.55 -apple-system,system-ui,'Segoe UI',Roboto,sans-serif;margin:0;"
+        "background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}"
+        "header{position:sticky;top:0;z-index:5;background:rgba(255,255,255,.92);"
+        "backdrop-filter:saturate(1.4) blur(8px);border-bottom:1px solid var(--line)}"
+        ".hwrap{max-width:980px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;"
+        "justify-content:space-between;gap:12px;flex-wrap:wrap}"
+        ".brand{font-weight:700;font-size:16px;letter-spacing:-.01em}"
+        ".chip{display:inline-flex;align-items:center;gap:6px;background:var(--accent-soft);"
+        "color:var(--accent);font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:99px}"
+        "main{max-width:980px;margin:0 auto;padding:22px 20px 48px}"
+        "a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}"
+        "h1{font-size:22px;letter-spacing:-.02em;margin:6px 0 2px}"
+        "h2{margin:26px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}"
+        ".muted{color:var(--muted)}"
+        "table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);"
+        "border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:10px 0 22px;box-shadow:var(--shadow)}"
+        "th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:top}"
+        "tr:last-child td{border-bottom:0}"
+        "th{background:#fbfbfc;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}"
+        "table tr:hover td{background:#fafbff}"
+        # At-a-glance stat cards.
+        ".cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:14px 0 20px}"
+        ".stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;"
+        "box-shadow:var(--shadow);display:block;color:inherit}"
+        "a.stat.link{transition:transform .08s ease,box-shadow .08s ease}"
+        "a.stat.link:hover{text-decoration:none;transform:translateY(-1px);"
+        "box-shadow:0 4px 12px rgba(16,24,40,.10);border-color:#d6d9e2}"
+        ".stat b{display:block;font-size:28px;font-weight:700;letter-spacing:-.02em;line-height:1.1}"
+        ".stat span{font-size:12.5px;color:var(--muted)}"
+        # Lead cards.
+        ".lead{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;"
+        "margin:10px 0;box-shadow:var(--shadow)}"
+        ".lead.emergency-card{border-left:3px solid var(--danger)}"
         ".lead .top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}"
-        ".ph{font-weight:600;font-size:16px}"
-        ".lead .meta{color:#555;font-size:14px;margin:4px 0}.booked{color:#0a7d33;font-weight:600}"
-        ".foot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}"
-        ".btn{display:inline-block;padding:7px 14px;border-radius:6px;background:#1558d6;color:#fff;font-size:13px}"
-        ".btn:hover{text-decoration:none;opacity:.92}.btn.alt{background:#eef;color:#1558d6}"
-        f"</style></head><body><header>{_esc(brand)}</header><main>{body}</main></body></html>"
+        ".ph{font-weight:700;font-size:16px;letter-spacing:-.01em}"
+        ".lead .meta{color:#4b5563;font-size:14px;margin:6px 0}.booked{color:var(--ok);font-weight:600}"
+        ".foot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap}"
+        # Badges.
+        ".badge{display:inline-block;padding:3px 9px;border-radius:99px;font-size:11.5px;font-weight:600;"
+        "background:var(--accent-soft);color:var(--accent)}"
+        ".emergency{background:var(--danger-soft);color:var(--danger)}"
+        ".recall{background:var(--warn-soft);color:var(--warn)}"
+        # Buttons.
+        ".btn{display:inline-block;padding:8px 15px;border-radius:8px;background:var(--accent);color:#fff;"
+        "font-size:13px;font-weight:600}.btn:hover{text-decoration:none;filter:brightness(1.05)}"
+        ".btn.alt{background:var(--accent-soft);color:var(--accent)}"
+        # Self-serve calendar banner.
+        ".banner{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;"
+        "background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;"
+        "margin:0 0 14px;box-shadow:var(--shadow)}"
+        ".banner.ok{background:var(--ok-soft);border-color:#cfe9d6}"
+        ".banner.warn{background:var(--warn-soft);border-color:#f3e2c2}"
+        # Conversation bubbles (lead detail).
+        ".row{display:flex;flex-direction:column;gap:2px}"
+        ".bubble{max-width:78%;padding:9px 13px;border-radius:14px;margin:4px 0;white-space:pre-wrap;"
+        "font-size:14px;box-shadow:var(--shadow)}"
+        ".bubble b{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}"
+        ".cust{background:var(--card);border:1px solid var(--line)}"
+        ".ai{background:var(--accent-soft);margin-left:auto}"
+        "</style></head><body><header><div class=hwrap>"
+        f"<span class=brand>{_esc(brand)}</span>{header_extra}</div></header>"
+        f"<main>{body}</main></body></html>"
     )
 
 
@@ -741,7 +791,7 @@ def dashboard_tenant(tenant_id: str, request: Request, key: str = "") -> Respons
     )
     order, labels, cols, explicit = _dashboard_cfg(t)
     body = (
-        f"<p class=muted>{nav}</p><h1>{_esc(t['business_name'])}</h1>"
+        f"<p id=top class=muted>{nav}</p><h1>{_esc(t['business_name'])}</h1>"
         + _calendar_banner(tenant_id, t, k)
         + _stat_cards(all_leads)
     )
@@ -754,7 +804,7 @@ def dashboard_tenant(tenant_id: str, request: Request, key: str = "") -> Respons
             continue
         shown = True
         label = labels.get(stage, stage.title())
-        body += f"<h2>{_esc(label)} ({len(items)})</h2>"
+        body += f"<h2 id='stage-{_esc(stage)}'>{_esc(label)} ({len(items)})</h2>"
         body += "".join(_lead_card(tenant_id, lead, k, cols) for lead in items)
     if not shown:
         body += (
@@ -762,7 +812,11 @@ def dashboard_tenant(tenant_id: str, request: Request, key: str = "") -> Respons
             "lands here automatically.</p>"
         )
     return _page(
-        t["business_name"], body, brand=f"{t['business_name']} — Leads", auto_refresh=30
+        t["business_name"],
+        body,
+        brand=f"{t['business_name']} — Leads",
+        auto_refresh=30,
+        header_extra="<span class=chip>⚡ AI replies in seconds · 24/7</span>",
     )
 
 
