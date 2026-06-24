@@ -22,7 +22,7 @@ from pydantic import BaseModel  # noqa: E402
 
 from tenants import load_tenant  # noqa: E402  (local module, no env needed)
 
-MODEL = "claude-haiku-4-5"
+MODEL = "claude-sonnet-4-6"
 
 client = anthropic.Anthropic(max_retries=4)  # key from env; retries ride out transient 429/529 overloads
 
