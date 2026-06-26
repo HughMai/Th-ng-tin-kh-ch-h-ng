@@ -55,3 +55,35 @@ def send_sms(to: str, body: str, from_: str | None = None) -> None:
     _client().messages.create(
         to=to, from_=from_ or os.environ["TWILIO_NUMBER"], body=body
     )
+
+
+def place_call(
+    to: str,
+    twiml: str,
+    from_: str | None = None,
+    status_callback: str | None = None,
+) -> str:
+    """Place an outbound call and return its CallSid.
+
+    `twiml` is the inline TwiML to run when the call connects — for the voice
+    callback that's a <Connect><Stream> to the media bridge. From the tenant's
+    own number so the caller sees the business they just rang. `status_callback`
+    is hit when the call ends; if it went to voicemail or wasn't answered, the
+    caller is dropped to the SMS fallback. Answering-machine detection is on so
+    the agent never starts talking to a voicemail greeting.
+    """
+    call = _client().calls.create(
+        to=to,
+        from_=from_ or os.environ["TWILIO_NUMBER"],
+        twiml=twiml,
+        machine_detection="Enable",
+        status_callback=status_callback,
+        status_callback_event=["completed"] if status_callback else None,
+    )
+    return call.sid
+
+
+def hang_up(call_sid: str) -> None:
+    """End a live call. Used by the voice agent's end_call tool to hang up once
+    the conversation is genuinely finished."""
+    _client().calls(call_sid).update(status="completed")

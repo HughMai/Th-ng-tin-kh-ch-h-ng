@@ -29,23 +29,28 @@ load_dotenv()
 
 from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import accounts
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.twiml.voice_response import VoiceResponse
+from twilio.twiml.voice_response import Connect, VoiceResponse
 
 from zoneinfo import ZoneInfo
 
 import gcal
+import report
 import store
 import telegram_io
 import tenants
 import twilio_io
 from workflow import DEFAULT_TENANT, run_turn, system_for
+from voice_server import router as voice_router
 
 HERE = Path(__file__).parent
 app = FastAPI(title="Speed-to-Lead")
+# Live voice agent: Twilio Media Streams <-> Deepgram. The /twilio/voice-stream
+# WebSocket and the /voice/probe check live in voice_server.py.
+app.include_router(voice_router)
 
 # --- Config (from environment) ----------------------------------------------
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
@@ -65,6 +70,13 @@ def _base_url(request: Request) -> str:
     if host:
         return f"https://{host}"
     return str(request.base_url).rstrip("/")
+
+
+def _ws_url(request: Request, path: str) -> str:
+    """wss:// origin for a Twilio Media Stream path. Same host as the public base
+    URL; Caddy upgrades the WebSocket transparently."""
+    host = _base_url(request).replace("https://", "").replace("http://", "").rstrip("/")
+    return f"wss://{host}{path}"
 
 
 def _resolve_tenant(form: dict) -> dict:
@@ -154,6 +166,57 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+CANARY_TOKEN = os.environ.get("CANARY_TOKEN", "")
+
+
+@app.get("/health/deep")
+async def health_deep(token: str = "") -> Response:
+    """Deep liveness for the synthetic canary. Proves the things that silently
+    break and drop leads — the Claude engine and the database — actually work,
+    not just that the process is up. Runs one real (tiny) engine turn and one DB
+    round-trip; creates NO lead and sends NO SMS. Returns 200 only if all checks
+    pass, else 503 with the failing check. Token-gated so it can't be abused to
+    burn API calls (the canary passes ?token=)."""
+    if CANARY_TOKEN and not secrets.compare_digest(token, CANARY_TOKEN):
+        raise HTTPException(status_code=403, detail="bad token")
+
+    started = time.perf_counter()
+    checks: dict[str, str] = {}
+    ok = True
+
+    try:
+        # Harmless write+read through the real DB path.
+        store.mark_seen(f"canary:{int(time.time() * 1000)}")
+        checks["db"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        ok = False
+        checks["db"] = f"error: {exc}"
+
+    try:
+        turn = await run_in_threadpool(
+            run_turn,
+            [{"role": "user", "content": "ping"}],
+            system_for(DEFAULT_TENANT),
+        )
+        if turn.reply:
+            checks["engine"] = "ok"
+        else:
+            ok = False
+            checks["engine"] = "error: empty reply"
+    except Exception as exc:  # noqa: BLE001
+        ok = False
+        checks["engine"] = f"error: {exc}"
+
+    return JSONResponse(
+        {
+            "status": "ok" if ok else "fail",
+            "checks": checks,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        },
+        status_code=200 if ok else 503,
+    )
+
+
 # --- Root -> owner dashboard -------------------------------------------------
 
 @app.get("/")
@@ -202,6 +265,16 @@ async def twilio_voice(request: Request) -> Response:
     form = await _twilio_form(request)
     tenant = _resolve_tenant(form)
     vr = VoiceResponse()
+    if tenant.get("voice_answer"):
+        # The AI picks up instantly: stream the live call to the Deepgram voice
+        # agent (voice_server.py). tenant_id is passed through so the bridge
+        # loads the right trade brain. Mutually exclusive with the owner-dial and
+        # text-back paths below.
+        connect = Connect()
+        stream = connect.stream(url=_ws_url(request, "/twilio/voice-stream"))
+        stream.parameter(name="tenant_id", value=tenant["tenant_id"])
+        vr.append(connect)
+        return _twiml(str(vr))
     if tenant.get("voice_textback_only"):
         vr.say(
             tenant.get("voice_greeting")
@@ -212,7 +285,10 @@ async def twilio_voice(request: Request) -> Response:
             )
         )
         caller = form.get("From")
-        if caller:
+        # Idempotency: a retried voice webhook would fire a second text-back.
+        sid = form.get("CallSid")
+        already = bool(sid) and not store.mark_seen(f"voice:{sid}")
+        if caller and not already:
             twilio_io.send_sms(caller, tenant["opener_sms"])
             is_new = not store.lead_exists(tenant["tenant_id"], caller)
             store.log_missed_call(tenant["tenant_id"], caller)
@@ -236,6 +312,11 @@ async def twilio_voice_status(request: Request) -> Response:
     text. Static by design: still sends when the Claude engine is unreachable."""
     form = await _twilio_form(request)
     if form.get("DialCallStatus") in MISSED_CALL_STATUSES:
+        # Idempotency: a retried voice-status webhook would text the caller back
+        # twice and double-count the missed call. First hit wins.
+        sid = form.get("CallSid")
+        if sid and not store.mark_seen(f"voicestatus:{sid}"):
+            return _twiml("<Response/>")
         caller = form.get("From")
         if caller:
             tenant = _resolve_tenant(form)
@@ -258,6 +339,13 @@ async def twilio_sms(request: Request) -> Response:
     customer = form.get("From", "")
     body = (form.get("Body") or "").strip()
     tid = tenant["tenant_id"]
+
+    # Idempotency: Twilio retries this webhook (same MessageSid) if our reply is
+    # slow. Without this guard the engine runs again and the customer is texted
+    # twice. The first hit wins; retries are silently acknowledged.
+    sid = form.get("MessageSid")
+    if sid and not store.mark_seen(f"sms:{sid}"):
+        return _twiml(str(MessagingResponse()))
 
     # Mirror the inbound text to the owner's Telegram (and announce a new lead).
     if not store.lead_exists(tid, customer):
@@ -789,9 +877,13 @@ def dashboard_tenant(tenant_id: str, request: Request, key: str = "") -> Respons
         if user["role"] == "admin"
         else "<a href='/logout'>log out</a>"
     )
+    report_link = (
+        f"<a href='/dashboard/{_esc(tenant_id)}/report?key={k}'>📈 Results report</a>"
+    )
     order, labels, cols, explicit = _dashboard_cfg(t)
     body = (
-        f"<p id=top class=muted>{nav}</p><h1>{_esc(t['business_name'])}</h1>"
+        f"<p id=top class=muted>{nav} · {report_link}</p>"
+        f"<h1>{_esc(t['business_name'])}</h1>"
         + _calendar_banner(tenant_id, t, k)
         + _stat_cards(all_leads)
     )
@@ -858,6 +950,83 @@ def dashboard_lead(
         f"<div class=row>{bubbles}</div>"
     )
     return _page(lead["phone"], body, brand=brand)
+
+
+# --- Owner ROI report -------------------------------------------------------
+# The proof that justifies the invoice: what the AI caught and booked over a
+# period, with a conservative dollar value (booked jobs only). See report.py.
+
+REPORT_PERIODS = (7, 30, 90)
+
+
+@app.get("/dashboard/{tenant_id}/report")
+def dashboard_report(
+    tenant_id: str, request: Request, key: str = "", days: int = 30
+) -> Response:
+    user = _current_user(request, key)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not _can_see(user, tenant_id):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        t = tenants.load_tenant(tenant_id)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(status_code=404, detail="Unknown tenant")
+    if days not in REPORT_PERIODS:
+        days = 30
+    k = urllib.parse.quote(key)
+    r = report.build(t, days)
+
+    # Period switcher (7 / 30 / 90 days), current one bolded.
+    switch = " · ".join(
+        (
+            f"<b>last {d} days</b>"
+            if d == days
+            else f"<a href='/dashboard/{_esc(tenant_id)}/report?days={d}&key={k}'>last {d} days</a>"
+        )
+        for d in REPORT_PERIODS
+    )
+
+    # Headline: the dollar figure that makes the value visible.
+    hero = (
+        "<div class='lead' style='text-align:center;padding:26px 16px'>"
+        f"<div style='font-size:40px;font-weight:700;letter-spacing:-.02em;line-height:1.1'>"
+        f"≈ ${r['booked_value']:,}</div>"
+        "<div class=muted style='margin-top:6px'>estimated value of work booked</div>"
+        "</div>"
+    )
+
+    cards = [
+        (r["leads"], "📋 enquiries caught"),
+        (r["missed_calls"], "📞 missed calls texted back"),
+        (r["booked"], "✅ jobs booked"),
+        (r["emergencies"], "🔴 emergencies escalated"),
+        (r["quotes"], "📝 quotes sent"),
+    ]
+    cells = "".join(
+        f"<div class=stat><b>{_esc(n)}</b><span>{_esc(label)}</span></div>"
+        for n, label in cards
+    )
+    grid = f"<div class=cards>{cells}</div>"
+
+    footnote = (
+        "<p class=muted style='font-size:12.5px'>Value is a conservative estimate: "
+        f"booked jobs × ${r['avg_job_value']:,} average job value. Quotes and "
+        "emergencies aren't priced in.</p>"
+    )
+
+    body = (
+        f"<p id=top class=muted><a href='/dashboard/{_esc(tenant_id)}?key={k}'>← back to leads</a></p>"
+        f"<h1>Your results</h1><p class=muted>{switch}</p>"
+        + hero
+        + grid
+        + footnote
+    )
+    return _page(
+        f"{t['business_name']} — Results",
+        body,
+        brand=f"{t['business_name']} — Results",
+    )
 
 
 # --- Self-serve Google Calendar connect -------------------------------------

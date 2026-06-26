@@ -62,6 +62,17 @@ def configure(db_path: str) -> None:
         ):
             if col not in existing:
                 db.execute(f"ALTER TABLE conversations ADD COLUMN {col} {ddl}")
+        # Twilio retries a webhook (same MessageSid/CallSid) when our response is
+        # slow — without dedup that re-runs the engine and texts the customer
+        # twice. This table records every event id we've already handled.
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processed_events (
+                event_key  TEXT PRIMARY KEY,
+                seen_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
         # Maps a Telegram message we posted -> the lead it's about, so when the
         # owner replies to that message we know which customer to text.
         db.execute(
@@ -125,6 +136,34 @@ def list_leads(tenant_id: str) -> list[dict]:
         d["messages"] = len(thread)
         leads.append(d)
     return leads
+
+
+def report_counts(tenant_id: str, since_iso: str) -> dict:
+    """Aggregate counts for leads created since `since_iso` (a UTC
+    'YYYY-MM-DD HH:MM:SS' string — same format created_at is stored in, so a
+    lexical >= comparison is a real date filter). Powers the owner ROI report:
+    how many leads came in, how many would have been missed calls, and what the
+    AI booked / escalated / sent to quote in the window. SUM(...) is NULL when no
+    rows match, so each is coalesced to 0."""
+    with _connect() as db:
+        row = db.execute(
+            """
+            SELECT
+                COUNT(*) AS leads,
+                COALESCE(SUM(CASE WHEN call_count > 0 THEN 1 ELSE 0 END), 0)
+                    AS missed_calls,
+                COALESCE(SUM(CASE WHEN booking IS NOT NULL AND booking != ''
+                    THEN 1 ELSE 0 END), 0) AS booked,
+                COALESCE(SUM(CASE WHEN triage = 'emergency' OR stage = 'escalated'
+                    THEN 1 ELSE 0 END), 0) AS emergencies,
+                COALESCE(SUM(CASE WHEN triage = 'quote_first' THEN 1 ELSE 0 END), 0)
+                    AS quotes
+            FROM conversations
+            WHERE tenant_id = ? AND created_at >= ?
+            """,
+            (tenant_id, since_iso),
+        ).fetchone()
+    return dict(row)
 
 
 def lead_detail(tenant_id: str, phone: str) -> dict | None:
@@ -261,6 +300,20 @@ def close_lead(tenant_id: str, phone: str) -> None:
             "updated_at = datetime('now') WHERE tenant_id = ? AND phone = ?",
             (tenant_id, phone),
         )
+
+
+def mark_seen(event_key: str) -> bool:
+    """Record a Twilio event id (e.g. 'sms:<MessageSid>') and return True the
+    FIRST time it's seen, False on a duplicate. The insert-or-ignore is atomic,
+    so two racing retries can't both come back True — exactly one wins and
+    processes the event; the rest are no-ops. This is the idempotency guard that
+    stops a slow turn from texting the customer twice."""
+    with _connect() as db:
+        cur = db.execute(
+            "INSERT OR IGNORE INTO processed_events (event_key) VALUES (?)",
+            (event_key,),
+        )
+        return cur.rowcount == 1
 
 
 def tg_map(chat_id: int, message_id: int, tenant_id: str, phone: str) -> None:

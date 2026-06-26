@@ -761,3 +761,126 @@ Both distilled from `context/about-me.md`, `context/about-business.md`, `context
 **Artifacts:** `tenants/rapidflow-plumbing.json`, `voice_textback_only` branch in `app.py` `/twilio/voice`, VPS `/opt/speed-to-lead` rebuilt + redeployed.
 
 **Owner:** Hughie
+
+---
+
+## 2026-06-24 — Self-serve calendar connect + conversation-engine fixes shipped to live prod
+
+**Decision:** Clients can now connect their Google Calendar themselves from their dashboard (a "Connect Google Calendar" button → web OAuth → back to "Connected ✓"), instead of Hughie running `connect_calendar.py` per client. Also fixed three conversation-engine defects found in a live RapidFlow test and shipped everything to the production VPS.
+
+**What shipped (live on `https://stl.187-77-133-39.sslip.io`):**
+- **Self-serve calendar OAuth.** New web-flow helpers in `gcal.py` (`is_configured`, `authorization_url`, `exchange_code`), `tenants.save_google_calendar`, a status banner + two routes (`/dashboard/{id}/calendar/connect`, `/oauth/google/callback`) in `app.py`. State is an HMAC-signed, 10-min, tenant-scoped capability reusing the existing `_sign`/`_unsign`. PKCE disabled (confidential web client) — required, else `invalid_grant: Missing code verifier`.
+- **Phone-number bug.** Engine never actually received the caller's number, so it kept asking for it. Now injected into the per-turn context note in `app.py` + a hard rule in the prompt.
+- **Address gap.** A "booked" job had no street address. Added `address` to the `Qualified` structured output and required it before booking; calendar event title/description now carry address + customer number.
+- **Booking railguard.** "Just book it" on a quote-first job used to deflect to a phone callback (so `booking_start` was never set → no calendar event). Now confirms a window and sets `booking_start/end`.
+- **`load_dotenv` ordering fix** in `app.py` (gcal read `GOOGLE_CLIENT_ID` at import before `.env` loaded — broke local dev, incl. the CLI booking path).
+
+**Model decision:** Production stays on **`claude-haiku-4-5`** ($1/$5 per Mtok). The defects were prompt/wiring, not capability. If post-fix booking date-math or quote-vs-book judgment still flakes, bump to **`claude-sonnet-4-6`** ($3/$15) — a one-line change in `workflow.py:25`. Cost is negligible either way (cents/conversation vs a multi-hundred-dollar job); don't use Opus (overkill, slower for SMS).
+
+**Caveats:**
+- **Google OAuth app is in "Testing" mode** — only added test-user Gmails can connect, tokens expire after 7 days. Must move to "Production" (triggers Google verification review for the `calendar.events` scope, can take days) **before** onboarding a paying client who isn't a test user.
+- **Client secret (`GOCSPX-…`) was pasted in chat** during setup — consider rotating before first paying client.
+- Tested tenant must have its calendar connected for a booking to actually create an event.
+
+**Deploy:** 4 files (`app.py`, `gcal.py`, `tenants.py`, `workflow.py`) scp'd to `/opt/speed-to-lead`; `GOOGLE_CLIENT_ID`/`SECRET` appended to VPS `.env`; `docker compose up -d --build` (pip layer cached). Verified live: `/health` ok, oauth routes present, `gcal.is_configured: True`, `address` field live, prod redirect URI correct. **Rollback:** prior files backed up to `/opt/speed-to-lead/.bak/20260624-102311/`.
+
+**Artifacts:** `gcal.py`, `tenants.py`, `app.py`, `workflow.py`, `.env.example` (Google web-client docs); VPS `/opt/speed-to-lead` rebuilt + redeployed.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-24 — Conversation engine bumped Haiku 4.5 → Sonnet 4.6 (executes the 2026-06-24 conditional bump)
+
+**Decision:** Switch the Twilio conversation engine model from `claude-haiku-4-5` to `claude-sonnet-4-6` — one line, `workflow.py:25`. This executes the conditional upgrade path flagged in the same-day calendar/engine-fixes entry ("If post-fix booking date-math or quote-vs-book judgment still flakes, bump to `claude-sonnet-4-6`"). `build_tenant.py` (one-off tenant-config generator) stays on Haiku — not on the live response path.
+
+**Why:** Hughie's call to run the higher-capability model on the lead-facing replies. Verified with the full `smoke_test.py` run on Sonnet — all five scenarios route correctly (bookable → windows + address, emergency → instant escalation, callback → `notify_kind=callback`, not-a-job → closed with no owner alert, quoting never vs ranges behaves per policy). Replies are noticeably warmer/sharper than Haiku.
+
+**Trade-off:** Sonnet is $3/$15 per Mtok vs Haiku's $1/$5 (~3× input, ~3× output) plus slightly higher latency — both negligible at cents/conversation against multi-hundred-dollar jobs, and well inside the ~$440/mo gross margin in the pricing-ops unit economics. Opus stayed ruled out (overkill + slower for SMS).
+
+**Caveat:** The unit-economics line in the 2026-05-25 pricing decision still cites "Haiku 4.5, ~$0.04/conversation" — now stale; per-conversation API cost roughly triples (still ~$6/mo per client at ~50 leads, immaterial).
+
+**Affects:** `product/speed-to-lead-demo/workflow.py:25`. **Deployed live 2026-06-24** to the VPS `/opt/speed-to-lead`: old file backed up to `.bak/20260624-180610/`, `workflow.py` scp'd up, `docker compose up -d --build` (image rebuilt, `speed-to-lead-app-1` recreated). Verified — running container shows `claude-sonnet-4-6` on line 25, `/health` 200 on `https://stl.187-77-133-39.sslip.io`, clean startup logs. Rollback: restore from `.bak/20260624-180610/workflow.py` + rebuild.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-25 — Eval-gated prompt tuning: majority-vote gate + precision/triage/safety fixes
+
+**Decision:** Adopt a majority-vote-over-N eval harness (`evals.py`) as the quality gate for the conversation engine, and ship a set of *measured* changes through it: engine `temperature=0.4`; a "don't invent / don't guess" accuracy rule; earlier triage + bookable decisiveness; sharper quote follow-up (ask if they've seen the quote, don't re-send); per-tenant `emergency_safety` guidance; rapidflow opener no longer self-discloses as AI.
+
+**Why:** A single-run eval was too noisy to trust (same HEAD scored 90% then 70%). Majority-vote over N (parallelised, ~2 min at N=8) separates real failures from sampling noise and gates on robust safety (each safety scenario ≥80% of runs) + overall ≥90%. Measuring caught two things eyeballing would have missed: (1) brevity-forcing prompt edits *dropped required steps* (quote photo, rental landlord note) — reverted; replies were already tight (~1.2 lines), so brevity was the wrong target; (2) the engine occasionally gave operational emergency advice ("switch off the power") — fixed trade-aware so an electrician never tells someone to touch a faulty board, while a plumber can still say "turn off the water at the mains".
+
+**Result:** Gate PASS at N=8 — safety 10/10 robust, overall 19/20 (95%), precision 1.1 lines / 193 chars / 92% one-question. B1 + F3 fixed solidly; B3 ("downlight swap, no details") remains borderline (~3/8 — model asks two relevant questions) and is flagged advisory.
+
+**Alternatives considered:**
+- Apply prompt edits and eyeball the demo (fast path) → rejected; would have shipped the dropped-step + emergency-advice regressions invisibly.
+- Hardcode a no-power-switching rule in the shared prompt → rejected; breaks plumbers. Used the per-tenant `<<emergency_safety>>` sentinel instead.
+
+**Affects:** `product/speed-to-lead-demo/workflow.py`, `app.py` (idempotency + `/health/deep` + ROI report route), `store.py` (`mark_seen` + `report_counts` + `processed_events` table), `report.py` (new), `evals.py` (majority-vote + `--runs`/`--concurrency`), `tenants/{dave,rapidflow-plumbing,lockedout-locksmiths,example}.json` (new `emergency_safety`).
+
+**Deployed live 2026-06-26** to VPS `/opt/speed-to-lead`: backup at `.bak/20260626-001331/` (app.py, store.py, workflow.py, tenants/, .env.bak); scp'd `workflow.py app.py store.py report.py canary.py`; patched `tenants/{dave,rapidflow-plumbing,example}.json` **in place** (added `emergency_safety`, updated rapidflow opener) to preserve VPS secrets — `lockedout` is not on the VPS; appended `CANARY_TOKEN` to `.env` to gate `/health/deep`; `docker compose up -d --build`. Verified: `/health` 200, `/health/deep` `{db:ok,engine:ok}`, 403 without token, both tenants load + render `emergency_safety`, `processed_events` table present, clean startup logs. **Rollback:** restore from `.bak/20260626-001331/` + rebuild.
+
+**Follow-ups:** B3 triage-field + X2 rental-landlord note are advisory-flaky; lockedout's "are you a bot?" reply claims to be human ("I'm Mick, real person") — contradicts the shared "never claim to be human" rule, worth a separate fix.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-26 — Pricing & go-to-market: free pilot → $300/mo, performance-based deferred
+
+**Decision:** Land client #1 with a **free pilot first** (prove real work + conversion on a live line), then convert to a flat **$300/mo** retainer. **Performance-based pricing** (per recovered booking) is deferred — revisit only after the $300 model has proven conversion with at least one client. Reserve premium tiers ($1k+) for multi-van / higher-ticket firms later; not the wedge.
+
+**Why:** Came out of the `/roast` council (verdict: RESHAPE). The earlier $2k–$4k/mo target was demolished by the unit-economics math (a solo sparky at ~$350/job doesn't have the call volume to clear a 3x value ratio) and by live AU competitor pricing — Leva $199, Lana $300, Sophiie $300/mo. $300 sits dead-on the established market rate, so it's a price tradies already accept and won't anchor against. Free-first kills the two biggest objections at once (no-clients-yet trust gap + "prove I'm actually losing money") and produces the one asset that makes every later sale close on math: a real recovered-dollar number + testimonial. Performance-based is the *right* long-term model (fee can never exceed value delivered) but needs a proven conversion baseline first — you can't price per booking until you know your booking rate.
+
+**What would change my mind:** once the free pilot yields a hard recovered-$/mo figure and a repeatable booking rate, move to performance-based or raise the floor. If conversion proves the value is well above $300, raise it; if a multi-van firm bites, that's the $1k+ tier.
+
+**Alternatives considered:**
+- $500–900/mo entry (council's suggested floor) → rejected; $300 matches the proven AU market rate and lowers the barrier to client #1 in the 5-week window.
+- Performance-based from day one → rejected; no conversion baseline yet to price against.
+- Charge from day one (no free pilot) → rejected; no case study + no-client trust gap makes a cold paid close in 5 weeks unlikely.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-26 — Front door: SMS text-back → instant AI voice callback (modifies 2026-05-22 channel)
+
+**Decision:** Flip the speed-to-lead first touch from **SMS missed-call-text-back** to an **instant AI voice callback**. On a missed call the system rings the caller straight back with a live AI voice agent; **SMS text-back becomes the fallback** when the callback isn't answered or hits voicemail. Voice is **ElevenLabs**; built **fully in-house** — Twilio Media Streams → Deepgram (streaming STT) → the existing Claude brain → ElevenLabs (streaming TTS). Modifies (does not supersede) the channel element of the 2026-05-22 electrician pivot: missed-call-text-back is now the safety net, not the headline. Everything else from that decision stands (trades/electricians, build-before-sell, named-human persona with honest AI disclosure, fail-open, single VPS).
+
+**Why:** A human-sounding callback ~30s after a missed call beats a text on the one axis that wins emergency-trade jobs — the caller is still in buying-mode and the first real voice to reach them takes the job. In Hormozi's Value Equation (*$100M Offers*) it crushes two levers at once: **time delay** (instant) and **effort/sacrifice** (the caller just answers a ringing phone — no reading, no typing). Because the lead rang us first, an instant callback is a *returned missed call*, not cold outbound — it sidesteps AU Do Not Call / telemarketing exposure that would kill prospecting calls, and the existing "always disclose you're an AI + offer a human" rule carries straight over. The existing `workflow.py` trade brain (triage, two-window booking, emergency handling) is reused verbatim — only the I/O contract changes from one-shot structured output to streaming text + tool calls. COGS rises ~5–10× vs SMS (~$0.30–0.60 for a 3-min call, ElevenLabs the dominant layer) but stays trivial against a caught job ($150–2,000+), and buys materially higher conversion.
+
+**What would change my mind:** the live risk is **latency/barge-in** on the raw media loop. If tuning the in-house pipeline eats too much time, fall back to **Twilio ConversationRelay** — it hands the STT/TTS plumbing to Twilio while still keeping the Claude brain *and* an ElevenLabs voice; the only thing lost is "full in-house." Also revisit if a tradie's customers turn out to prefer text (then keep SMS primary, voice opt-in).
+
+**Alternatives considered:**
+- *Voice-only, retire SMS* → rejected; no fallback when the caller can't take a call right then = dropped lead.
+- *Keep SMS primary, voice opt-in* → rejected for the wedge; voice is the differentiator, lead with it.
+- *ElevenLabs Agents Platform / Vapi / Retell (managed)* → faster to live, but re-authors the brain into their config or adds a platform per-minute margin; "full in-house" picked for control + lowest per-minute cost.
+- *Twilio ConversationRelay* → strong middle ground (kept as the documented fallback above), but not full in-house.
+
+**Build approach:** `voice_engine.py` (streaming + tool-calling adapter over `system_for(tenant)`; Haiku 4.5 default for low latency) — **shipped + verified**. `voice_server.py` (media bridge) and the `app.py` trigger + no-answer→SMS fallback — **specced, not yet built**. New deps: `deepgram-sdk`, `elevenlabs`. New env: `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, public `wss://` tunnel. The media loop's real verification needs live keys + a real phone call.
+
+**Owner:** Hughie
+
+> Value framing per Alex Hormozi's *$100M Offers* (Value Equation).
+
+---
+
+## 2026-06-26 — Voice agent shipped on Deepgram's managed Voice Agent API (pivots the in-house/ElevenLabs build above)
+
+**Decision:** Built the live voice front door on **Deepgram's managed Voice Agent API** (`wss://agent.deepgram.com/v1/agent/converse`), not the in-house Twilio→Deepgram-STT→Claude→ElevenLabs-TTS pipeline the earlier 2026-06-26 entry specced. One WebSocket: Deepgram owns STT (nova-3), turn-taking, barge-in, **Aura-2 TTS** (`aura-2-thalia-en`, replacing ElevenLabs) **and hosts the Claude brain**. Tools (`alert_owner` / `book_job` / `end_call`) run client-side over the same socket and fire through the existing SMS-path modules. Also note: the wiring is **inbound-answer** (AI picks up when the customer dials, via `<Connect><Stream>` on `voice_answer: true` tenants) — not the outbound missed-call callback the prior entry described.
+
+**Why:** Deepgram's managed API takes the two things that were the live risk in the prior plan — latency and barge-in on a raw media loop — off our plate, over a single socket. Far less plumbing than self-hosting STT + streaming TTS + the turn-taking loop. This is essentially the "ConversationRelay-style managed fallback" the prior entry pre-authorised, landed on Deepgram instead of Twilio so we keep one vendor for STT+TTS+brain. The trade brain is reused, not rewritten: `voice_engine.VOICE_MODE` + the `workflow.py` SYSTEM_PROMPT become Deepgram's `think.prompt`, `voice_engine.TOOLS` become its `think.functions`.
+
+**Trade-offs / constraints:** Deepgram hosts the LLM, so the model id is pinned to `claude-sonnet-4-20250514` (their Anthropic enum lags — newer ids are rejected; SMS path is on Sonnet 4.6). The long example exchanges + knowledge file are dropped from the voice prompt to fit Deepgram's prompt cap (`_lean_voice_prompt`). The self-hosted `stream_voice_turn` path (voice_engine.py, Haiku) stays **dormant as the fallback** and is what `evals.py --mode voice` exercises — the prompt is shared, so prompt tuning transfers, but the eval does not exercise the live Deepgram path.
+
+**Status:** Settings schema, Aura-2 greeting audio, and all 3 functions **validated via `/voice/probe` against the live key**. **NOT yet verified on a real call** (FunctionCall round-trip + barge-in + the hosted-LLM first turn are unexercised). Code compiles clean.
+
+**Open issues — both resolved 2026-06-26 (same session):**
+1. ~~Blocker: `DEEPGRAM_API_KEY` missing from `product/speed-to-lead-demo/.env`.~~ **Fixed** — copied from the root vault's `Deepgram_API` into the product `.env` (the app's `load_dotenv()` resolves to the product `.env`, never the root). For the live VPS test it must also be in the Docker env.
+2. ~~Prompt/wiring mismatch: `VOICE_MODE` framed the call as an outbound callback while the wiring is inbound-answer.~~ **Fixed** — rewrote `voice_engine.VOICE_MODE` to inbound-answer ("the customer rang {business} and you answered… don't say you're ringing them back"). This also removed a contradiction the voice eval was feeding the model (every eval scenario starts with the customer speaking first).
+
+**Also shipped this session (supporting reliability + proof layer):** webhook **idempotency** guards (`store.mark_seen` / `processed_events` table — stops Twilio retries double-texting/double-booking); a **synthetic canary** (`canary.py` + `/health/deep`) that probes DNS→TLS→Caddy→app→Claude→DB and alerts on `@BaoBei09bot`; an **owner ROI report** (`report.py` + `/dashboard/{tenant}/report` — conservative booked-jobs-only $ value, the proof that justifies the invoice); and a **goal-driven auto-fix loop** (`goal_loop.py` + `run_loop.ps1`) that measures the voice eval and lets `claude -p` apply one allowlisted prompt edit per pass until safety-100%/overall-≥90%. Plus trade-brain prompt hardening in `workflow.py` (book sooner, no-invent rule, emergency-safety per tenant).
+
+**Owner:** Hughie

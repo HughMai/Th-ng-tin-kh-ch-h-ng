@@ -17,6 +17,8 @@ Registry of every system your AIOS can reach. Expanded over time as you wire new
 | 11 | Messaging | Telegram (@BaoBei09bot) | via Hermes gateway | bot token | 2026-05-16 |
 | 12 | LLM Routing | NVIDIA NIM (DeepSeek V4 Flash, free) | provider `nvidia` in Hermes config | `NVIDIA_API_KEY` | 2026-06-17 |
 | 13 | Google Workspace (Hermes) | Gmail + Calendar + Drive + Sheets + Docs + Contacts | `google-workspace` skill on the VPS | OAuth (Google), token in `/opt/data/google_token.json` | 2026-06-17 |
+| 14 | Telephony / Messaging | Twilio | REST API + signed voice/SMS webhooks | Account SID + auth token in gitignored env | 2026-06-23 (US dev number live; AU mobile bundle pending) |
+| 15 | Voice agent (STT + TTS + hosted LLM) | Deepgram Voice Agent API | `wss://agent.deepgram.com/v1/agent/converse`, bridged from Twilio Media Streams in `voice_server.py` | `DEEPGRAM_API_KEY` (env; legacy `Deepgram_API` read as fallback) | 2026-06-26 (Settings/greeting/functions probe-validated; **key not yet in product/.env**; no live call yet) |
 
 **Mechanism options:** `mcp` (MCP server), `script` (Python/Bash hitting an API, in `scripts/`), `export` (CSV/JSON dump pipeline), `key+ref` (`.env` key + `references/{tool}-api.md` guide), `not yet connected`.
 
