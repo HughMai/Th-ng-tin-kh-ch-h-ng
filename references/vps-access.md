@@ -64,20 +64,22 @@ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
 
 ---
 
-## Live config snapshot (2026-06-17, after NVIDIA swap)
+## Live config snapshot (2026-06-19, after OpenRouter GLM swap)
 
 | Setting | Live value |
 |---|---|
-| **Provider** | `nvidia` (Hermes native provider plugin) |
-| **Model** | `deepseek-ai/deepseek-v4-flash` (free) |
-| **Base URL** | `https://integrate.api.nvidia.com/v1` (set by the provider) |
-| **Key** | `NVIDIA_API_KEY` in `.env` |
+| **Provider** | `openrouter` (Hermes native provider plugin) |
+| **Model** | `z-ai/glm-4.7-flash` ($0.06/$0.40 per Mtok) |
+| **Base URL** | `https://openrouter.ai/api/v1` (set by the provider) |
+| **Key** | `OPENROUTER_API_KEY` in `.env` |
 | API mode | `chat_completions` |
-| **Health** | ✅ Working end-to-end via Telegram, $0 inference. Rate-limited ~40 req/min (free tier). |
+| **Health** | ✅ Working end-to-end via Telegram. Pay-per-token (cents/day), no free-tier 429s. |
 
-> ⚠️ Gotcha that cost ~6 debug cycles: `model.base_url` is IGNORED when `model.provider` is a named provider — change `provider:` (to `nvidia`), not `base_url:`. Full writeup: `references/hermes-setup.md` gotcha #7 + `decisions/log.md` 2026-06-17.
+> ⚠️ Gotcha that cost ~6 debug cycles: `model.base_url` is IGNORED when `model.provider` is a named provider — change `provider:`, not `base_url:`. Full writeup: `references/hermes-setup.md` gotcha #7 + `decisions/log.md` 2026-06-17.
 >
-> Prior states (for history): OpenRouter + Claude Sonnet 4.6 (2026-05-16) → OpenRouter free Llama-3.3 (429-throttled) → NVIDIA DeepSeek V4 Flash (now).
+> ⚠️ The live bot is the Hermes *product* (this VPS config), NOT `agents/hermes/hermes.py` in the repo — that file is unrelated/abandoned.
+>
+> Prior states (for history): OpenRouter + Claude Sonnet 4.6 (2026-05-16) → OpenRouter free Llama-3.3 (429-throttled) → NVIDIA DeepSeek V4 Flash (2026-06-17) → OpenRouter GLM-4.7-flash (now).
 
 ---
 
@@ -98,6 +100,26 @@ tail -15 $D/logs/gateway.log
 ```
 
 ---
+
+## Deploying the speed-to-lead app
+
+⚠️ **`/opt/speed-to-lead` is NOT a git checkout** — it's a plain copy of `product/speed-to-lead-demo/`. `git pull` does nothing there. Deploy by copying source over SSH, then rebuilding:
+
+```bash
+# from the local product dir — copy env-agnostic SOURCE only.
+# NEVER overwrite the VPS's own .env, ./data (sqlite volume), or ./Caddyfile.
+scp voice_server.py voice_engine.py app.py twilio_io.py store.py workflow.py \
+    report.py canary.py evals.py goal_loop.py requirements.txt pytest.ini \
+    root@187.77.133.39:/opt/speed-to-lead/
+# on the box: rebuild (a plain `restart` won't install new deps in requirements.txt)
+ssh root@187.77.133.39 'cd /opt/speed-to-lead && docker compose up -d --build app'
+```
+
+- **Rebuild, don't restart**, whenever `requirements.txt` changed (`build: .` bakes deps at build time).
+- **Tenant configs live only on the box** and can be stale vs local — e.g. `voice_answer` was missing from the VPS `tenants/dave.json` even though local had it. Check tenant flags after a deploy.
+- Container is `speed-to-lead-app-1`; secrets are read from `/opt/speed-to-lead/.env` via compose `env_file`.
+- Quick health: `docker exec speed-to-lead-app-1 python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/health').read())"`. Deepgram check (no call): `GET /voice/probe?key=$DASHBOARD_TOKEN` — a working connection shows `Welcome` + `SettingsApplied` + audio even though the JSON `ok` field reads false (the probe greps for a `Ready` event this API version doesn't send).
+- *Future improvement:* make `/opt/speed-to-lead` a sparse/real git checkout of `AIS-OS` so deploys become `git pull && docker compose up -d --build`.
 
 ## Safety notes
 - Default to **read-only** commands. Confirm with Hughie before editing config or restarting.

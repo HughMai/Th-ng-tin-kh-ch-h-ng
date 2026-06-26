@@ -57,11 +57,13 @@ DG_URL = "wss://agent.deepgram.com/v1/agent/converse"
 # Aura-2 voice. Override with DEEPGRAM_VOICE once you've heard the options and
 # picked one that suits the trade (the probe lists what's accepted).
 AURA_VOICE = os.environ.get("DEEPGRAM_VOICE", "aura-2-thalia-en")
-# Deepgram hosts the LLM and only accepts certain model ids (its Anthropic lags
-# the latest): claude-sonnet-4-20250514 for sharper booking logic, or
-# claude-3-5-haiku-latest for lower latency. voice_engine.MODEL (the self-hosted
-# path, dormant on this managed path) is a newer id and is NOT valid here.
-DG_THINK_MODEL = os.environ.get("DEEPGRAM_THINK_MODEL", "claude-sonnet-4-20250514")
+# Deepgram hosts the LLM and only accepts model ids on its managed allowlist
+# (developers.deepgram.com/docs/voice-agent-llm-models). claude-sonnet-4-6 is the
+# current best and matches the SMS engine; claude-sonnet-4-5 also works. NOTE:
+# the older claude-sonnet-4-20250514 is still on Deepgram's allowlist but now
+# 404s upstream at Anthropic (FAILED_TO_THINK -> the call drops ~5s in), so it is
+# NOT usable. Verified live 2026-06-26.
+DG_THINK_MODEL = os.environ.get("DEEPGRAM_THINK_MODEL", "claude-sonnet-4-6")
 DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "")
 
 
@@ -384,6 +386,10 @@ async def _deepgram_to_twilio(dg, twilio: WebSocket, tenant, caller, call_sid, s
             # Caller talked over the agent (barge-in) — flush our playout buffer.
             if stream_sid:
                 await twilio.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
+        elif mtype in ("Error", "Warning"):
+            # Surface Deepgram-side failures (e.g. a dead/unsupported think model)
+            # — these otherwise close the socket and drop the call with no trace.
+            print(f"[voice] deepgram {mtype}: {msg.get('code')} — {msg.get('description')}", flush=True)
         # Transcripts, Ready, etc. ride through silently on the hot path.
 
 
