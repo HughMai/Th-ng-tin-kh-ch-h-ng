@@ -926,3 +926,55 @@ Both distilled from `context/about-me.md`, `context/about-business.md`, `context
 **Affects:** `product/speed-to-lead-demo/voice_server.py` (preconnect registry + `_take_or_open_dg` + `_open_dg_authed`/`_safe_close`/`_reap_preconnect`; `voice_stream` now take-or-open then send Settings; latency log gains `preconnect=`), `app.py` (fires `preconnect_call` in the `voice_answer` webhook branch), `tests/test_voice_server.py` (3 new tests + the defaults test made env-independent). VPS `.env`: `DEEPGRAM_TTS_PROVIDER=deepgram`, `DEEPGRAM_VOICE=aura-2-theia-en`, `VOICE_DEBUG_EVENTS=0`, `VOICE_PRECONNECT=1`. Owner-phone routing already `+61402129328` via `ELECTRICIAN_MOBILE` (the `dave` tenant has no `owner_mobile` override) — no change. Deploy: scp `voice_server.py`/`app.py` → `docker compose up -d --build app`; pre-existing files backed up to `/opt/speed-to-lead/.bak/preconnect/`. `VOICE_DEBUG_EVENTS=1` (left on from last session's debugging) turned off.
 
 **Owner:** Hughie
+
+---
+
+## 2026-06-27 — Client intake: crown-st-auto (automotive — first non-electrician vertical)
+
+**Decision:** Onboard John's automotive repair shop (220 Crown St, West Wollongong) as client `crown-st-auto`. Repoint the existing Twilio number **224** (currently the `dave` electrician tenant) to this client; **retire dave.** "Port" = reconfigure the on-platform number's webhook/tenant, **not** a carrier port — 224 is already provisioned, so no AU regulatory paperwork and a config-only (same-day-capable) cutover. Intake status: **intake-pending-tbds.**
+
+**Why:** dave was a demo/placeholder electrician tenant; John's auto shop is the real first non-electrician client and a deliberate vertical-generalisation test for the intake template (NSW electrical licence → NSW motor vehicle repairer's licence; electrical job types → mechanical services). Repointing 224 is the simplest path — no new number, no port wait. The "open 24/7" instruction was resolved with Hughie to mean *the AI answers round the clock so no call is missed; the workshop + owner work day hours; off-hours/breakdown callers get a detailed message and a first-thing-AM callback* — so the prompt's after-hours section is correct as written.
+
+**Build-blockers captured in `clients/crown-st-auto/intake.md`:** (1) full static rate card — prompt has only 2 example prices + a `[Insert your actual static rate prices here]` placeholder; (2) NSW motor vehicle repairer's licence confirmation (compliance gate); (3) calendar system + OAuth account; (4) the 224 webhook/tenant repoint (Hughie, manual — no API). Voice samples still TBD → tone-tuning risk during babysitting.
+
+**Alternatives considered:** issue a new Twilio number for the auto shop (rejected — 224 is free once dave retires, no need for a second live number); keep dave live and add the auto shop on a separate number (rejected — dave is a placeholder, not a paying client). Real AU carrier port of John's existing shop number (rejected for v1 — 224 is already on-platform; revisit only if John insists customers must dial his long-standing advertised digits).
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-27 — Global voice-agent persona name: Syanna (all clients)
+
+**Decision:** The live voice agent's persona is named **Syanna** on every tenant, regardless of vertical or client. Standing product default — not a per-client choice.
+
+**Why:** Hughie wants one consistent AI identity across the whole book — simpler branding, one voice customers recognise, and it removes a naming decision from every intake. It also cleanly decouples the **AI persona (Syanna, front-desk)** from the **human business owner (per-client — John here)**: Syanna deflects technical work and exact pricing to the owner / "head mechanic," who is a separate named human.
+
+**Affects:** every client's deployed voice system prompt (introduce as Syanna); the intake template §2 (persona name is now a fixed default, not a per-client question). crown-st-auto ships as Syanna.
+
+**Alternatives considered:** per-client named persona (the original v1 default, e.g. "Dave from Dave's Electrical") — rejected for one standing identity; unnamed front-desk — rejected, Hughie wants a name.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-27 — crown-st-auto build scope: Syanna deferred, pricing = never
+
+**Decision:** For the crown-st-auto go-live, (1) **Syanna is a fast-follow** — ship the client first with the existing "{business}'s AI assistant" identity, then add the global Syanna persona-name engine change as the next task (no persona field exists today; it's a code change across the prompt builders, not config). (2) **Pricing = quoting_policy "never"** for v1 — the AI defers all pricing to the head mechanic, guaranteeing zero hallucinated prices. The $199 service / $150-axle-brake rate card is therefore unused in v1 until a rate-card feature is built.
+
+**Why:** Hughie wants the client live fast; Syanna and rate-card quoting each need engine work that shouldn't block the cutover. "Never quote" is the strictest possible no-hallucination stance and ships today with zero code change.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-27 — crown-st-auto LIVE on +61468089224 (224 repointed from rapidflow-plumbing)
+
+**Decision:** crown-st-auto (John's auto shop, 220 Crown St West Wollongong) is live. Repointed Twilio number **+61468089224** ("224") from the `rapidflow-plumbing` demo tenant → `crown-st-auto`; stripped rapidflow's `twilio_number`. `quoting_policy=never` (zero price hallucination), `voice_answer=true`, owner alerts → +61402129328 (John). AI identity is still the default "{business}'s AI assistant" — **Syanna is a fast-follow** (needs an engine change; no persona field exists yet). Voice = existing `aura-2-theia-en` (unchanged).
+
+**Verified:** in-container `find_by_number('+61468089224') → crown-st-auto` (voice=true, owner=John, policy=never); image rebuilt + container recreated; public `/health` `{"status":"ok"}`; clean uvicorn startup. **NOT verified:** a real inbound call — the only end-to-end proof (Hughie's step). Calendar OAuth (mth9703@gmail.com) not yet connected; answering/triage/escalation work without it, the booking-into-calendar flow waits on it.
+
+**Key correction from the intake assumption:** 224 was live on **rapidflow-plumbing** (a plumber, owner +61426601862), NOT the dave/electrician tenant the session handoff implied — dave has no number at all. Hughie confirmed rapidflow is a demo, so taking 224 was safe. (Repoint was app-side data only — the number's webhooks already pointed at `/twilio/voice`+`/twilio/sms`, and routing is `find_by_number(To)`; no Twilio console/API change.)
+
+**Rollback:** restore `twilio_number` to rapidflow from `/opt/speed-to-lead/.bak/crown-st-auto-go-live-20260627-042557/` + rebuild.
+
+**Owner:** Hughie

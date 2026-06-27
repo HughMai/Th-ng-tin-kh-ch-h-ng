@@ -126,6 +126,24 @@ Verification notes:
 
 ---
 
+## Live tenant routing — read the on-box STATE.md first
+
+**Authoritative live state lives on the box at `/opt/speed-to-lead/STATE.md`** — a timestamped state + changelog updated on every deploy. **Read it first next session** (`ssh root@187.77.133.39 'cat /opt/speed-to-lead/STATE.md'`) instead of re-running the full verification suite. The local repo's `tenants/*.json` are NOT authoritative — they go stale vs the box (that's how 224's real owner got misread on 2026-06-27: handoff said dave, box had rapidflow-plumbing).
+
+Snapshot as of 2026-06-27 (always verify against STATE.md):
+
+| Number | Routed to | voice | owner_mobile | quotes | calendar |
+|---|---|---|---|---|---|
+| `+61468089224` ("224") | **crown-st-auto** (Crown Street Auto) | yes | +61402129328 | never | pending OAuth |
+| — | rapidflow-plumbing (demo) | yes | +61426601862 | ranges | yes |
+| — | dave (Dave's Electrical, demo) | yes | env `ELECTRICIAN_MOBILE` | never | yes |
+
+Routing = `find_by_number(To) or DEFAULT_TENANT` (`app.py:_resolve_tenant`) — whoever holds `twilio_number` in their tenant config gets the call. Webhook URLs are shared/global (`/twilio/voice`, `/twilio/sms`), so repointing a number is a tenant-config data change + rebuild, **not** a Twilio-console change.
+
+**Convention (do this every deploy):** append a timestamped entry to `/opt/speed-to-lead/STATE.md` and refresh its current-state tables. Include what changed + verification state.
+
+---
+
 ## Deploying the speed-to-lead app
 
 ⚠️ **`/opt/speed-to-lead` is NOT a git checkout** — it's a plain copy of `product/speed-to-lead-demo/`. `git pull` does nothing there. Deploy by copying source over SSH, then rebuilding:
