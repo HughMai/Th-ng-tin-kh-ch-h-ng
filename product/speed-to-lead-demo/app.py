@@ -8,6 +8,7 @@ and take over leads from the dashboard (`/dashboard/*`).
 Run locally:  python -m uvicorn app:app --reload   (then http://127.0.0.1:8000)
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -44,7 +45,7 @@ import telegram_io
 import tenants
 import twilio_io
 from workflow import DEFAULT_TENANT, run_turn, system_for
-from voice_server import router as voice_router
+from voice_server import router as voice_router, preconnect_call
 
 HERE = Path(__file__).parent
 app = FastAPI(title="Speed-to-Lead")
@@ -273,6 +274,14 @@ async def twilio_voice(request: Request) -> Response:
         connect = Connect()
         stream = connect.stream(url=_ws_url(request, "/twilio/voice-stream"))
         stream.parameter(name="tenant_id", value=tenant["tenant_id"])
+        stream.parameter(name="caller", value=form.get("From", ""))
+        stream.parameter(name="call_sid", value=form.get("CallSid", ""))
+        # Warm the Deepgram socket during the ring so the caller's first audio
+        # doesn't wait on the cross-ocean handshake (~800ms). Best-effort: any
+        # failure silently falls back to a fresh open on the stream.
+        call_sid = form.get("CallSid", "")
+        if call_sid:
+            asyncio.create_task(preconnect_call(call_sid))
         vr.append(connect)
         return _twiml(str(vr))
     if tenant.get("voice_textback_only"):
@@ -647,6 +656,384 @@ def _lead_card(tenant_id: str, lead: dict, k: str, cols: list) -> str:
     )
 
 
+def _initials(name: str) -> str:
+    parts = [
+        "".join(ch for ch in p if ch.isalnum())
+        for p in (name or "").replace("&", " ").split()
+    ]
+    parts = [p for p in parts if p]
+    if not parts:
+        return "ST"
+    if len(parts) == 1:
+        return parts[0][:2].upper()
+    return "".join(p[0] for p in parts[:2]).upper()
+
+
+def _stage_text(stage: str) -> str:
+    names = {
+        "escalated": "Escalated",
+        "missed_call": "Missed call",
+        "booking": "Booking",
+        "triaging": "Triaging",
+        "qualifying": "Qualifying",
+        "closed": "Closed",
+    }
+    return names.get(stage or "", (stage or "New").replace("_", " ").title())
+
+
+def _stage_class(lead: dict) -> str:
+    if lead.get("triage") == "emergency" or lead.get("stage") == "escalated":
+        return "danger"
+    if lead.get("booking"):
+        return "ok"
+    if lead.get("stage") == "missed_call":
+        return "warn"
+    return ""
+
+
+def _dashboard_shell(
+    t: dict,
+    tenant_id: str,
+    k: str,
+    content: str,
+    active: str = "Inbox",
+    user: dict | None = None,
+) -> str:
+    business = t.get("business_name") or "Speed-to-Lead"
+    sub = " / ".join(x for x in (t.get("trade_noun"), t.get("city")) if x)
+    base = f"/dashboard/{_esc(tenant_id)}?key={k}"
+    items = (
+        ("Dashboard", base + "&view=dashboard"),
+        ("Inbox", base + "&view=inbox"),
+        ("Customers", base + "&view=customers"),
+        ("Jobs", base + "&view=jobs"),
+        ("Schedule", base + "&view=schedule"),
+        ("Report/Results", f"/dashboard/{_esc(tenant_id)}/report?key={k}"),
+        ("Settings", base + "&view=settings"),
+    )
+    nav = ""
+    for label, href in items:
+        cls = "nav-item active" if label == active else "nav-item"
+        nav += (
+            f"<a class='{cls}' href='{href}'><span class=nav-dot></span>"
+            f"<span>{_esc(label)}</span></a>"
+        )
+    return (
+        "<div class=app-shell>"
+        "<aside class=dash-sidebar>"
+        "<div class=tenant-mark>"
+        f"<div class=tenant-logo>{_esc(_initials(business))}</div>"
+        f"<div><div class=tenant-name>{_esc(business)}</div>"
+        f"<div class=tenant-sub>{_esc(sub or 'Owner dashboard')}</div></div>"
+        "</div>"
+        f"<nav class=nav-list>{nav}</nav>"
+        "<div class=side-foot><a class=side-link href='/logout'>Log out</a></div>"
+        "</aside>"
+        f"<div class=workspace>{content}</div>"
+        "</div>"
+    )
+
+
+def _admin_shell(k: str, content: str, active: str = "Dashboard") -> str:
+    items = (
+        ("Dashboard", f"/dashboard?key={k}"),
+        ("Inbox", f"/dashboard?key={k}"),
+        ("Customers", f"/dashboard?key={k}#customers"),
+        ("Jobs", f"/dashboard?key={k}#jobs"),
+        ("Schedule", f"/dashboard?key={k}#schedule"),
+        ("Report/Results", f"/dashboard?key={k}#reports"),
+        ("Settings", f"/dashboard?key={k}#settings"),
+    )
+    nav = ""
+    for label, href in items:
+        cls = "nav-item active" if label == active else "nav-item"
+        nav += (
+            f"<a class='{cls}' href='{href}'><span class=nav-dot></span>"
+            f"<span>{_esc(label)}</span></a>"
+        )
+    return (
+        "<div class=app-shell>"
+        "<aside class=dash-sidebar>"
+        "<div class=tenant-mark>"
+        "<div class=tenant-logo>ST</div>"
+        "<div><div class=tenant-name>Speed-to-Lead</div>"
+        "<div class=tenant-sub>Owner dashboard</div></div>"
+        "</div>"
+        f"<nav class=nav-list>{nav}</nav>"
+        "<div class=side-foot><a class=side-link href='/logout'>Log out</a></div>"
+        "</aside>"
+        f"<div class='workspace pad'>{content}</div>"
+        "</div>"
+    )
+
+
+def _lead_row(
+    tenant_id: str,
+    lead: dict,
+    k: str,
+    selected_phone: str,
+    q: str = "",
+    status: str = "",
+) -> str:
+    ph = lead["phone"]
+    ph_q = urllib.parse.quote(ph)
+    extras = ""
+    if q:
+        extras += f"&q={urllib.parse.quote(q)}"
+    if status:
+        extras += f"&status={urllib.parse.quote(status)}"
+    active = " active" if ph == selected_phone else ""
+    title = lead.get("job_type") or ph
+    snippet = lead.get("snippet") or "Missed call logged. No reply yet."
+    stage = _stage_text(lead.get("stage") or "")
+    cls = _stage_class(lead)
+    badges = f"<span class='status-pill {cls}'>{_esc(stage)}</span>"
+    if lead.get("booking"):
+        badges += "<span class='status-pill ok'>Booked</span>"
+    elif lead.get("triage"):
+        badges += f"<span class='status-pill'>{_esc(lead.get('triage'))}</span>"
+    meta = []
+    for field in ("suburb", "urgency"):
+        if lead.get(field):
+            meta.append(_esc(lead.get(field)))
+    meta_line = f"<div class=customer-meta>{' / '.join(meta)}</div>" if meta else ""
+    return (
+        f"<a class='lead-row{active}' href='/dashboard/{_esc(tenant_id)}?phone={ph_q}&key={k}{extras}'>"
+        "<div class=lead-row-top>"
+        f"<div><div class=lead-title>{_esc(title)}</div>{meta_line}</div>"
+        f"<span class=lead-time>{_ago(lead.get('updated_at'))}</span>"
+        "</div>"
+        f"<div class=lead-snippet>{_esc(snippet)}</div>"
+        f"<div class=badge-line>{badges}</div>"
+        "</a>"
+    )
+
+
+def _lead_detail_panel(tenant_id: str, selected: dict | None, k: str) -> str:
+    if not selected:
+        return (
+            "<section class=detail-pane>"
+            "<div class=detail-head><div class=customer-head>"
+            "<div class=avatar>ST</div><div><div class=customer-name>No lead selected</div>"
+            "<div class=customer-meta>New enquiries will open here.</div></div></div></div>"
+            "<div class=channel-tabs><span class='channel-tab active'>Summary</span></div>"
+            "<div class=detail-body><div class=empty-state><strong>No leads yet</strong>"
+            "The next missed call or text will appear in this inbox.</div></div>"
+            "</section>"
+        )
+    ph = selected["phone"]
+    ph_q = urllib.parse.quote(ph)
+    thread = selected.get("thread") or []
+    msg_count = len(thread)
+    call_count = selected.get("call_count") or 0
+    fields = []
+    for label, key in (
+        ("Job", "job_type"),
+        ("Suburb", "suburb"),
+        ("Urgency", "urgency"),
+        ("Stage", "stage"),
+        ("Booking", "booking"),
+    ):
+        if selected.get(key):
+            val = _stage_text(selected.get(key)) if key == "stage" else selected.get(key)
+            fields.append(f"<li><b>{_esc(label)}:</b> {_esc(val)}</li>")
+    if not fields:
+        fields.append("<li>Awaiting customer details.</li>")
+    bubbles = ""
+    for m in thread[-6:]:
+        cls = "cust" if m.get("role") == "user" else "ai"
+        who = "Customer" if m.get("role") == "user" else "AI"
+        bubbles += f"<div class='bubble {cls}'><b>{who}</b><br>{_esc(m.get('content'))}</div>"
+    if not bubbles:
+        bubbles = "<div class=empty-state>No transcript yet. This is likely a missed call lead.</div>"
+    return (
+        "<section class=detail-pane>"
+        "<div class=detail-head>"
+        "<div class=customer-head>"
+        f"<div class=avatar>{_esc(_initials(ph))}</div>"
+        f"<div><div class=customer-name>{_esc(ph)}</div>"
+        f"<div class=customer-meta>{_esc(_stage_text(selected.get('stage') or ''))} / updated {_ago(selected.get('updated_at'))}</div></div>"
+        "</div>"
+        "<div class=detail-actions>"
+        f"<a class=icon-btn href='tel:{_esc(ph)}'>Call</a>"
+        f"<a class=icon-btn href='sms:{_esc(ph)}'>Text</a>"
+        f"<a class=icon-btn href='/dashboard/{_esc(tenant_id)}/lead?phone={ph_q}&key={k}'>Transcript</a>"
+        "</div>"
+        "</div>"
+        "<div class=channel-tabs>"
+        f"<span class='channel-tab active'>Call {call_count}</span>"
+        f"<span class=channel-tab>Text {msg_count}</span>"
+        "<span class=channel-tab>Email 0</span><span class=channel-tab>Webform 0</span>"
+        "</div>"
+        "<div class=detail-body>"
+        f"<div class=detail-card><h2>Summary</h2><ul class=summary-points>{''.join(fields)}</ul></div>"
+        f"<div class=detail-card><h2>Transcript preview</h2><div class=preview-thread>{bubbles}</div></div>"
+        "</div>"
+        "</section>"
+    )
+
+
+def _lead_title(lead: dict) -> str:
+    return lead.get("job_type") or lead.get("phone") or "New enquiry"
+
+
+def _lead_meta(lead: dict) -> str:
+    parts = []
+    for field in ("suburb", "urgency", "triage"):
+        if lead.get(field):
+            parts.append(str(lead.get(field)))
+    if lead.get("booking"):
+        parts.append(f"Booked: {lead.get('booking')}")
+    elif lead.get("stage"):
+        parts.append(_stage_text(lead.get("stage")))
+    return " / ".join(parts)
+
+
+def _lead_actions(tenant_id: str, lead: dict, k: str) -> str:
+    ph = lead["phone"]
+    ph_q = urllib.parse.quote(ph)
+    return (
+        "<div class=row-actions>"
+        f"<a class=icon-btn href='/dashboard/{_esc(tenant_id)}?phone={ph_q}&key={k}&view=inbox'>Open</a>"
+        f"<a class=icon-btn href='tel:{_esc(ph)}'>Call</a>"
+        f"<a class=icon-btn href='sms:{_esc(ph)}'>Text</a>"
+        "</div>"
+    )
+
+
+def _data_row(tenant_id: str, lead: dict, k: str, title: str = "") -> str:
+    label = title or _lead_title(lead)
+    snippet = lead.get("snippet") or "No transcript yet."
+    meta = _lead_meta(lead)
+    cls = _stage_class(lead)
+    return (
+        "<div class=data-row>"
+        "<div class=row-main>"
+        f"<div class=row-title>{_esc(label)}</div>"
+        f"<div class=row-meta>{_esc(lead.get('phone'))} / updated {_ago(lead.get('updated_at'))}</div>"
+        + (f"<div class=row-meta>{_esc(meta)}</div>" if meta else "")
+        + f"<div class=lead-snippet>{_esc(snippet)}</div>"
+        + f"<div class=badge-line><span class='status-pill {cls}'>{_esc(_stage_text(lead.get('stage') or ''))}</span></div>"
+        + "</div>"
+        + _lead_actions(tenant_id, lead, k)
+        + "</div>"
+    )
+
+
+def _view_shell(title: str, subtitle: str, inner: str) -> str:
+    return (
+        "<div class=page-content>"
+        "<div class=view-head>"
+        f"<div><h1 class=view-title>{_esc(title)}</h1>"
+        f"<div class=view-sub>{_esc(subtitle)}</div></div>"
+        "</div>"
+        + inner
+        + "</div>"
+    )
+
+
+def _dashboard_view(tenant_id: str, leads: list[dict], k: str) -> str:
+    total = len(leads)
+    open_n = sum(1 for lead in leads if lead.get("stage") != "closed")
+    missed = sum(1 for lead in leads if lead.get("call_count") or lead.get("stage") == "missed_call")
+    booked = sum(1 for lead in leads if lead.get("booking"))
+    emergencies = sum(
+        1 for lead in leads if lead.get("triage") == "emergency" or lead.get("stage") == "escalated"
+    )
+    cards = (
+        (total, "total enquiries"),
+        (open_n, "open follow-ups"),
+        (missed, "calls captured"),
+        (booked, "booked jobs"),
+        (emergencies, "urgent escalations"),
+    )
+    grid = "<div class=cards>" + "".join(
+        f"<div class=stat><b>{_esc(n)}</b><span>{_esc(label)}</span></div>"
+        for n, label in cards
+    ) + "</div>"
+    latest = "".join(_data_row(tenant_id, lead, k) for lead in leads[:5])
+    if not latest:
+        latest = (
+            "<div class=empty-state><strong>No calls captured yet</strong>"
+            "Example call data will appear here after the first missed call or text.</div>"
+        )
+    return _view_shell("Dashboard", "Call capture overview", grid + "<div class=kicker>Latest enquiries</div><div class=data-list>" + latest + "</div>")
+
+
+def _customers_view(tenant_id: str, leads: list[dict], k: str) -> str:
+    rows = "".join(_data_row(tenant_id, lead, k, title=lead.get("phone")) for lead in leads)
+    if not rows:
+        rows = (
+            "<div class=empty-state><strong>No customers yet</strong>"
+            "Each caller or texter becomes a customer record here.</div>"
+        )
+    return _view_shell(
+        "Customers",
+        "Every captured phone number, with its latest request and status",
+        f"<div class=data-list>{rows}</div>",
+    )
+
+
+def _jobs_view(tenant_id: str, leads: list[dict], k: str) -> str:
+    job_leads = [
+        lead
+        for lead in leads
+        if lead.get("job_type") or lead.get("triage") or lead.get("booking") or lead.get("stage") != "missed_call"
+    ]
+    rows = "".join(_data_row(tenant_id, lead, k) for lead in job_leads)
+    if not rows:
+        rows = (
+            "<div class=empty-state><strong>No qualified jobs yet</strong>"
+            "Once the caller gives enough detail, the enquiry is allocated here as a job.</div>"
+        )
+    return _view_shell(
+        "Jobs",
+        "Qualified enquiries grouped from call and text conversations",
+        f"<div class=data-list>{rows}</div>",
+    )
+
+
+def _schedule_view(tenant_id: str, leads: list[dict], k: str) -> str:
+    booked = [lead for lead in leads if lead.get("booking")]
+    waiting = [lead for lead in leads if not lead.get("booking") and lead.get("stage") in ("booking", "qualifying", "triaging")]
+    booked_rows = "".join(_data_row(tenant_id, lead, k, title=lead.get("booking") or _lead_title(lead)) for lead in booked)
+    waiting_rows = "".join(_data_row(tenant_id, lead, k) for lead in waiting[:8])
+    if not booked_rows:
+        booked_rows = "<div class=empty-state><strong>No booked appointments</strong>Booked jobs will appear here.</div>"
+    if not waiting_rows:
+        waiting_rows = "<div class=empty-state><strong>No scheduling follow-ups</strong>Leads needing a time will appear here.</div>"
+    return _view_shell(
+        "Schedule",
+        "Booked appointments and leads waiting on a time",
+        "<div class=kicker>Booked</div><div class=data-list>"
+        + booked_rows
+        + "</div><div class=kicker>Needs scheduling</div><div class=data-list>"
+        + waiting_rows
+        + "</div>",
+    )
+
+
+def _settings_view(t: dict, tenant_id: str, k: str) -> str:
+    fields = (
+        ("Business", t.get("business_name")),
+        ("Trade", t.get("trade_noun")),
+        ("Service area", t.get("service_area_short") or t.get("city")),
+        ("Twilio number", t.get("twilio_number") or "Not connected"),
+        ("Owner mobile", t.get("owner_mobile") or "Not set"),
+    )
+    rows = "".join(
+        "<div class=data-row><div class=row-main>"
+        f"<div class=row-title>{_esc(label)}</div><div class=row-meta>{_esc(value)}</div>"
+        "</div></div>"
+        for label, value in fields
+    )
+    return _view_shell(
+        "Settings",
+        "Tenant routing and connection details",
+        _calendar_banner(tenant_id, t, k) + f"<div class=data-list>{rows}</div>",
+    )
+
+
 def _sign(payload: dict) -> str:
     raw = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
     sig = hmac.new(SECRET_KEY.encode(), raw.encode(), hashlib.sha256).hexdigest()
@@ -694,8 +1081,18 @@ def _page(
     brand: str = "Speed-to-Lead — Owner Dashboard",
     auto_refresh: int = 0,
     header_extra: str = "",
+    shell: bool = False,
 ) -> HTMLResponse:
     refresh = f"<meta http-equiv=refresh content={auto_refresh}>" if auto_refresh else ""
+    header = (
+        ""
+        if shell
+        else (
+            "<header><div class=hwrap>"
+            f"<span class=brand>{_esc(brand)}</span>{header_extra}</div></header>"
+        )
+    )
+    main_cls = " class=shell-main" if shell else ""
     return HTMLResponse(
         "<!doctype html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width, initial-scale=1'>"
@@ -705,7 +1102,8 @@ def _page(
         f"<title>{_esc(title)}</title><style>"
         # Clean SaaS (light) design system — tokens.
         ":root{--bg:#f4f5f7;--card:#fff;--line:#e8e9ee;--ink:#15171c;--muted:#6b7280;"
-        "--accent:#2563eb;--accent-soft:#eef3ff;--ok:#15803d;--ok-soft:#e8f6ec;"
+        "--nav:#141b2f;--nav-soft:#1d2740;--nav-ink:#e8edf8;--nav-muted:#98a2b3;"
+        "--accent:#1684d8;--accent-soft:#eaf6ff;--ok:#15803d;--ok-soft:#e8f6ec;"
         "--danger:#dc2626;--danger-soft:#fdeceb;--warn:#b45309;--warn-soft:#fff4e2;"
         "--shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08)}"
         "*{box-sizing:border-box}"
@@ -719,6 +1117,7 @@ def _page(
         ".chip{display:inline-flex;align-items:center;gap:6px;background:var(--accent-soft);"
         "color:var(--accent);font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:99px}"
         "main{max-width:980px;margin:0 auto;padding:22px 20px 48px}"
+        "main.shell-main{max-width:none;margin:0;padding:0;min-height:100vh}"
         "a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}"
         "h1{font-size:22px;letter-spacing:-.02em;margin:6px 0 2px}"
         "h2{margin:26px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}"
@@ -738,6 +1137,63 @@ def _page(
         "box-shadow:0 4px 12px rgba(16,24,40,.10);border-color:#d6d9e2}"
         ".stat b{display:block;font-size:28px;font-weight:700;letter-spacing:-.02em;line-height:1.1}"
         ".stat span{font-size:12.5px;color:var(--muted)}"
+        # Dashboard shell.
+        ".app-shell{min-height:100vh;display:grid;grid-template-columns:232px minmax(0,1fr);background:#f6f8fb}"
+        ".dash-sidebar{background:var(--nav);color:var(--nav-ink);padding:24px 14px;display:flex;"
+        "flex-direction:column;gap:22px;min-width:0}"
+        ".tenant-mark{padding:0 10px}.tenant-logo{width:42px;height:42px;border-radius:8px;background:#5ab6e8;"
+        "display:grid;place-items:center;color:#07111f;font-weight:800;margin-bottom:12px}"
+        ".tenant-name{font-size:20px;line-height:1.15;font-weight:800;overflow-wrap:anywhere}"
+        ".tenant-sub{color:var(--nav-muted);font-size:12px;margin-top:5px}.nav-list{display:flex;flex-direction:column;gap:4px}"
+        ".nav-item{display:flex;align-items:center;gap:10px;color:var(--nav-muted);padding:9px 10px;"
+        "border-radius:8px;font-size:14px;font-weight:650;min-height:38px}.nav-item:hover{text-decoration:none;"
+        "background:var(--nav-soft);color:var(--nav-ink)}.nav-item.active{background:#0f7fc7;color:#fff}"
+        ".nav-dot{width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.75;flex:0 0 auto}"
+        ".side-foot{margin-top:auto;padding:0 10px;display:flex;flex-direction:column;gap:8px}"
+        ".side-link{color:var(--nav-muted);font-size:13px}.side-link:hover{color:var(--nav-ink)}"
+        ".workspace{min-width:0}.workspace.pad{padding:26px clamp(18px,3vw,36px)}"
+        ".page-content{padding:26px clamp(18px,3vw,36px);max-width:980px}"
+        ".inbox-layout{display:grid;grid-template-columns:minmax(320px,400px) minmax(0,1fr);min-height:100vh}"
+        ".inbox-pane{background:#fff;border-right:1px solid var(--line);min-width:0;display:flex;flex-direction:column}"
+        ".pane-head{padding:24px 22px 14px;border-bottom:1px solid var(--line)}"
+        ".pane-title{font-size:26px;font-weight:800;letter-spacing:0;line-height:1.15;margin:0 0 14px}"
+        ".tool-row{display:flex;gap:9px;align-items:center;min-width:0}.tool-row+.tool-row{margin-top:10px}"
+        ".search-input,.select-input{height:38px;border:1px solid var(--line);border-radius:8px;background:#fff;"
+        "padding:0 11px;color:var(--ink);font:inherit;min-width:0}.search-input{flex:1}.select-input{flex:0 0 132px}"
+        ".filter-btn{height:38px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);"
+        "font-weight:700;padding:0 13px;cursor:pointer}.lead-list{overflow:auto;padding:10px 10px 18px}"
+        ".lead-row{display:block;color:inherit;border:1px solid transparent;border-radius:8px;padding:12px;margin:4px 0}"
+        ".lead-row:hover{text-decoration:none;background:#f8fbff}.lead-row.active{background:#eef8ff;border-color:#c9e9fb}"
+        ".lead-row-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.lead-title{font-weight:800;"
+        "color:#111827;overflow-wrap:anywhere}.lead-time{color:var(--muted);font-size:12px;white-space:nowrap}"
+        ".lead-snippet{color:#4b5563;font-size:13px;line-height:1.4;margin-top:7px;display:-webkit-box;"
+        "-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}.badge-line{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}"
+        ".status-pill{display:inline-flex;align-items:center;height:22px;border-radius:999px;background:var(--accent-soft);"
+        "color:var(--accent);font-size:11px;font-weight:800;padding:0 8px}.status-pill.ok{background:var(--ok-soft);color:var(--ok)}"
+        ".status-pill.warn{background:var(--warn-soft);color:var(--warn)}.status-pill.danger{background:var(--danger-soft);color:var(--danger)}"
+        ".detail-pane{min-width:0;background:#fbfcff;display:flex;flex-direction:column}.detail-head{background:#fff;"
+        "border-bottom:1px solid var(--line);padding:22px 28px;display:flex;align-items:center;justify-content:space-between;"
+        "gap:18px;flex-wrap:wrap}.customer-head{display:flex;align-items:center;gap:13px;min-width:0}"
+        ".avatar{width:42px;height:42px;border-radius:50%;background:#f8c35b;color:#152033;display:grid;place-items:center;"
+        "font-weight:800;flex:0 0 auto}.customer-name{font-weight:800;font-size:16px;overflow-wrap:anywhere}"
+        ".customer-meta{color:var(--muted);font-size:12px}.detail-actions{display:flex;gap:8px;flex-wrap:wrap}"
+        ".icon-btn{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;height:36px;padding:0 12px;"
+        "display:inline-flex;align-items:center;font-size:13px;font-weight:800}.icon-btn:hover{text-decoration:none;border-color:#cfd5df}"
+        ".channel-tabs{display:flex;gap:8px;align-items:center;padding:12px 28px;background:#fff;border-bottom:1px solid var(--line);"
+        "overflow:auto}.channel-tab{white-space:nowrap;font-size:13px;color:#667085;padding:7px 10px;border-radius:8px}"
+        ".channel-tab.active{background:var(--accent-soft);color:var(--accent);font-weight:800}.detail-body{padding:22px 28px 34px;max-width:860px}"
+        ".detail-card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:14px;box-shadow:var(--shadow)}"
+        ".detail-card h2{margin:0 0 10px;text-transform:none;letter-spacing:0;font-size:15px;color:#111827}"
+        ".summary-points{margin:0;padding-left:18px;color:#4b5563}.summary-points li{margin:4px 0}.preview-thread{display:flex;flex-direction:column;gap:8px}"
+        ".empty-state{border:1px dashed #ccd3df;border-radius:8px;padding:24px;background:#fff;color:var(--muted);text-align:center}"
+        ".empty-state strong{display:block;color:#111827;font-size:16px;margin-bottom:4px}"
+        ".view-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:16px}"
+        ".view-title{font-size:26px;font-weight:800;letter-spacing:0;line-height:1.15;margin:0}.view-sub{color:var(--muted);margin-top:4px}"
+        ".data-list{display:grid;gap:10px}.data-row{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;"
+        "box-shadow:var(--shadow);display:flex;justify-content:space-between;gap:14px;align-items:flex-start}"
+        ".row-main{min-width:0}.row-title{font-weight:800;color:#111827;overflow-wrap:anywhere}.row-meta{color:#4b5563;font-size:13px;margin-top:4px}"
+        ".row-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.kicker{font-size:12px;font-weight:800;color:var(--muted);"
+        "text-transform:uppercase;letter-spacing:.04em;margin:22px 0 8px}.mini-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}"
         # Lead cards.
         ".lead{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;"
         "margin:10px 0;box-shadow:var(--shadow)}"
@@ -768,9 +1224,17 @@ def _page(
         ".bubble b{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}"
         ".cust{background:var(--card);border:1px solid var(--line)}"
         ".ai{background:var(--accent-soft);margin-left:auto}"
-        "</style></head><body><header><div class=hwrap>"
-        f"<span class=brand>{_esc(brand)}</span>{header_extra}</div></header>"
-        f"<main>{body}</main></body></html>"
+        "@media(max-width:900px){.app-shell{display:block}.dash-sidebar{position:sticky;top:0;z-index:4;padding:14px;gap:12px}"
+        ".tenant-mark{display:flex;align-items:center;gap:10px;padding:0}.tenant-logo{width:34px;height:34px;margin:0}"
+        ".tenant-name{font-size:16px}.tenant-sub{display:none}.nav-list{flex-direction:row;overflow:auto;padding-bottom:2px}"
+        ".nav-item{flex:0 0 auto}.side-foot{display:none}.inbox-layout{grid-template-columns:1fr;min-height:0}"
+        ".inbox-pane{border-right:0;border-bottom:1px solid var(--line)}.lead-list{max-height:none;overflow:visible}"
+        ".detail-head,.channel-tabs,.detail-body{padding-left:18px;padding-right:18px}.workspace.pad,.page-content{padding:18px}}"
+        "@media(max-width:480px){body{font-size:14px}.pane-head{padding:18px 14px 12px}.pane-title{font-size:22px}"
+        ".tool-row{flex-wrap:wrap}.search-input{flex:1 1 100%}.select-input{flex:1 1 120px}.filter-btn{flex:0 0 auto}"
+        ".detail-head{align-items:flex-start}.icon-btn{height:34px;padding:0 10px}.bubble{max-width:92%}}"
+        "</style></head><body>"
+        f"{header}<main{main_cls}>{body}</main></body></html>"
     )
 
 
@@ -847,15 +1311,26 @@ def dashboard(request: Request, key: str = "") -> Response:
         )
     if not rows:
         rows = "<tr><td colspan=3 class=muted>No tenants yet.</td></tr>"
-    body = (
-        "<p class=muted><a href='/logout'>log out</a></p>"
+    admin_body = (
+        "<div class=detail-card>"
+        "<h1 class=pane-title>Businesses</h1>"
         f"<table><tr><th>Business</th><th>Leads</th><th>Open</th></tr>{rows}</table>"
+        "</div>"
     )
-    return _page("Dashboard", body)
+    return _page("Dashboard", _admin_shell(k, admin_body), shell=True)
+
 
 
 @app.get("/dashboard/{tenant_id}")
-def dashboard_tenant(tenant_id: str, request: Request, key: str = "") -> Response:
+def dashboard_tenant(
+    tenant_id: str,
+    request: Request,
+    key: str = "",
+    phone: str = "",
+    q: str = "",
+    status: str = "",
+    view: str = "inbox",
+) -> Response:
     user = _current_user(request, key)
     if not user:
         return RedirectResponse("/login", status_code=303)
@@ -867,49 +1342,94 @@ def dashboard_tenant(tenant_id: str, request: Request, key: str = "") -> Respons
         raise HTTPException(status_code=404, detail="Unknown tenant")
     k = urllib.parse.quote(key)
     all_leads = store.list_leads(tenant_id)
-    groups: dict[str, list] = {}
-    for lead in all_leads:
-        groups.setdefault(lead.get("stage") or "other", []).append(lead)
-
-    # Admins get a back-link to all businesses; clients just get log out.
-    nav = (
-        f"<a href='/dashboard?key={k}'>← all businesses</a>"
-        if user["role"] == "admin"
-        else "<a href='/logout'>log out</a>"
-    )
-    report_link = (
-        f"<a href='/dashboard/{_esc(tenant_id)}/report?key={k}'>📈 Results report</a>"
-    )
-    order, labels, cols, explicit = _dashboard_cfg(t)
-    body = (
-        f"<p id=top class=muted>{nav} · {report_link}</p>"
-        f"<h1>{_esc(t['business_name'])}</h1>"
-        + _calendar_banner(tenant_id, t, k)
-        + _stat_cards(all_leads)
-    )
-    # An explicit stage_order hides any stage not listed; otherwise show extras.
-    stages_seq = list(order) if explicit else order + [s for s in groups if s not in order]
-    shown = False
-    for stage in stages_seq:
-        items = groups.get(stage)
-        if not items:
-            continue
-        shown = True
-        label = labels.get(stage, stage.title())
-        body += f"<h2 id='stage-{_esc(stage)}'>{_esc(label)} ({len(items)})</h2>"
-        body += "".join(_lead_card(tenant_id, lead, k, cols) for lead in items)
-    if not shown:
-        body += (
-            "<p class=muted>No leads yet — your next missed call or text "
-            "lands here automatically.</p>"
+    view = view if view in ("dashboard", "inbox", "customers", "jobs", "schedule", "settings") else "inbox"
+    if view != "inbox":
+        view_map = {
+            "dashboard": ("Dashboard", _dashboard_view(tenant_id, all_leads, k)),
+            "customers": ("Customers", _customers_view(tenant_id, all_leads, k)),
+            "jobs": ("Jobs", _jobs_view(tenant_id, all_leads, k)),
+            "schedule": ("Schedule", _schedule_view(tenant_id, all_leads, k)),
+            "settings": ("Settings", _settings_view(t, tenant_id, k)),
+        }
+        active, content = view_map[view]
+        body = _dashboard_shell(t, tenant_id, k, content, active=active, user=user)
+        return _page(
+            t["business_name"],
+            body,
+            brand=f"{t['business_name']} - {active}",
+            auto_refresh=30,
+            shell=True,
         )
+    needle = q.strip().lower()
+    status = status if status in ("", "open", "missed_call", "booking", "closed") else ""
+    visible_leads = all_leads
+    if needle:
+        visible_leads = [
+            lead
+            for lead in visible_leads
+            if needle
+            in " ".join(
+                str(lead.get(field) or "")
+                for field in ("phone", "job_type", "suburb", "urgency", "triage", "snippet")
+            ).lower()
+        ]
+    if status == "open":
+        visible_leads = [lead for lead in visible_leads if lead.get("stage") != "closed"]
+    elif status:
+        visible_leads = [lead for lead in visible_leads if lead.get("stage") == status]
+
+    selected_phone = phone or (visible_leads[0]["phone"] if visible_leads else "")
+    selected = store.lead_detail(tenant_id, selected_phone) if selected_phone else None
+    lead_rows = "".join(
+        _lead_row(tenant_id, lead, k, selected_phone, q, status) for lead in visible_leads
+    )
+    if not lead_rows:
+        lead_rows = (
+            "<div class=empty-state><strong>No matching leads</strong>"
+            "New enquiries will appear here as soon as they arrive.</div>"
+        )
+    status_options = (
+        ("", "All messages"),
+        ("open", "Open"),
+        ("missed_call", "Missed calls"),
+        ("booking", "Booked"),
+        ("closed", "Closed"),
+    )
+    opts = "".join(
+        f"<option value='{_esc(value)}'{' selected' if value == status else ''}>{_esc(label)}</option>"
+        for value, label in status_options
+    )
+    inbox = (
+        "<div class=inbox-layout>"
+        "<section class=inbox-pane>"
+        "<div class=pane-head>"
+        "<h1 class=pane-title>Inbox</h1>"
+        f"<form method=get action='/dashboard/{_esc(tenant_id)}'>"
+        f"<input type=hidden name=key value='{_esc(key)}'>"
+        "<div class=tool-row>"
+        f"<input class=search-input name=q value='{_esc(q)}' placeholder='Search'>"
+        "<button class=filter-btn type=submit>Filter</button>"
+        "</div>"
+        "<div class=tool-row>"
+        f"<select class=select-input name=status>{opts}</select>"
+        "<select class=select-input name=sort disabled><option>Newest</option></select>"
+        "</div>"
+        "</form>"
+        "</div>"
+        f"<div class=lead-list>{lead_rows}</div>"
+        "</section>"
+        + _lead_detail_panel(tenant_id, selected, k)
+        + "</div>"
+    )
+    body = _dashboard_shell(t, tenant_id, k, inbox, active="Inbox", user=user)
     return _page(
         t["business_name"],
         body,
-        brand=f"{t['business_name']} — Leads",
+        brand=f"{t['business_name']} - Leads",
         auto_refresh=30,
-        header_extra="<span class=chip>⚡ AI replies in seconds · 24/7</span>",
+        shell=True,
     )
+
 
 
 @app.get("/dashboard/{tenant_id}/lead")
@@ -925,6 +1445,10 @@ def dashboard_lead(
     if not lead:
         raise HTTPException(status_code=404, detail="Unknown lead")
     k = urllib.parse.quote(key)
+    try:
+        t = tenants.load_tenant(tenant_id)
+    except (FileNotFoundError, ValueError):
+        t = {"business_name": "Speed-to-Lead", "trade_noun": "", "city": ""}
     fields = " · ".join(
         f"{f}: {_esc(lead.get(f))}"
         for f in ("job_type", "urgency", "suburb", "property_type", "triage", "stage", "booking")
@@ -949,7 +1473,15 @@ def dashboard_lead(
         f"<h1>{_esc(lead['phone'])}</h1><p class=muted>{fields}</p>"
         f"<div class=row>{bubbles}</div>"
     )
-    return _page(lead["phone"], body, brand=brand)
+    shell_body = _dashboard_shell(
+        t,
+        tenant_id,
+        k,
+        f"<div class=page-content>{body}</div>",
+        active="Inbox",
+        user=user,
+    )
+    return _page(lead["phone"], shell_body, brand=brand, shell=True)
 
 
 # --- Owner ROI report -------------------------------------------------------
@@ -1022,11 +1554,21 @@ def dashboard_report(
         + grid
         + footnote
     )
-    return _page(
-        f"{t['business_name']} — Results",
-        body,
-        brand=f"{t['business_name']} — Results",
+    shell_body = _dashboard_shell(
+        t,
+        tenant_id,
+        k,
+        f"<div class=page-content>{body}</div>",
+        active="Report/Results",
+        user=user,
     )
+    return _page(
+        f"{t['business_name']} - Results",
+        shell_body,
+        brand=f"{t['business_name']} - Results",
+        shell=True,
+    )
+
 
 
 # --- Self-serve Google Calendar connect -------------------------------------

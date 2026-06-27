@@ -886,3 +886,43 @@ Both distilled from `context/about-me.md`, `context/about-business.md`, `context
 **Update (live-call debugging, 2026-06-26):** First real calls dropped ~5s in. Two stacked causes: (1) the dialled AU number routed to the **RapidFlow** tenant, which was `voice_textback_only` (the old say-and-text path) — switched it to `voice_answer`. (2) The voice agent then dropped right after the greeting because Deepgram's hosted Anthropic returned **404 not_found for `claude-sonnet-4-20250514`** (still on Deepgram's allowlist but retired upstream) → `THINK_REQUEST_FAILED` → `FAILED_TO_THINK` → socket close → call ends. Fixed by switching `DG_THINK_MODEL` to **`claude-sonnet-4-6`** (current, on Deepgram's allowlist, matches the SMS engine; verified live by injecting Deepgram-TTS speech and confirming an LLM reply + `alert_owner` tool-call with no error). Also added Deepgram `Error`/`Warning` logging + `PYTHONUNBUFFERED=1` so future think failures surface in `docker logs`. **Lesson:** Deepgram's model allowlist ≠ what's actually live upstream — pin to a current id, and a dead think model fails *silently* (clean socket close) unless you log the `Warning`/`Error` events.
 
 **Owner:** Hughie
+
+---
+
+## 2026-06-26 - Voice latency/naturalness tuning + post-call owner summary shipped live
+
+**Decision:** The live Deepgram voice agent now prioritises lower latency and a more natural call close. Current live voice config: Deepgram Flux listen (`flux-general-en`, `version=v2`, `eot_threshold=0.65`, `eager_eot_threshold=0.45`, `eot_timeout_ms=1500`), Anthropic hosted think model `claude-haiku-4-5` at temperature `0.3`, and Deepgram Aura voice `aura-2-hyperion-en`. The server now queues `alert_owner` and `book_job` actions during the call, then sends one consolidated owner SMS/Telegram summary after the call ends. `end_call` waits about 2 seconds after the goodbye, hangs up, then flushes queued owner actions. The Twilio stream also passes `caller` and `call_sid` into `/twilio/voice-stream`, so post-call summaries identify the caller.
+
+**Why:** Immediate Telegram/SMS/calendar work during the live call risks adding latency and makes the conversation feel less natural. The caller should hear only the receptionist flow; the owner should receive one clean handoff after the customer is finished. The model is instructed to ask "Anything else I can help you with?" before closing; if the caller says no, it gives a short warm goodbye and ends the call.
+
+**Verification:** Local product suite passed (`41 passed`). Deployed to VPS `/opt/speed-to-lead` with backups `.bak/20260626-113123/` and `.bak/20260626-113803/`; rebuilt with `docker compose up -d --build app`. Verified public health `https://stl.187-77-133-39.sslip.io/health` = ok, inside-container `/health` = ok, clean startup logs, and live container config shows Flux v2 + Haiku + Aura Hyperion. `/voice/probe` shows `Welcome` + `SettingsApplied` + greeting audio; its `ok:false` remains expected because the probe still looks for an old `Ready` event this Deepgram API version does not send.
+
+**Affects:** `product/speed-to-lead-demo/app.py`, `voice_server.py`, `voice_engine.py`, `tests/test_voice_server.py`, `tests/test_webhook.py`.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-27 — Voice: Cartesia→Aura revert (Australian voice) + Deepgram handshake pre-connect
+
+**Decision (3 changes, all live on `https://stl.187-77-133-39.sslip.io`):**
+1. **Revert TTS Deepgram Cartesia → native Aura.** The 2026-06-26 Cartesia/Katie switch was the wrong call: Katie was **en-US** (lost the Australian accent) **and** added a separate TTS provider hop on top of the ~800ms Deepgram socket connect. Aura is Deepgram-native (no extra hop). `DEEPGRAM_TTS_PROVIDER` cartesia→deepgram in the VPS `.env`.
+2. **Female Australian voice:** `DEEPGRAM_VOICE=aura-2-theia-en` (was unset → code default `aura-2-hyperion-en`, male). Verified it resolves via `/voice/probe` (SettingsApplied, no Error). The code default stays `hyperion` so `test_voice_agent_defaults…` still asserts it.
+3. **Handshake pre-connect (option b).** Open the Deepgram WebSocket during Twilio's ring (fired from `app.py:twilio_voice` at webhook time, keyed by `CallSid`) and reuse it when the caller's media arrives — hides the cross-ocean handshake (the box is in Brazil) behind the ring. **Settings is NOT sent on the pre-connection**, only the bare socket, so the greeting still speaks into a live bridge (sending Settings early would speak the greeting into a socket with no caller yet and lose it). Env kill-switch `VOICE_PRECONNECT=0`; any failure silently falls back to a fresh open on the stream = today's behaviour.
+
+**Why:** Hughie's live ear caught that the post-Cartesia voice felt slower and lost its accent. Confirmed on the box: `dg_connect_ms≈791`, `first_agent_audio_ms≈2001`, dominated by the per-call Deepgram socket connect (not TTS). Aura removes the extra hop and restores the accent in one move; the pre-connect targets the handshake itself. The full-open-early + buffer-greeting version (option a) was rejected: it can't be tested without a real call (the synthetic `voice_stress.py` harness connects to Deepgram *directly*, bypassing the Twilio media-stream path) and the greeting-timing logic is exactly the kind of subtle thing that breaks a live demo.
+
+**Honest verification state:**
+- Unit-tested the coordination logic (3 new tests: preconnect-hit reuses the warm socket with `dg_connect_ms=0`; preconnect-failure falls back to fresh; kill-switch opens fresh) — **8/8 pass** in-container. Plus `/health` ok, probe clean, startup clean.
+- **NOT verified end-to-end:** neither the probe nor `voice_stress.py` exercises the media-stream path, so the actual latency win + no-call-drop is confirmed only by a real phone call. `docker logs speed-to-lead-app-1 | grep "voice latency"` will show `preconnect=hit|miss` on real calls — a high hit rate = the win landed. If a real call regresses, `VOICE_PRECONNECT=0` + recreate kills it instantly with no redeploy.
+
+**Trade-off noted:** on the rare race where media arrives fast AND the Deepgram connect is pathologically slow that call, the stream waits ≤`PRECONNECT_WAIT_S` (0.5s) then opens fresh — up to ~0.5s worse than today on that one call, never a broken call. Tunable via env.
+
+**Alternatives considered:**
+- *Option a (pre-open + send Settings early, buffer the greeting)* — bigger latency win but untestable blind and carries the greeting-loss landmine; rejected for a live demo that just regressed.
+- *Leave latency, only do the voice revert* — Hughie explicitly asked for the pre-connect; built it with the safety contract instead.
+- *Keep Cartesia* — rejected; lost the accent and added a hop for no benefit over native Aura.
+
+**Affects:** `product/speed-to-lead-demo/voice_server.py` (preconnect registry + `_take_or_open_dg` + `_open_dg_authed`/`_safe_close`/`_reap_preconnect`; `voice_stream` now take-or-open then send Settings; latency log gains `preconnect=`), `app.py` (fires `preconnect_call` in the `voice_answer` webhook branch), `tests/test_voice_server.py` (3 new tests + the defaults test made env-independent). VPS `.env`: `DEEPGRAM_TTS_PROVIDER=deepgram`, `DEEPGRAM_VOICE=aura-2-theia-en`, `VOICE_DEBUG_EVENTS=0`, `VOICE_PRECONNECT=1`. Owner-phone routing already `+61402129328` via `ELECTRICIAN_MOBILE` (the `dave` tenant has no `owner_mobile` override) — no change. Deploy: scp `voice_server.py`/`app.py` → `docker compose up -d --build app`; pre-existing files backed up to `/opt/speed-to-lead/.bak/preconnect/`. `VOICE_DEBUG_EVENTS=1` (left on from last session's debugging) turned off.
+
+**Owner:** Hughie

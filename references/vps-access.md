@@ -1,7 +1,7 @@
 # VPS Access — Hostinger (Hermes box)
 
 How to connect to Hughie's Hostinger VPS and where everything lives.
-Last verified live: **2026-06-17**.
+Last verified live: **2026-06-26**.
 
 > ⚠️ Secrets policy: the root password is **NOT** stored in this file (it's git-tracked).
 > It lives in `agents/hermes/.env` → `VPS_root_password` (that file is gitignored & untracked).
@@ -101,6 +101,31 @@ tail -15 $D/logs/gateway.log
 
 ---
 
+## Speed-to-lead live voice snapshot (2026-06-27)
+
+The live speed-to-lead app is deployed at `https://stl.187-77-133-39.sslip.io`
+and runs inside Docker service `app` / container `speed-to-lead-app-1`.
+
+Current live Deepgram Voice Agent config verified inside the restarted container:
+
+| Layer | Live value |
+|---|---|
+| Listen | Deepgram `flux-general-en`, `version=v2`, `eot_threshold=0.65`, `eager_eot_threshold=0.45`, `eot_timeout_ms=1500` |
+| Think | Anthropic hosted via Deepgram, `claude-haiku-4-5`, `temperature=0.3` |
+| Speak | Deepgram Aura `aura-2-theia-en` (female AU; env `DEEPGRAM_VOICE`; code default `aura-2-hyperion-en`) |
+| Pre-connect | Deepgram WebSocket handshake pre-opened during Twilio's ring (env `VOICE_PRECONNECT=1`); latency log carries `preconnect=hit\|miss`. Kill switch: set `0` + recreate |
+| Tool policy | `alert_owner` and `book_job` queue during the call; one consolidated owner SMS/Telegram summary sends after call end |
+| Call close | Agent asks "Anything else I can help you with?"; if caller says no, short goodbye, wait about 2s, hang up, then flush owner actions |
+
+Verification notes:
+- Public `/health` returned `{"status":"ok"}` through Caddy.
+- Inside-container `/health` returned `{"status":"ok"}`.
+- `/voice/probe?key=$DASHBOARD_TOKEN` showed `Welcome` + `SettingsApplied` + greeting audio. Its JSON `ok:false` is expected until the probe stops looking for the older `Ready` event.
+- Last deploy backups: `/opt/speed-to-lead/.bak/20260626-113123/`, `/opt/speed-to-lead/.bak/20260626-113803/`, and `/opt/speed-to-lead/.bak/preconnect/` (2026-06-27).
+- `VOICE_DEBUG_EVENTS=0` (left at `1` during 2026-06-26 debugging — turned off 2026-06-27).
+
+---
+
 ## Deploying the speed-to-lead app
 
 ⚠️ **`/opt/speed-to-lead` is NOT a git checkout** — it's a plain copy of `product/speed-to-lead-demo/`. `git pull` does nothing there. Deploy by copying source over SSH, then rebuilding:
@@ -118,7 +143,7 @@ ssh root@187.77.133.39 'cd /opt/speed-to-lead && docker compose up -d --build ap
 - **Rebuild, don't restart**, whenever `requirements.txt` changed (`build: .` bakes deps at build time).
 - **Tenant configs live only on the box** and can be stale vs local — e.g. `voice_answer` was missing from the VPS `tenants/dave.json` even though local had it. Check tenant flags after a deploy.
 - Container is `speed-to-lead-app-1`; secrets are read from `/opt/speed-to-lead/.env` via compose `env_file`.
-- Quick health: `docker exec speed-to-lead-app-1 python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/health').read())"`. Deepgram check (no call): `GET /voice/probe?key=$DASHBOARD_TOKEN` — a working connection shows `Welcome` + `SettingsApplied` + audio even though the JSON `ok` field reads false (the probe greps for a `Ready` event this API version doesn't send).
+- Quick health from inside the container: `docker compose exec -T app python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/health').read())"`. Deepgram check (no call): `GET /voice/probe?key=$DASHBOARD_TOKEN` — a working connection shows `Welcome` + `SettingsApplied` + audio even though the JSON `ok` field reads false (the probe greps for a `Ready` event this API version doesn't send).
 - *Future improvement:* make `/opt/speed-to-lead` a sparse/real git checkout of `AIS-OS` so deploys become `git pull && docker compose up -d --build`.
 
 ## Safety notes
