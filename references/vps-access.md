@@ -112,7 +112,7 @@ Current live Deepgram Voice Agent config verified inside the restarted container
 |---|---|
 | Listen | Deepgram `flux-general-en`, `version=v2`, `eot_threshold=0.65`, `eager_eot_threshold=0.45`, `eot_timeout_ms=1500` |
 | Think | Anthropic hosted via Deepgram, `claude-haiku-4-5`, `temperature=0.3` |
-| Speak | Deepgram Aura `aura-2-theia-en` (female AU; env `DEEPGRAM_VOICE`; code default `aura-2-hyperion-en`) |
+| Speak | Deepgram Aura `aura-2-thalia-en` (female, American, clear; env `DEEPGRAM_VOICE`). Was `aura-2-theia-en` (the only female AU voice in Aura-2) — swapped 2026-06-27 after Hughie found it unclear on calls. Code default `aura-2-hyperion-en`. |
 | Pre-connect | Deepgram WebSocket handshake pre-opened during Twilio's ring (env `VOICE_PRECONNECT=1`); latency log carries `preconnect=hit\|miss`. Kill switch: set `0` + recreate |
 | Tool policy | `alert_owner` and `book_job` queue during the call; one consolidated owner SMS/Telegram summary sends after call end |
 | Call close | Agent asks "Anything else I can help you with?"; if caller says no, short goodbye, wait about 2s, hang up, then flush owner actions |

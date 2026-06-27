@@ -978,3 +978,15 @@ Both distilled from `context/about-me.md`, `context/about-business.md`, `context
 **Rollback:** restore `twilio_number` to rapidflow from `/opt/speed-to-lead/.bak/crown-st-auto-go-live-20260627-042557/` + rebuild.
 
 **Owner:** Hughie
+
+---
+
+## 2026-06-27 — Voice theia→thalia; John's login; crown-st-auto calendar connected
+
+**Decision:** (1) Swapped `DEEPGRAM_VOICE` aura-2-theia-en → **aura-2-thalia-en** (Deepgram's featured clear female, American accent). Hughie found theia unclear on calls; theia is the **only** female Australian voice in Aura-2, so a clearer female voice required dropping the AU accent. thalia is customer-service/IVR-tuned. (2) Created John's client dashboard login — username `john`, pbkdf2-hashed in `data/accounts.json` (password printed once, hand to John). (3) Hughie connected crown-st-auto's Google Calendar (mth9703@gmail.com) via the dashboard self-serve flow.
+
+**Verified:** env = thalia in-container; probe `SettingsApplied` (no Error); `/health` ok. Calendar token persisted host-side via `docker cp`.
+
+**Footgun noted:** the dashboard self-serve OAuth writes the refresh token into the CONTAINER's writable layer (tenant configs are baked into the image, not mounted) — so it would be LOST on the next rebuild/recreate. Persisted to the host file this time via `docker cp speed-to-lead-app-1:/app/tenants/crown-st-auto.json`. Real fix (future `/level-up`): mount `tenants/` as a volume, or store OAuth tokens under the already-mounted `data/` dir so self-serve connections survive deploys without a manual copy.
+
+**Owner:** Hughie
