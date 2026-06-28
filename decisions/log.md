@@ -990,3 +990,105 @@ Both distilled from `context/about-me.md`, `context/about-business.md`, `context
 **Footgun noted:** the dashboard self-serve OAuth writes the refresh token into the CONTAINER's writable layer (tenant configs are baked into the image, not mounted) — so it would be LOST on the next rebuild/recreate. Persisted to the host file this time via `docker cp speed-to-lead-app-1:/app/tenants/crown-st-auto.json`. Real fix (future `/level-up`): mount `tenants/` as a volume, or store OAuth tokens under the already-mounted `data/` dir so self-serve connections survive deploys without a manual copy.
 
 **Owner:** Hughie
+
+---
+
+## 2026-06-27 - Netlify landing page source: `leadresponder (2).html`
+
+**Decision:** The public LeadResponder Netlify landing page uses `C:\Users\mth97\Downloads\leadresponder (2).html` as the source of truth, copied into `product/speed-to-lead-demo/site/index.html`. The previous hand-editable static HTML is no longer the live version.
+
+**Why:** Hughie explicitly chose the downloaded `leadresponder (2).html` version over the current deployed page. Netlify is already linked to the `leadresponder` project, so the fastest reliable path was a direct static-file replacement and production deploy.
+
+**Affects:** `product/speed-to-lead-demo/site/index.html`; Netlify project `leadresponder` at `https://leadresponder.netlify.app`.
+
+**Verified:** Production deploy completed via `netlify.cmd deploy --dir=site --no-build --prod`. Live URL returned 200 with title `LeadResponder | Never Lose a Lead to a Missed Call`. Unique deploy URL: `https://6a3f7de1fddd64da4e55b57d--leadresponder.netlify.app`.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-27 - Website login routes to client dashboard
+
+**Decision:** The public website now exposes `https://leadresponder.netlify.app/login` as the client login entry point. Netlify redirects `/login`, `/dashboard`, `/dashboard/*`, and `/logout` to the live FastAPI dashboard on `https://stl.187-77-133-39.sslip.io`. The landing page shows a `Client Login` link that points to `/login`, and `create_account.py` prints the branded website login URL when a client account is created.
+
+**Why:** The dashboard auth already works with operator-provisioned tenant accounts and signed session cookies on the FastAPI host. A redirect keeps that auth flow intact while giving clients a simple website URL to use. Full same-domain proxying or self-serve signup/payment is deferred until there is a real app subdomain and a billing/onboarding flow.
+
+**Affects:** `product/speed-to-lead-demo/netlify.toml`, `product/speed-to-lead-demo/site/index.html`, `product/speed-to-lead-demo/create_account.py`, `.env.example`.
+
+**Verified:** Production deploy completed via `netlify.cmd deploy --dir=site --no-build --prod`. Live homepage contains `Client Login` with `href="/login"` and mobile `Login` text. `https://leadresponder.netlify.app/login` returns `302` to `https://stl.187-77-133-39.sslip.io/login`; following redirects with GET returns `200`. Unique deploy URL: `https://6a3f80874f3ca288336535ea--leadresponder.netlify.app`.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-28 — Voice stack: stay managed (Deepgram + Twilio); moat = shadow FSM, not hand-rolled transport
+
+**Decision (LOCKED):**
+1. **Build-vs-buy:** STAY on the managed stack — Deepgram Voice Agent API + Twilio (the live agent, persona Syanna, on +61468089224). Do NOT hand-roll the 5-layer voice stack (LiveKit / Silero VAD / raw Deepgram / Groq / Cartesia), and do NOT add Silero VAD. Deepgram manages 4 of 5 layers at ~$0.085/min all-in, AU-native (Aura-2 + +61 DID). Extends the 2026-06-26 voice-pivot entry (Deepgram over an in-house build); this entry closes the "own more of the stack?" question.
+2. **The moat is the brain/orchestration/data layer, not the transport.** Ship a **shadow FSM** in our own code (observer + enforcer) — "Pockets of Determinism" — that gates the 4 existing tools at the `_run_function` seam and adds one `report_state` tool. Commodity plumbing is not the moat.
+3. **Tier-1 first:** observability only — `voice_call_states` + `voice_gate_log` tables, a thin `observe()`, shadow-mode, **no gating**. Harvest the `divergence_flag` corpus on live calls *before* building any preventive gates.
+
+**Trigger to re-evaluate platforms:** when client #2 signs and multi-tenancy becomes real → revisit Vapi (~$0.05/min incl. tax) vs. Deepgram.
+
+**Why:**
+- *Stay managed:* Deepgram owns realtime transport, STT, LLM, and TTS. Owning more transport = commodity plumbing any competitor can buy = no moat, plus more boxes to run solo. The leverage is what Deepgram CAN'T do: deterministic safety/revenue guarantees layered on a stochastic LLM.
+- *No Silero VAD:* redundant with Deepgram's flux VAD. Inference is <1ms but buffering adds 20–40ms and clips utterance onsets; no cost saving (Deepgram bills per connected minute). Only earns its keep if the dormant self-hosted `stream_voice_turn` path is activated — not now.
+- *Shadow FSM is the moat:* a service business's moat is distribution, trust, switching cost, and outcome-labeled data (2026-05-22). The FSM makes the stochastic agent deterministic where it matters (emergency escalation, agreement-before-book, no-hangup-before-booking) AND captures the labeled corpus competitors don't. Hormozi lens: More-not-Better + value-equation — don't build the 5th transport layer; build the one thing that makes the product trustworthy enough to charge for.
+
+**Honest caveats (load-bearing):**
+1. Gates are **DETECTIVE, not PREVENTIVE** — streaming-to-TTS means a caller can hear the wrong thing before a gate can retract. The FSM catches and flags; it doesn't always stop.
+2. `report_state` is **logging + tie-breaker only** — every gate fires on transcript observation, not on the agent's self-report.
+3. No mid-call **force-speak** primitive → emergency safety is code-side (force-fire owner alert + deterministic safety SMS), not a spoken line the LLM might mangle.
+
+**Why tier-1 now (on a free pilot):** crown-st-auto (John) is a **free pilot, not paying**. Binding constraint = convert John to a paid case study OR land paying client #1. FSM *gating* is premature until then — but tier-1 **observability** is not: call data can't be backfilled, it's zero-risk to the live line (logs only, never raises into the call path), and it starts the moat corpus compounding from day one. Defer the safety/revenue gates until John converts OR the corpus shows real divergence.
+
+**Spec:** `.planning/voice-fsm-spec.md` (17 sections; 11 states; gates G0–G11; `report_state` schema; two DDLs; `call_state.py` pseudocode; build order §14).
+
+**Alternatives considered:**
+- *Hand-roll the 5-layer stack* → commodity plumbing, more solo ops load, no moat. Rejected.
+- *Add Silero VAD now* → redundant, adds latency, clips onsets, saves nothing. Rejected (reserved for the dormant self-hosted path).
+- *Switch to Vapi now* → cheaper/min but premature before multi-tenancy is real. Deferred to client #2.
+- *Build safety/revenue gates immediately* → premature on a free pilot with no conversion. Defer per tier-1-first.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-28 — Tier-1 shadow FSM SHIPPED (observe + log only); the verification that earned its keep
+
+**What:** Implemented the spec's Tier 1 — a pure, unit-testable shadow FSM (`product/speed-to-lead-demo/call_state.py`) that runs alongside Deepgram's hosted LLM and derives call state from the transcript + tool stream. It OBSERVES and LOGS only; it gates nothing and force-fires nothing on a live call. The `divergence_flag` (FSM decision ≠ LLM `report_state` claim) is the eval corpus Tier 1 exists to harvest on `+61468089224`.
+
+**Files (all additive — nothing rewritten):** `call_state.py` (new; `CallState`/`LeadCapture`/`Directive`/`CallFSM`, two-tier accent-robust emergency matcher, negation/amendment-aware agreement, G0/G2/G3/G6/G7/G9/G10), `store.py` (`voice_call_states` + `voice_gate_log` tables with `divergence_flag`, `save_voice_state`/`log_gate`), `voice_engine.py` (`report_state` tool + one VOICE_MODE line), `voice_server.py` (FSM lifecycle: instantiate after Twilio `start`, threaded through both bridges, `observe()` off-loop, snapshot in `finally`, `report_state` logged with divergence).
+
+**The bug the adversarial verification caught (load-bearing):** a 4-lens verification workflow (shadow-safety / spec-conformance / threading / test-coverage → adversarial confirm) found that the production `_run_function` call site was passing 6 args — `fsm` defaulted to `None`, so on the live line `report_state` never ingested (no divergence corpus), `note_tool_call` never observed tools, and `note_service_area` never fed area status. CI was green while production was blind — every `_run_function` test omitted `fsm`, mirroring the bug. One-token fix (thread `fsm`), plus 15 wiring/regression tests that pin it: the production call-site guard, the **never-force-fire** shadow invariant, divergence-to-DB, and FSM/DB exception isolation. The workflow also confirmed the shadow guarantee holds *structurally* (`_handle_fsm_directives` can't reach `send_sms`/`_queue_alert`/`dg.send` — the sinks aren't in scope), so this was a correctness defect, never a live-safety regression. Also caught on re-read: the matcher would false-trigger `"sparky"` (AU slang for electrician) and `"gasp"` — fixed by using disambiguating phrases.
+
+**Verified:** `pytest` = **111 passed**. Pure-FSM behavior (state walks, G3 two-tier+accent incl. `boning smell`→burning, G7 negation/window-match, can_book/can_close, divergence) + the wiring seam (production path threads fsm, shadow never force-fires, divergence reaches `voice_gate_log`, FSM/DB faults swallowed). Deploy to the live line is the remaining manual step (Deepgram-side `report_state` schema acceptance can't be proven offline).
+
+**Tier-2 promotion gate (do NOT enforce until):** (1) ~1 week of live `voice_gate_log` rows showing the FSM's `can_book`/`can_close` verdicts are right, and (2) `note_service_area` reliably fires before `book_job` (the `can_book` G4 check depends on it — now wired, but unproven on real calls). Enforcement = flipping the log-only `_handle_fsm_directives` to also act on alert/sms/inject directives at the `_run_function` seam (spec §4b). Safety tier (G3 deterministic owner-alert + 000/utility SMS) is spec §14 step 2.
+
+**Why this was worth doing on a free pilot:** call data can't be backfilled; the corpus compounds from day one; Tier 1 is zero-risk to the live line (logs only, never raises into the call path, structurally cannot force-fire). The deterministic safety/revenue fixes stay off until the corpus justifies them.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-28 (later) — Pivot BACK to text-back as primary; voice demoted to dormant
+
+**Decision:** Missed-call-text-back is the primary lead-response again (it was the original SMS-first v1; the 2026-06-26 voice pivot only demoted it, never deleted it). crown-st-auto flipped `voice_answer: true` → `voice_textback_only: true` in `tenants/crown-st-auto.json`: inbound calls now get a static spoken greeting + opener SMS + hang-up (`app.py:287-308`), then flow into the existing two-way SMS convo (`/twilio/sms` → `workflow.run_turn` → `twilio_io.send_sms`). The Deepgram voice agent (Syanna) is dormant behind the flag — **not deleted**; `voice_server.py` / `voice_engine.py` / `call_state.py` stay banked.
+
+**Why:** the live voice agent is "terrible" — concretely **latency (too slow)** and **mishearing callers** (STT/intent errors, AU accents). These are the two classic frontier voice-AI problems: improvable but with no guaranteed payoff and real solo opportunity-cost. Text-back **eliminates both by construction** — no streaming race = no latency floor; no STT = no mishearing. And text-back was already built + tested (`tests/test_webhook.py:43,144,154`), so the pivot was a **one-flag flip (hours), not a build (days)**.
+
+**Hormozi lens (value equation):** John didn't buy "an AI voice agent" — he bought *"no lead goes cold, jobs get booked."* Voice's wow-factor is a seller-side benefit (demo sexiness); buyers pay for booked jobs. The binding constraint is converting John / landing client #1, not perfecting voice. Text-back delivers the dream outcome more reliably today.
+
+**Reverses:** the 2026-06-26 voice-pivot and the 2026-06-28 "stay managed voice" decisions above. The voice FSM tier-1 work shipped today (commits `65efabf` / `5e75050` / `3d4a122`) **stays banked** — reusable verbatim if voice is revived; the deterministic/corpus thinking carries to text.
+
+**Moat caveat:** a *generic* auto-text-back is commoditized. To stay chargeable, port the deterministic FSM gates to text (deterministic output is even more achievable in text — full output control, no streaming race). Without that, text-back is a race to the bottom.
+
+**Deploy:** `tenants/*.json` is gitignored + baked into the container image, so this flag flip is a **local edit that goes live on Hughie's next deploy** (image rebuild, or `docker cp` into the running container + restart, per the 2026-06-27 OAuth-persist note) — NOT a git commit. Only this log entry is committed.
+
+**Alternatives considered:**
+- *Fix the voice agent (latency + STT)* → frontier-grade, no guaranteed payoff, weeks of tuning. Rejected at this stage; deferred until after client #1 if voice is revived.
+- *Text-primary + voice-on-emergency-only* → would wire the dormant `twilio_io.place_call` for qualified emergencies. Rejected for now — pure text-back is simplest and most reliable for converting John.
+- *Text live + voice for demos* → keep voice on a flag/number for prospect demos. Deferred — add it if a sales demo needs the wow-factor.
+
+**Owner:** Hughie
