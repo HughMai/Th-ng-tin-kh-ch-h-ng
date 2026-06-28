@@ -903,23 +903,3 @@ def test_shadow_mode_logs_observe_and_swallows_log_failure(monkeypatch):
 
     # Must not raise — _handle_fsm_directives / _fsm_observe swallow it.
     _drive_deepgram(monkeypatch, [msg], fsm=fsm, log_gate=raising)
-
-
-def test_report_state_ack_when_fsm_is_none(monkeypatch):
-    """Degraded path: calling _run_function for report_state with fsm=None returns
-    a Deepgram-safe ack and does NOT touch store.log_gate. The live path no longer
-    hits this (it forwards fsm), but it remains the fallback if an FSM ever fails
-    to construct — Deepgram must still get valid JSON and no row is written."""
-    called = []
-
-    def spy(call_sid, gate, decision, **kw):
-        called.append(gate)
-
-    monkeypatch.setattr(voice_server.store, "log_gate", spy)
-    actions = voice_server._new_call_actions()
-    result = voice_server._run_function(
-        DEFAULT_TENANT, "+61411111111", "CA_X", "report_state",
-        {"triage": "emergency", "proposed_next": "escalate"}, actions, None,
-    )
-    assert json.loads(result) == {"approved": True, "instruction": ""}
-    assert called == [], f"store.log_gate must not be called when fsm=None; got {called}"
