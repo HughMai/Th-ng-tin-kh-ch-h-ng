@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import difflib
 import json
 import os
+import re
 import secrets
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -35,6 +38,7 @@ from zoneinfo import ZoneInfo  # noqa: E402
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect  # noqa: E402
 import websockets  # noqa: E402
 
+import call_state  # noqa: E402
 import gcal  # noqa: E402
 import store  # noqa: E402
 import telegram_io  # noqa: E402
@@ -80,6 +84,30 @@ DG_LISTEN_VERSION = os.environ.get("DEEPGRAM_LISTEN_VERSION") or (
 DG_EOT_THRESHOLD = _env_float("DEEPGRAM_EOT_THRESHOLD", 0.65)
 DG_EAGER_EOT_THRESHOLD = _env_float("DEEPGRAM_EAGER_EOT_THRESHOLD", 0.45)
 DG_EOT_TIMEOUT_MS = _env_int("DEEPGRAM_EOT_TIMEOUT_MS", 1500)
+VOICE_SILENCE_REPROMPT_MS = _env_int("VOICE_SILENCE_REPROMPT_MS", 7000)
+VOICE_UNCLEAR_SPEECH_MS = _env_int("VOICE_UNCLEAR_SPEECH_MS", 6000)
+# Max idle re-prompts per agent turn before going quiet. Caps the verbatim
+# re-ask loop that fires when a 2nd AgentAudioDone leaks past the single
+# suppress flag in _inject_agent_message.
+MAX_IDLE_REPROMPTS = _env_int("MAX_IDLE_REPROMPTS", 1)
+
+# --- call watchdog: end loops, dead air, and overruns ------------------------
+# The hosted Deepgram brain re-asks the same question on its OWN turn-taking
+# (line echo / false endpointing -> extra LLM turns; live evidence: identical
+# assistant turns 1s apart, caller transcripts with words:[]). Our reprompt
+# guardrails can't reach Deepgram's turns, so a watchdog ends the call instead
+# of looping forever. All three knobs are env-tunable.
+VOICE_MAX_CALL_SEC = _env_float("VOICE_MAX_CALL_SEC", 240.0)  # hard cap ("end at 4 minutes")
+VOICE_SILENCE_HANGUP_SEC = _env_float("VOICE_SILENCE_HANGUP_SEC", 25.0)  # no user speech this long -> end
+VOICE_LOOP_MAX_REPEATS = _env_int("VOICE_LOOP_MAX_REPEATS", 2)  # >=N identical agent turns -> end
+# Only count repeats that land inside this window. Targets the rapid Deepgram
+# self-loop (1s apart); lets our own 7s reprompt nudge through untouched.
+VOICE_LOOP_WINDOW_SEC = _env_float("VOICE_LOOP_WINDOW_SEC", 6.0)
+_WATCHDOG_GOODBYE = {  # best-effort close spoken before hanging up
+    "max_call_sec": "I'll need to wrap up our call now. The team will follow up shortly. Thanks for calling!",
+    "silence": "I haven't heard from you in a moment, so I'll let you go. Call us back anytime. Bye!",
+    "repeat_loop": "I think we got disconnected. I'll have the team follow up with you. Bye for now!",
+}
 # Aura-2 voice. Australian defaults fit AU trades better than the original US
 # Thalia voice. Try aura-2-theia-en if Hyperion sounds too warm/slow.
 AURA_VOICE = os.environ.get("DEEPGRAM_VOICE", "aura-2-hyperion-en")
@@ -185,12 +213,293 @@ def _log_latency(stats: dict, reason: str = "closed") -> None:
 # --- Deepgram agent config (brain + tools reused from voice_engine) ----------
 
 def _greeting(t: dict) -> str:
-    """Spoken the instant the call connects (Deepgram `greeting`). Short, warm,
-    opens the floor — the instructions then drive the triage."""
-    return (
-        f"Hi, it's the assistant for {t['business_name']}. What can we help "
-        f"you with today?"
+    """Spoken the instant the call connects via Deepgram `greeting`."""
+    return f"Hi, I'm Syanna from {t['business_name']}. How can I help you today?"
+
+
+def _reprompt_from_agent_text(text: str) -> str:
+    """Return the last spoken question so silence can trigger one short re-ask."""
+    questions = re.findall(r"[^.!?]*\?", text or "")
+    if not questions:
+        return ""
+    question = " ".join(questions[-1].strip().split())
+    return question if 0 < len(question) <= 120 else ""
+
+
+def _norm_utterance(text: str) -> str:
+    """Normalized form of an agent line for verbatim-repeat detection
+    (case- and whitespace-insensitive; punctuation kept, since two spoken
+    repeats transcribe char-identical)."""
+    return " ".join((text or "").lower().split())
+
+
+def _cancel_idle_reprompt(idle: dict) -> None:
+    task = idle.get("task")
+    if task and not task.done():
+        task.cancel()
+    idle["task"] = None
+
+
+def _cancel_unclear_recovery(idle: dict) -> None:
+    task = idle.get("unclear_task")
+    if task and not task.done():
+        task.cancel()
+    idle["unclear_task"] = None
+
+
+def _mark_user_activity(idle: dict) -> None:
+    """A genuine user *transcript* arrived: fresh reprompt budget for this turn,
+    and reset the silence clock + repeat streak the watchdog reads."""
+    idle["user_seq"] = int(idle.get("user_seq", 0)) + 1
+    idle["reprompt_count"] = 0
+    idle["last_injected"] = ""
+    idle["last_user_mono"] = time.perf_counter()
+    idle["repeat_streak"] = 0
+    idle["last_assistant_norm"] = ""
+    _cancel_idle_reprompt(idle)
+    _cancel_unclear_recovery(idle)
+
+
+def _on_vad_activity(idle: dict) -> None:
+    """VAD/Interruption (barge-in, or agent-TTS echo): advance the abort sequence
+    and cancel pending nudges, but do NOT reset the reprompt cap or last injected
+    line — only a real user transcript does. Stops echo tripping VAD from
+    re-arming the verbatim re-ask loop."""
+    idle["user_seq"] = int(idle.get("user_seq", 0)) + 1
+    _cancel_idle_reprompt(idle)
+    _cancel_unclear_recovery(idle)
+
+
+async def _inject_agent_message(dg, idle: dict, message: str) -> None:
+    idle["suppress_next_audio_done"] = True
+    idle["last_injected"] = message
+    # Shared nudge budget across idle + unclear paths; credited back on InjectionRefused.
+    idle["reprompt_count"] = int(idle.get("reprompt_count", 0)) + 1
+    await dg.send(
+        json.dumps(
+            {
+                "type": "InjectAgentMessage",
+                "behavior": "default",
+                "message": message,
+            }
+        )
     )
+
+
+async def _send_idle_reprompt(dg, idle: dict, user_seq: int, message: str) -> None:
+    try:
+        await asyncio.sleep(max(0, VOICE_SILENCE_REPROMPT_MS) / 1000)
+        if int(idle.get("user_seq", 0)) != user_seq:
+            return
+        _cancel_unclear_recovery(idle)  # only one nudge in flight at a time
+        await _inject_agent_message(dg, idle, message)
+    except asyncio.CancelledError:
+        pass
+
+
+async def _send_unclear_speech_recovery(dg, idle: dict, user_seq: int) -> None:
+    try:
+        await asyncio.sleep(max(0, VOICE_UNCLEAR_SPEECH_MS) / 1000)
+        if int(idle.get("user_seq", 0)) != user_seq:
+            return
+        _cancel_idle_reprompt(idle)  # only one nudge in flight at a time
+        question = _reprompt_from_agent_text(idle.get("last_agent_text", ""))
+        message = (
+            f"I didn't catch that. {question}"
+            if question
+            else "I didn't catch that. What do you need help with?"
+        )
+        await _inject_agent_message(dg, idle, message)
+    except asyncio.CancelledError:
+        pass
+
+
+def _schedule_unclear_speech_recovery(dg, idle: dict) -> None:
+    if VOICE_UNCLEAR_SPEECH_MS <= 0:
+        return
+    if int(idle.get("reprompt_count", 0)) >= MAX_IDLE_REPROMPTS:
+        return
+    _cancel_unclear_recovery(idle)
+    idle["unclear_task"] = asyncio.create_task(
+        _send_unclear_speech_recovery(dg, idle, int(idle.get("user_seq", 0)))
+    )
+
+
+def _schedule_idle_reprompt(dg, idle: dict) -> None:
+    if VOICE_SILENCE_REPROMPT_MS <= 0:
+        return
+    if int(idle.get("reprompt_count", 0)) >= MAX_IDLE_REPROMPTS:
+        return
+    message = _reprompt_from_agent_text(idle.get("last_agent_text", ""))
+    if not message:
+        return
+    if message == idle.get("last_injected"):
+        return  # never re-inject the exact line we just nudged with
+    _cancel_idle_reprompt(idle)
+    idle["task"] = asyncio.create_task(
+        _send_idle_reprompt(dg, idle, int(idle.get("user_seq", 0)), message)
+    )
+
+
+def _update_repeat_streak(idle: dict, norm: str, now: float) -> None:
+    """Track consecutive verbatim agent turns. Increments only when this line
+    matches the previous one AND landed inside the loop window (so our own 7s
+    reprompt nudge never counts); otherwise resets to 1."""
+    prev = idle.get("last_assistant_norm", "")
+    if norm and norm == prev and (now - idle.get("last_assistant_mono", now)) < VOICE_LOOP_WINDOW_SEC:
+        idle["repeat_streak"] = int(idle.get("repeat_streak", 1)) + 1
+    else:
+        idle["repeat_streak"] = 1
+    idle["last_assistant_norm"] = norm
+    idle["last_assistant_mono"] = now
+
+
+def _watchdog_trip_reason(idle: dict, now: float) -> str | None:
+    """Pure termination check (no sockets/Twilio) -> unit-testable. Returns a
+    key into _WATCHDOG_GOODBYE, or None when the call should continue."""
+    started = idle.get("call_started_mono")
+    if started is not None and now - started >= VOICE_MAX_CALL_SEC:
+        return "max_call_sec"
+    last_user = idle.get("last_user_mono")
+    if last_user is not None and now - last_user >= VOICE_SILENCE_HANGUP_SEC:
+        return "silence"
+    if int(idle.get("repeat_streak", 0)) >= VOICE_LOOP_MAX_REPEATS:
+        return "repeat_loop"
+    return None
+
+
+async def _watchdog_terminate(dg, idle: dict, call_sid: str, reason: str) -> None:
+    """Speak a short goodbye (best-effort), let it start playing, then hang up.
+    Idempotent via idle['ending'] — safe if the watchdog and the LLM end_call
+    tool race."""
+    if idle.get("ending"):
+        return
+    idle["ending"] = True
+    print(f"[voice] watchdog ending call ({reason})", flush=True)
+    goodbye = _WATCHDOG_GOODBYE.get(reason, "")
+    if goodbye:
+        try:
+            await dg.send(
+                json.dumps(
+                    {"type": "InjectAgentMessage", "behavior": "default", "message": goodbye}
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    await asyncio.sleep(2.0)  # let the goodbye play before we drop the line
+    if call_sid:
+        try:
+            await asyncio.to_thread(twilio_io.hang_up, call_sid)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voice] watchdog hang-up failed: {exc}")
+
+
+async def _call_watchdog(dg, idle: dict, call_sid: str) -> None:
+    """Poll idle ~1s and end the call when a watchdog condition trips. Runs
+    alongside the bridge and is cancelled in its finally block."""
+    try:
+        while True:
+            await asyncio.sleep(1.0)
+            if idle.get("ending"):
+                return
+            reason = _watchdog_trip_reason(idle, time.perf_counter())
+            if reason:
+                await _watchdog_terminate(dg, idle, call_sid, reason)
+                return
+    except asyncio.CancelledError:
+        pass
+
+
+def _norm_place(value: str) -> str:
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower().replace("&", " and ")
+    text = re.sub(r"\bst\b", "saint", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _place_choices(items: list[str] | None) -> dict[str, str]:
+    choices: dict[str, str] = {}
+    for item in items or []:
+        if isinstance(item, str) and item.strip():
+            choices[_norm_place(item)] = item.strip()
+    return choices
+
+
+def _best_place_match(raw: str, choices: dict[str, str]) -> tuple[str, float]:
+    needle = _norm_place(raw)
+    if not needle or not choices:
+        return "", 0.0
+    if needle in choices:
+        return choices[needle], 1.0
+    best_key = ""
+    best_score = 0.0
+    for key in choices:
+        score = difflib.SequenceMatcher(None, needle, key).ratio()
+        if needle in key or key in needle:
+            score = max(score, min(len(needle), len(key)) / max(len(needle), len(key)))
+        if score > best_score:
+            best_key = key
+            best_score = score
+    return (choices[best_key], best_score) if best_key else ("", 0.0)
+
+
+def _service_area_result(
+    t: dict, raw_suburb: str, *, status: str, canonical: str = "", confidence: float = 0.0
+) -> str:
+    in_area = True if status in {"in_area", "confirm"} else False if status == "out_of_area" else None
+    short = t.get("service_area_short", "the service area")
+    if status == "in_area":
+        instruction = f"Use {canonical} as the suburb and keep going."
+    elif status == "confirm":
+        instruction = f"Ask exactly: Did you mean {canonical}?"
+    elif status == "out_of_area":
+        instruction = f"Say {t.get('business_name', 'we')} only services {short}, then close politely."
+    else:
+        instruction = f"Ask exactly: Is that around {short}?"
+    return json.dumps(
+        {
+            "raw_suburb": raw_suburb,
+            "status": status,
+            "canonical_suburb": canonical,
+            "in_area": in_area,
+            "confidence": round(confidence, 3),
+            "instruction": instruction,
+        }
+    )
+
+
+def _check_service_area(t: dict, raw_suburb: str) -> str:
+    raw = (raw_suburb or "").strip()
+    if not raw:
+        return _service_area_result(t, raw, status="unknown")
+
+    suburbs = _place_choices(t.get("service_suburbs"))
+    aliases = {
+        _norm_place(alias): canonical
+        for alias, canonical in (t.get("suburb_aliases") or {}).items()
+        if isinstance(alias, str) and isinstance(canonical, str)
+    }
+    out_of_area = _place_choices(t.get("out_of_area_suburbs"))
+    norm = _norm_place(raw)
+
+    if norm in suburbs:
+        return _service_area_result(t, raw, status="in_area", canonical=suburbs[norm], confidence=1.0)
+    if norm in aliases:
+        return _service_area_result(t, raw, status="confirm", canonical=aliases[norm], confidence=0.95)
+
+    out_match, out_score = _best_place_match(raw, out_of_area)
+    if out_match and out_score >= 0.9:
+        return _service_area_result(t, raw, status="out_of_area", canonical=out_match, confidence=out_score)
+
+    match, score = _best_place_match(raw, suburbs)
+    if match and score >= 0.88:
+        return _service_area_result(t, raw, status="in_area", canonical=match, confidence=score)
+    if match and score >= 0.64:
+        return _service_area_result(t, raw, status="confirm", canonical=match, confidence=score)
+
+    return _service_area_result(t, raw, status="unknown", confidence=score)
 
 
 def _tools_for_deepgram() -> list[dict]:
@@ -206,10 +515,32 @@ def _tools_for_deepgram() -> list[dict]:
     ]
 
 
-def _listen_provider() -> dict:
+def _listen_keyterms(t: dict) -> list[str]:
+    terms: list[str] = []
+    for item in t.get("service_suburbs") or []:
+        if isinstance(item, str) and item.strip():
+            terms.append(item.strip())
+    business = t.get("business_name")
+    if business:
+        terms.append(str(business).strip())
+    seen = set()
+    unique = []
+    for term in terms:
+        key = _norm_place(term)
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(term)
+    return unique[:100]
+
+
+def _listen_provider(t: dict | None = None) -> dict:
     provider = {"type": "deepgram", "model": DG_LISTEN_MODEL}
     if DG_LISTEN_VERSION:
         provider["version"] = DG_LISTEN_VERSION
+    if t:
+        keyterms = _listen_keyterms(t)
+        if keyterms:
+            provider["keyterms"] = keyterms
     if DG_LISTEN_MODEL.startswith("flux-") and DG_LISTEN_VERSION == "v2":
         provider.update(
             {
@@ -264,7 +595,7 @@ def _agent_settings(t: dict) -> dict:
         },
         "agent": {
             "language": "en",
-            "listen": {"provider": _listen_provider()},
+            "listen": {"provider": _listen_provider(t)},
             "think": {
                 "provider": {
                     "type": "anthropic",
@@ -411,11 +742,92 @@ def _end_call(t: dict, caller: str, call_sid: str, actions: dict) -> str:
     return "Call ended."
 
 
+# --- shadow-FSM directive handling (Tier 1: log only, never enforce) --------
+
+# How a directive's op reads as a gate-log `decision`. Tier 1 logs every one of
+# these and executes none — Tier 2 will act on alert/sms/inject.
+_DIRECTIVE_DECISION = {
+    "alert": "force_fire",
+    "sms": "force_fire",
+    "inject": "force_fire",
+    "no_alert": "suppress",
+    "log_gate": "log",
+}
+
+
+def _handle_fsm_directives(directives, call_sid: str, fsm) -> None:
+    """Write the FSM's per-event gate verdicts to the eval corpus. Sync, called
+    off the event loop. Best-effort — never raises into the call path."""
+    for d in directives or []:
+        gate = getattr(d, "gate", "")
+        if not gate:
+            continue
+        decision = (d.payload or {}).get("decision") or _DIRECTIVE_DECISION.get(d.op, "log")
+        summary = json.dumps(d.payload, default=str)[:240]
+        try:
+            store.log_gate(
+                call_sid, gate, decision,
+                input_summary=summary,
+                fsm_state_after=fsm.state.value,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voice] fsm log_gate failed: {exc}")
+
+
+def _fsm_observe(fsm, role: str, content: str, call_sid: str) -> None:
+    """Run the shadow FSM over one transcript event + log its directives. Sync —
+    called off the loop via asyncio.to_thread. Swallows all errors."""
+    try:
+        directives = fsm.observe(role, content)
+        _handle_fsm_directives(directives, call_sid, fsm)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[voice] fsm observe failed: {exc}")
+
+
 def _run_function(
-    t: dict, caller: str, call_sid: str, name: str, args: dict, actions: dict
+    t: dict, caller: str, call_sid: str, name: str, args: dict, actions: dict,
+    fsm=None,
 ) -> str:
+    # report_state — the divergence signal. Logged + acknowledged; never steers
+    # in Tier 1 (shadow). Always returns valid JSON so Deepgram is never broken.
+    if name == "report_state":
+        if fsm is None:
+            return json.dumps({"approved": True, "instruction": ""})
+        try:
+            result_json, log_fields = fsm.ingest_report_state(args)
+            store.log_gate(
+                call_sid, "report_state", "log",
+                input_summary=(log_fields.get("summary") or "")[:240],
+                fsm_state_after=log_fields.get("after", ""),
+                report_state_claim=log_fields.get("claim", ""),
+                divergence_flag=log_fields.get("divergence", 0),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voice] fsm report_state failed: {exc}")
+            return json.dumps({"approved": True, "instruction": ""})
+        return result_json
+
+    # Let the shadow FSM observe every other tool call (logged only — Tier 1
+    # never gates the existing tools, so their behavior is unchanged).
+    if fsm is not None:
+        try:
+            _handle_fsm_directives(fsm.note_tool_call(name, args), call_sid, fsm)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voice] fsm note_tool_call failed: {exc}")
+
     if name == "alert_owner":
         return _queue_alert(actions, args)
+    if name == "check_service_area":
+        result = _check_service_area(t, args.get("raw_suburb", ""))
+        if fsm is not None:
+            try:
+                parsed = json.loads(result)
+                fsm.note_service_area(
+                    parsed.get("status", "unknown"), parsed.get("canonical_suburb", "")
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return result
     if name == "book_job":
         return _queue_booking(actions, args)
     if name == "end_call":
@@ -527,6 +939,7 @@ async def voice_stream(ws: WebSocket) -> None:
     call_sid = ""
     stream_sid = ""
     actions = _new_call_actions()
+    fsm = None
     dg = None
     close_reason = "closed"
     try:
@@ -547,6 +960,17 @@ async def voice_stream(ws: WebSocket) -> None:
                         tenant = tenants.load_tenant(tid)
                     except (FileNotFoundError, ValueError):
                         pass
+                try:
+                    fsm = call_state.CallFSM(tenant, caller)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[voice] fsm init failed: {exc}")
+                await asyncio.to_thread(
+                    store.start_voice_call,
+                    tenant["tenant_id"],
+                    caller,
+                    call_sid,
+                    stream_sid,
+                )
                 dg = await _take_or_open_dg(call_sid, latency)
                 await dg.send(json.dumps(_agent_settings(tenant)))
                 latency["dg_ready_ms"] = _elapsed_ms(latency["started_at"])
@@ -560,7 +984,7 @@ async def voice_stream(ws: WebSocket) -> None:
         await asyncio.gather(
             _twilio_to_deepgram(ws, dg, latency),
             _deepgram_to_twilio(
-                dg, ws, tenant, caller, call_sid, stream_sid, latency, actions
+                dg, ws, tenant, caller, call_sid, stream_sid, latency, actions, fsm
             ),
         )
     except WebSocketDisconnect:
@@ -574,6 +998,16 @@ async def voice_stream(ws: WebSocket) -> None:
                 await dg.close()
             except Exception:  # noqa: BLE001
                 pass
+        if fsm is not None and call_sid:
+            try:
+                fsm.close_reason = close_reason
+                await asyncio.to_thread(
+                    store.save_voice_state,
+                    call_sid, tenant["tenant_id"], caller, fsm.snapshot(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[voice] save_voice_state failed: {exc}")
+        await asyncio.to_thread(store.finish_voice_call, call_sid, close_reason)
         await asyncio.to_thread(_flush_post_call_actions, tenant, caller, actions)
         _log_latency(latency, close_reason)
 
@@ -596,64 +1030,128 @@ async def _twilio_to_deepgram(twilio: WebSocket, dg, latency: dict) -> None:
 
 
 async def _deepgram_to_twilio(
-    dg, twilio: WebSocket, tenant, caller, call_sid, stream_sid, latency: dict, actions: dict
+    dg, twilio: WebSocket, tenant, caller, call_sid, stream_sid, latency: dict, actions: dict,
+    fsm=None,
 ) -> None:
     """Agent audio + events: Deepgram -> Twilio playout (audio) and tool handling
     (FunctionCall). Barge-in flushes Twilio's buffer so the agent stops talking."""
-    async for raw in dg:
-        if isinstance(raw, (bytes, bytearray)):
-            # Agent speech (mulaw) -> base64 -> Twilio.
-            if stream_sid:
-                _set_latency_once(latency, "first_agent_audio_ms")
-                await twilio.send_text(
-                    json.dumps(
-                        {
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": base64.b64encode(raw).decode()},
-                        }
+    idle = {
+        "task": None,
+        "unclear_task": None,
+        "user_seq": 0,
+        "reprompt_count": 0,
+        "last_injected": "",
+        "transcript_seq": 0,
+        "last_agent_text": "",
+        "suppress_next_audio_done": False,
+        # call-watchdog state. last_user_mono starts at call start so a caller
+        # who never speaks (pocket dial) is still dropped after the silence cap.
+        "call_started_mono": time.perf_counter(),
+        "last_user_mono": time.perf_counter(),
+        "last_assistant_norm": "",
+        "last_assistant_mono": time.perf_counter(),
+        "repeat_streak": 0,
+        "ending": False,
+    }
+    watchdog_task = asyncio.create_task(_call_watchdog(dg, idle, call_sid))
+    try:
+        async for raw in dg:
+            if isinstance(raw, (bytes, bytearray)):
+                # Agent speech (mulaw) -> base64 -> Twilio.
+                if stream_sid:
+                    _set_latency_once(latency, "first_agent_audio_ms")
+                    await twilio.send_text(
+                        json.dumps(
+                            {
+                                "event": "media",
+                                "streamSid": stream_sid,
+                                "media": {"payload": base64.b64encode(raw).decode()},
+                            }
+                        )
                     )
-                )
-            continue
-        try:
-            msg = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        mtype = msg.get("type")
-        if mtype == "FunctionCallRequest":
-            latency["function_calls"] = int(latency.get("function_calls", 0)) + len(msg.get("functions", []))
-            # Deepgram wants us to run one or more client-side functions. Each
-            # carries an id (echo it back), a name, and arguments as a JSON string.
-            for fn in msg.get("functions", []):
-                fid = fn.get("id")
-                name = fn.get("name")
-                try:
-                    args = json.loads(fn.get("arguments") or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                # Side-effects are sync (twilio/gcal/sqlite) — run off the loop.
-                content = await asyncio.to_thread(
-                    _run_function, tenant, caller, call_sid, name, args, actions
-                )
-                await dg.send(
-                    json.dumps({
-                        "type": "FunctionCallResponse",
-                        "id": fid,
-                        "name": name,
-                        "content": content or "",
-                    })
-                )
-        elif mtype in ("UserStartedSpeaking", "Interruption"):
-            # Caller talked over the agent (barge-in) — flush our playout buffer.
-            if stream_sid:
-                await twilio.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
-        elif mtype in ("Error", "Warning"):
-            # Surface Deepgram-side failures (e.g. a dead/unsupported think model)
-            # — these otherwise close the socket and drop the call with no trace.
-            print(f"[voice] deepgram {mtype}: {msg.get('code')} — {msg.get('description')}", flush=True)
-        elif VOICE_DEBUG_EVENTS:
-            print(f"[voice event] {mtype}: {msg}", flush=True)
-        # Transcripts, Ready, etc. ride through silently on the hot path.
+                continue
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            mtype = msg.get("type")
+            if mtype == "FunctionCallRequest":
+                latency["function_calls"] = int(latency.get("function_calls", 0)) + len(msg.get("functions", []))
+                # Deepgram wants us to run one or more client-side functions. Each
+                # carries an id (echo it back), a name, and arguments as a JSON string.
+                for fn in msg.get("functions", []):
+                    fid = fn.get("id")
+                    name = fn.get("name")
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    # Side-effects are sync (twilio/gcal/sqlite) — run off the loop.
+                    # fsm MUST be threaded here: without it every FSM tool-call
+                    # observation (report_state divergence, note_tool_call,
+                    # note_service_area) silently no-ops on the live path.
+                    content = await asyncio.to_thread(
+                        _run_function, tenant, caller, call_sid, name, args, actions, fsm
+                    )
+                    await dg.send(
+                        json.dumps({
+                            "type": "FunctionCallResponse",
+                            "id": fid,
+                            "name": name,
+                            "content": content or "",
+                        })
+                    )
+            elif mtype == "ConversationText":
+                role = msg.get("role")
+                content = (msg.get("content") or "").strip()
+                if content and role in {"assistant", "user"}:
+                    idle["transcript_seq"] = int(idle.get("transcript_seq", 0)) + 1
+                    await asyncio.to_thread(
+                        store.append_voice_transcript,
+                        call_sid,
+                        tenant["tenant_id"],
+                        caller,
+                        int(idle["transcript_seq"]),
+                        role,
+                        content,
+                    )
+                    if fsm is not None:
+                        await asyncio.to_thread(_fsm_observe, fsm, role, content, call_sid)
+                    if role == "assistant":
+                        idle["last_agent_text"] = content
+                        _update_repeat_streak(idle, _norm_utterance(content), time.perf_counter())
+                        _cancel_unclear_recovery(idle)
+                    elif role == "user":
+                        _mark_user_activity(idle)
+            elif mtype == "AgentAudioDone":
+                if idle.get("suppress_next_audio_done"):
+                    idle["suppress_next_audio_done"] = False
+                else:
+                    _schedule_idle_reprompt(dg, idle)
+            elif mtype in ("UserStartedSpeaking", "Interruption"):
+                # Caller talked over the agent (barge-in) — flush our playout buffer.
+                # VAD event, not a transcript: don't reset the reprompt cap, so
+                # agent-TTS echo can't re-arm the verbatim re-ask loop.
+                _on_vad_activity(idle)
+                _schedule_unclear_speech_recovery(dg, idle)
+                if stream_sid:
+                    await twilio.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
+            elif mtype == "InjectionRefused":
+                idle["suppress_next_audio_done"] = False
+                # Injection never played — give the nudge budget back so a refused
+                # inject can't permanently mute the agent.
+                idle["reprompt_count"] = max(0, int(idle.get("reprompt_count", 0)) - 1)
+            elif mtype in ("Error", "Warning"):
+                # Surface Deepgram-side failures (e.g. a dead/unsupported think model)
+                # — these otherwise close the socket and drop the call with no trace.
+                print(f"[voice] deepgram {mtype}: {msg.get('code')} — {msg.get('description')}", flush=True)
+            elif VOICE_DEBUG_EVENTS:
+                print(f"[voice event] {mtype}: {msg}", flush=True)
+            # Transcripts, Ready, etc. ride through silently on the hot path.
+    finally:
+        watchdog_task.cancel()
+        _cancel_idle_reprompt(idle)
+        _cancel_unclear_recovery(idle)
 
 
 # --- probe: verify the Deepgram config against the live key ------------------

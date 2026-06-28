@@ -86,6 +86,93 @@ def configure(db_path: str) -> None:
             )
             """
         )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_calls (
+                call_sid     TEXT PRIMARY KEY,
+                tenant_id    TEXT NOT NULL,
+                phone        TEXT NOT NULL,
+                stream_sid   TEXT,
+                started_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                ended_at     TEXT,
+                close_reason TEXT,
+                updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_transcripts (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_sid   TEXT NOT NULL,
+                tenant_id  TEXT NOT NULL,
+                phone      TEXT NOT NULL,
+                seq        INTEGER NOT NULL,
+                role       TEXT NOT NULL,
+                content    TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(call_sid, seq)
+            )
+        """
+        )
+        # Shadow-FSM (Tier 1): structured voice-lead capture + the gate-decision
+        # eval corpus. Additive — no change to existing tables. call_sid is NOT a
+        # FK to voice_calls on purpose: start_voice_call() skips the voice_calls
+        # insert when the caller's number is withheld, and a log row must never
+        # fail to write because its parent is missing. SQLite FKs are off here
+        # anyway, so this just future-proofs the table.
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_call_states (
+                call_sid               TEXT PRIMARY KEY,
+                tenant_id              TEXT NOT NULL,
+                phone                  TEXT NOT NULL,
+                state_path             TEXT NOT NULL,
+                current_state          TEXT NOT NULL,
+                drop_point             TEXT,
+                triage                 TEXT,
+                urgency                TEXT,
+                job_type               TEXT,
+                suburb_raw             TEXT,
+                suburb_canonical       TEXT,
+                area_status            TEXT,
+                area_confirmed         INTEGER DEFAULT 0,
+                offered_two_windows    INTEGER DEFAULT 0,
+                agreement              TEXT,
+                booked                 INTEGER DEFAULT 0,
+                booking_window         TEXT,
+                booking_start_iso      TEXT,
+                booking_end_iso        TEXT,
+                first_lead_alert_fired INTEGER DEFAULT 0,
+                emergency_force_fired  INTEGER DEFAULT 0,
+                guardrail_flags        TEXT,
+                turns                  INTEGER DEFAULT 0,
+                close_reason           TEXT,
+                created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        # The moat signal lives here: divergence_flag = 1 when the FSM's decision
+        # disagreed with what the LLM claimed via report_state. One row per gate
+        # decision per call — this is the dataset that proves the FSM earns its
+        # keep vs prompt-only logic.
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_gate_log (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_sid            TEXT NOT NULL,
+                ts                  TEXT NOT NULL DEFAULT (datetime('now')),
+                gate                TEXT NOT NULL,
+                input_summary       TEXT,
+                decision            TEXT NOT NULL,
+                fsm_state_before    TEXT,
+                fsm_state_after     TEXT,
+                report_state_claim  TEXT,
+                divergence_flag     INTEGER DEFAULT 0
+            )
+            """
+        )
 
 
 @contextmanager
@@ -121,7 +208,21 @@ def list_leads(tenant_id: str) -> list[dict]:
             """
             SELECT phone, thread_json, stage, triage, job_type, urgency,
                    suburb, property_type, booking, created_at, updated_at,
-                   call_count, last_call_at
+                   call_count, last_call_at,
+                   (
+                       SELECT vt.content
+                       FROM voice_transcripts vt
+                       WHERE vt.tenant_id = conversations.tenant_id
+                         AND vt.phone = conversations.phone
+                       ORDER BY vt.created_at DESC, vt.seq DESC
+                       LIMIT 1
+                   ) AS voice_snippet,
+                   (
+                       SELECT COUNT(*)
+                       FROM voice_transcripts vt
+                       WHERE vt.tenant_id = conversations.tenant_id
+                         AND vt.phone = conversations.phone
+                   ) AS voice_messages
             FROM conversations WHERE tenant_id = ?
             ORDER BY updated_at DESC
             """,
@@ -132,8 +233,9 @@ def list_leads(tenant_id: str) -> list[dict]:
         d = dict(r)
         thread = json.loads(d.pop("thread_json") or "[]")
         last = thread[-1]["content"] if thread else ""
-        d["snippet"] = last[:80]
+        d["snippet"] = (last or d.pop("voice_snippet") or "")[:80]
         d["messages"] = len(thread)
+        d["voice_messages"] = d.get("voice_messages") or 0
         leads.append(d)
     return leads
 
@@ -177,6 +279,7 @@ def lead_detail(tenant_id: str, phone: str) -> dict | None:
         return None
     d = dict(row)
     d["thread"] = json.loads(d.pop("thread_json") or "[]")
+    d["voice_calls"] = list_voice_calls(tenant_id, phone)
     return d
 
 
@@ -199,6 +302,215 @@ def log_missed_call(tenant_id: str, phone: str) -> None:
             """,
             (tenant_id, phone),
         )
+
+
+def start_voice_call(tenant_id: str, phone: str, call_sid: str, stream_sid: str = "") -> None:
+    """Create a lead row and a per-call record for a live AI voice call."""
+    if not phone:
+        return
+    with _connect() as db:
+        existing_call = (
+            db.execute("SELECT 1 FROM voice_calls WHERE call_sid = ?", (call_sid,)).fetchone()
+            if call_sid
+            else None
+        )
+        if not existing_call:
+            db.execute(
+                """
+                INSERT INTO conversations
+                    (tenant_id, phone, thread_json, stage, call_count, last_call_at)
+                VALUES (?, ?, '[]', 'voice_call', 1, datetime('now'))
+                ON CONFLICT(tenant_id, phone) DO UPDATE SET
+                    call_count   = call_count + 1,
+                    last_call_at = datetime('now'),
+                    updated_at   = datetime('now'),
+                    stage        = CASE
+                        WHEN stage IS NULL OR stage = '' OR stage = 'missed_call'
+                        THEN 'voice_call'
+                        ELSE stage
+                    END
+                """,
+                (tenant_id, phone),
+            )
+        if call_sid:
+            db.execute(
+                """
+                INSERT INTO voice_calls
+                    (call_sid, tenant_id, phone, stream_sid)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(call_sid) DO UPDATE SET
+                    tenant_id  = excluded.tenant_id,
+                    phone      = excluded.phone,
+                    stream_sid = excluded.stream_sid,
+                    updated_at = datetime('now')
+                """,
+                (call_sid, tenant_id, phone, stream_sid),
+            )
+
+
+def finish_voice_call(call_sid: str, close_reason: str) -> None:
+    """Mark a live voice call as finished."""
+    if not call_sid:
+        return
+    with _connect() as db:
+        db.execute(
+            """
+            UPDATE voice_calls
+            SET ended_at = COALESCE(ended_at, datetime('now')),
+                close_reason = ?,
+                updated_at = datetime('now')
+            WHERE call_sid = ?
+            """,
+            (close_reason, call_sid),
+        )
+
+
+def append_voice_transcript(
+    call_sid: str, tenant_id: str, phone: str, seq: int, role: str, content: str
+) -> None:
+    """Persist one Deepgram ConversationText event for a voice call."""
+    content = (content or "").strip()
+    if not call_sid or not role or not content:
+        return
+    with _connect() as db:
+        db.execute(
+            """
+            INSERT OR IGNORE INTO voice_transcripts
+                (call_sid, tenant_id, phone, seq, role, content)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (call_sid, tenant_id, phone, seq, role, content),
+        )
+        db.execute(
+            "UPDATE voice_calls SET updated_at = datetime('now') WHERE call_sid = ?",
+            (call_sid,),
+        )
+
+
+def save_voice_state(
+    call_sid: str, tenant_id: str, phone: str, snapshot: dict
+) -> None:
+    """Upsert one shadow-FSM snapshot per call (written once, at call end).
+
+    `snapshot` is CallFSM.snapshot(); list/dict values are JSON-encoded. A missing
+    or empty call_sid is skipped, mirroring start_voice_call's guard."""
+    if not call_sid:
+        return
+    def _j(value):
+        return json.dumps(value) if isinstance(value, (list, dict)) else (value if value is not None else "")
+
+    cols = [
+        "state_path", "current_state", "drop_point", "triage", "urgency",
+        "job_type", "suburb_raw", "suburb_canonical", "area_status",
+        "area_confirmed", "offered_two_windows", "agreement", "booked",
+        "booking_window", "booking_start_iso", "booking_end_iso",
+        "first_lead_alert_fired", "emergency_force_fired", "guardrail_flags",
+        "turns", "close_reason",
+    ]
+    vals = [
+        _j(snapshot.get("state_path") or []),
+        snapshot.get("current_state") or "",
+        snapshot.get("drop_point") or "",
+        snapshot.get("triage"),
+        snapshot.get("urgency"),
+        snapshot.get("job_type"),
+        snapshot.get("suburb_raw"),
+        snapshot.get("suburb_canonical"),
+        snapshot.get("area_status"),
+        1 if snapshot.get("area_confirmed") else 0,
+        1 if snapshot.get("offered_two_windows") else 0,
+        snapshot.get("agreement"),
+        1 if snapshot.get("booked") else 0,
+        snapshot.get("booking_window"),
+        snapshot.get("booking_start_iso"),
+        snapshot.get("booking_end_iso"),
+        1 if snapshot.get("first_lead_alert_fired") else 0,
+        1 if snapshot.get("emergency_force_fired") else 0,
+        _j(snapshot.get("guardrail_flags") or []),
+        int(snapshot.get("turns") or 0),
+        snapshot.get("close_reason"),
+    ]
+    assignments = ", ".join(f"{c} = excluded.{c}" for c in cols)
+    with _connect() as db:
+        db.execute(
+            f"""
+            INSERT INTO voice_call_states
+                (call_sid, tenant_id, phone, {", ".join(cols)})
+            VALUES (?, ?, ?, {", ".join("?" for _ in cols)})
+            ON CONFLICT(call_sid) DO UPDATE SET
+                {assignments},
+                updated_at = datetime('now')
+            """,
+            (call_sid, tenant_id, phone or "", *vals),
+        )
+
+
+def log_gate(
+    call_sid: str,
+    gate: str,
+    decision: str,
+    *,
+    input_summary: str = "",
+    fsm_state_before: str = "",
+    fsm_state_after: str = "",
+    report_state_claim: str = "",
+    divergence_flag: int = 0,
+) -> None:
+    """Append one shadow-FSM gate decision to the eval corpus. Best-effort:
+    never raises into the call path — the caller wraps DB errors."""
+    if not call_sid or not gate:
+        return
+    try:
+        with _connect() as db:
+            db.execute(
+                """
+                INSERT INTO voice_gate_log
+                    (call_sid, gate, input_summary, decision,
+                     fsm_state_before, fsm_state_after,
+                     report_state_claim, divergence_flag)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    call_sid, gate, input_summary, decision,
+                    fsm_state_before, fsm_state_after,
+                    report_state_claim, 1 if divergence_flag else 0,
+                ),
+            )
+    except sqlite3.Error as exc:
+        print(f"[voice] log_gate failed: {exc}")
+
+
+def list_voice_calls(tenant_id: str, phone: str, limit: int = 5) -> list[dict]:
+    """Recent voice calls for one lead, each with its transcript rows."""
+    with _connect() as db:
+        calls = [
+            dict(r)
+            for r in db.execute(
+                """
+                SELECT call_sid, tenant_id, phone, stream_sid, started_at, ended_at,
+                       close_reason, updated_at
+                FROM voice_calls
+                WHERE tenant_id = ? AND phone = ?
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (tenant_id, phone, limit),
+            ).fetchall()
+        ]
+        for call in calls:
+            call["transcript"] = [
+                dict(r)
+                for r in db.execute(
+                    """
+                    SELECT role, content, created_at, seq
+                    FROM voice_transcripts
+                    WHERE call_sid = ?
+                    ORDER BY seq ASC
+                    """,
+                    (call["call_sid"],),
+                ).fetchall()
+            ]
+    return calls
 
 
 def save_turn(tenant_id: str, phone: str, thread: list[dict], turn) -> None:
