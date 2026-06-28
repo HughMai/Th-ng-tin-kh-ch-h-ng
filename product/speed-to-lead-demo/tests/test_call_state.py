@@ -352,16 +352,18 @@ def test_observe_never_raises_on_odd_text():
         )
 
 
-def test_observe_known_gap_non_string_content_raises():
-    """KNOWN ROBUSTNESS GAP: observe() does not coerce non-string content. A
-    numeric payload (or any non-str) raises AttributeError inside _norm() because
-    it calls .lower() unconditionally. The live path wraps observe in
-    _fsm_observe's try/except so the call survives, but the FSM loses that turn.
-    This test encodes the CURRENT behaviour so a future hardening (cast to str)
-    flips it red and forces the test surface to be updated deliberately."""
+def test_observe_coerces_non_string_content():
+    """observe() coerces non-string content/role to str instead of letting
+    _norm().lower() AttributeError. Previously a numeric payload crashed inside
+    _norm and was swallowed by _fsm_observe's try/except, silently dropping the
+    turn; observe now returns a normal directive list for any payload type."""
     fsm = call_state.CallFSM({}, "+61")
-    with pytest.raises(AttributeError):
-        fsm.observe("user", 123)
+    # Truthy non-str content flows into _on_user/_norm without crashing.
+    out = fsm.observe("user", 123)
+    assert isinstance(out, list), f"observe('user', 123) returned {type(out).__name__}"
+    # Non-str role is coerced too (dispatch still no-ops for non-user/assistant).
+    out2 = fsm.observe(456, "hello")
+    assert isinstance(out2, list), f"observe(456, 'hello') returned {type(out2).__name__}"
 
 
 def test_ingest_report_state_never_raises_on_malformed():

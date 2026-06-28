@@ -292,6 +292,12 @@ class CallFSM:
         """One ConversationText event. Runs G0/G2/G3/G6/G7/G9/G10 and returns the
         directives emitted this event. Mutates internal state; does no I/O."""
         directives: list[Directive] = []
+        # Coerce non-str payloads (e.g. numeric STT/LLM output) to str so _norm()'s
+        # .lower() can't AttributeError and silently drop the turn via _fsm_observe.
+        if not isinstance(content, str):
+            content = "" if content is None else str(content)
+        if not isinstance(role, str):
+            role = "" if role is None else str(role)
         text = content or ""
         if role == "user":
             self.user_turns += 1
