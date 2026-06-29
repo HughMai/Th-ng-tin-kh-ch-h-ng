@@ -191,11 +191,49 @@ def _set_latency_once(stats: dict, key: str) -> None:
         stats[key] = _elapsed_ms(stats["started_at"])
 
 
+def _capture_turn_response(latency: dict) -> None:
+    """Caller-perceived reply speed for one turn. Two timers, both cleared on
+    capture so mid-reply audio chunks don't double-count; the greeting is
+    excluded (no preceding user turn — first_agent_audio_ms covers it).
+
+    - turn_resp_ms (post-EOT): ConversationText role=user -> first reply audio.
+      The brain+tools+TTS cost AFTER Deepgram confirmed end-of-turn.
+    - turn_eot_ms (EOT-inclusive): UserStoppedSpeaking -> first reply audio. The
+      caller-perceived gap starts here, so this also captures the EOT dwell
+      (silence-wait + transcript finalization) that turn_resp_ms hides. The diff
+      between the two is the eot_threshold / eot_timeout_ms lever's headroom.
+      Armed on the VAD UserStoppedSpeaking event; if that event never arrives it
+      stays 'na'."""
+    pend = latency.get("turn_user_end")
+    if pend is None:
+        return
+    now = time.perf_counter()
+    resp_ms = int((now - pend) * 1000)
+    latency["turn_user_end"] = None
+    count = int(latency.get("turn_count", 0)) + 1
+    latency["turn_count"] = count
+    latency["turn_resp_sum_ms"] = int(latency.get("turn_resp_sum_ms", 0)) + resp_ms
+    latency["turn_resp_max_ms"] = max(int(latency.get("turn_resp_max_ms", 0)), resp_ms)
+    eot_pend = latency.get("turn_eot")
+    if eot_pend is not None:
+        eot_ms = int((now - eot_pend) * 1000)
+        latency["turn_eot"] = None
+        latency["turn_eot_sum_ms"] = int(latency.get("turn_eot_sum_ms", 0)) + eot_ms
+        latency["turn_eot_max_ms"] = max(int(latency.get("turn_eot_max_ms", 0)), eot_ms)
+        print(f"[voice turn] n={count} resp_ms={resp_ms} eot_ms={eot_ms}", flush=True)
+    else:
+        print(f"[voice turn] n={count} resp_ms={resp_ms}", flush=True)
+
+
 def _log_latency(stats: dict, reason: str = "closed") -> None:
     def val(key: str) -> str:
         item = stats.get(key)
         return "na" if item is None else str(item)
 
+    turns = int(stats.get("turn_count", 0))
+    turn_avg = int(stats.get("turn_resp_sum_ms", 0) / turns) if turns else 0
+    eot_sum = stats.get("turn_eot_sum_ms")
+    eot_avg = int(eot_sum / turns) if (turns and eot_sum is not None) else 0
     print(
         "[voice latency] "
         f"reason={reason} "
@@ -205,6 +243,11 @@ def _log_latency(stats: dict, reason: str = "closed") -> None:
         f"first_user_audio_ms={val('first_user_audio_ms')} "
         f"first_agent_audio_ms={val('first_agent_audio_ms')} "
         f"function_calls={stats.get('function_calls', 0)} "
+        f"turns={turns} "
+        f"turn_resp_max_ms={stats.get('turn_resp_max_ms', 0)} "
+        f"turn_resp_avg_ms={turn_avg} "
+        f"turn_eot_max_ms={stats.get('turn_eot_max_ms', 0)} "
+        f"turn_eot_avg_ms={eot_avg} "
         f"total_ms={_elapsed_ms(stats['started_at'])}",
         flush=True,
     )
@@ -504,7 +547,16 @@ def _check_service_area(t: dict, raw_suburb: str) -> str:
 
 def _tools_for_deepgram() -> list[dict]:
     """voice_engine.TOOLS (Anthropic schema) -> Deepgram function shape. Deepgram
-    calls these `parameters`; the descriptions are unchanged."""
+    calls these `parameters`; the descriptions are unchanged.
+
+    report_state is EXCLUDED from the live Deepgram menu. The prompt used to force
+    it every turn, and Deepgram's managed flow is function-first (it waits on our
+    FunctionCallResponse before speaking), so each per-turn report_state was a
+    serialized round-trip inflating first-reply latency — for a Tier-1 log-only
+    signal that never steers the call (the shadow FSM still observes every
+    transcript + tool call via _fsm_observe / note_tool_call; only the LLM-emitted
+    claim is dropped). Re-enable by removing this filter — the tool def, the
+    _run_function handler and call_state.ingest_report_state are all intact."""
     return [
         {
             "name": tool["name"],
@@ -512,6 +564,7 @@ def _tools_for_deepgram() -> list[dict]:
             "parameters": tool["input_schema"],
         }
         for tool in voice_engine.TOOLS
+        if tool["name"] != "report_state"
     ]
 
 
@@ -609,6 +662,51 @@ def _agent_settings(t: dict) -> dict:
             "greeting": _greeting(t),
         },
     }
+
+
+def _demo_greeting(name: str) -> str:
+    """Spoken the instant a website 'get a demo call' connects."""
+    first = name.split()[0] if name else "there"
+    return (
+        f"Hi {first}, this is a live demo of LeadResponder — that's exactly how "
+        "I'd call one of your missed-call leads back, within about 20 seconds. "
+        "Want me to show you how I'd answer and book in a job?"
+    )
+
+
+def _demo_prompt(name: str) -> str:
+    """The demo brain: replaces the trade brain so the prospect experiences the
+    product rather than a fictitious trade call. Kept short for the prompt cap."""
+    first = name.split()[0] if name else "there"
+    return (
+        "You are the LeadResponder AI voice agent running a LIVE DEMO call. "
+        f"The person on the line is {first}, a prospect who asked on our website "
+        "to experience the product.\n\n"
+        "GOAL: in 1-3 short exchanges, make them FEEL how LeadResponder answers "
+        "a home-service business's missed calls and texts instantly, qualifies the "
+        "caller, and books the job — so a missed call is never a lost job.\n\n"
+        "STYLE: warm, brief, Australian-casual. Be honest that you're an AI "
+        "assistant. Keep turns short; never monologue.\n\n"
+        "PITCH (light): built for trades and home-service pros (electricians, "
+        "plumbers, locksmiths). From $99/month, no lock-in. If they're keen, offer "
+        "to have Hughie, the founder, text them to get set up, and ask what kind "
+        "of business they run.\n\n"
+        "RULES: this is illustrative — do NOT book a real trade job or invent a "
+        "tradesperson, and do not quote trade job prices. If they're not interested "
+        "or it's a wrong number, wish them well and end the call. If they ask how "
+        "it works or the price, answer briefly and offer the follow-up."
+    )
+
+
+def _apply_demo_mode(settings: dict, params: dict) -> None:
+    """Swap the trade brain for the LeadResponder demo pitch when the call came
+    from the website 'get a demo call' form (demo_mode stream param set). The
+    prospect then experiences the product instead of a fictitious trade call."""
+    if str(params.get("demo_mode") or "").lower() not in ("1", "true", "yes"):
+        return
+    name = str(params.get("demo_prospect_name") or "").strip()
+    settings["agent"]["greeting"] = _demo_greeting(name)
+    settings["agent"]["think"]["prompt"] = _demo_prompt(name)
 
 
 # --- post-call action queue --------------------------------------------------
@@ -972,7 +1070,9 @@ async def voice_stream(ws: WebSocket) -> None:
                     stream_sid,
                 )
                 dg = await _take_or_open_dg(call_sid, latency)
-                await dg.send(json.dumps(_agent_settings(tenant)))
+                settings = _agent_settings(tenant)
+                _apply_demo_mode(settings, params)  # demo-form callback -> LeadResponder pitch
+                await dg.send(json.dumps(settings))
                 latency["dg_ready_ms"] = _elapsed_ms(latency["started_at"])
                 break
             # media before start shouldn't happen; keep waiting.
@@ -1060,6 +1160,7 @@ async def _deepgram_to_twilio(
                 # Agent speech (mulaw) -> base64 -> Twilio.
                 if stream_sid:
                     _set_latency_once(latency, "first_agent_audio_ms")
+                    _capture_turn_response(latency)
                     await twilio.send_text(
                         json.dumps(
                             {
@@ -1123,6 +1224,10 @@ async def _deepgram_to_twilio(
                         _cancel_unclear_recovery(idle)
                     elif role == "user":
                         _mark_user_activity(idle)
+                        # User turn just ended — arm the per-turn response timer.
+                        # The next agent audio chunk completes it (see
+                        # _capture_turn_response).
+                        latency["turn_user_end"] = time.perf_counter()
             elif mtype == "AgentAudioDone":
                 if idle.get("suppress_next_audio_done"):
                     idle["suppress_next_audio_done"] = False
@@ -1131,11 +1236,24 @@ async def _deepgram_to_twilio(
             elif mtype in ("UserStartedSpeaking", "Interruption"):
                 # Caller talked over the agent (barge-in) — flush our playout buffer.
                 # VAD event, not a transcript: don't reset the reprompt cap, so
-                # agent-TTS echo can't re-arm the verbatim re-ask loop.
+                # agent-TTS echo can't re-arm the verbatim re-ask loop. Also clears
+                # a stale EOT timer armed at a mid-utterance pause — the caller
+                # resumed, so the prior UserStoppedSpeaking wasn't a real turn-end.
                 _on_vad_activity(idle)
                 _schedule_unclear_speech_recovery(dg, idle)
+                latency["turn_eot"] = None
                 if stream_sid:
                     await twilio.send_text(json.dumps({"event": "clear", "streamSid": stream_sid}))
+            elif mtype == "UserStoppedSpeaking":
+                # Caller stopped talking — arm the EOT-INCLUSIVE per-turn timer.
+                # Fires at the VAD level, before Deepgram confirms EOT and finalizes
+                # the transcript (turn_user_end arms later on ConversationText). The
+                # diff vs turn_resp_ms is the hidden EOT dwell — headroom for the
+                # eot_threshold / eot_timeout_ms lever. Guarded so a duplicate event
+                # can't overwrite the real turn-end arm (cleared on capture / on the
+                # next UserStartedSpeaking).
+                if latency.get("turn_eot") is None:
+                    latency["turn_eot"] = time.perf_counter()
             elif mtype == "InjectionRefused":
                 idle["suppress_next_audio_done"] = False
                 # Injection never played — give the nudge budget back so a refused

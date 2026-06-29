@@ -17,8 +17,8 @@ Registry of every system your AIOS can reach. Expanded over time as you wire new
 | 11 | Messaging | Telegram (@BaoBei09bot) | via Hermes gateway | bot token | 2026-05-16 |
 | 12 | LLM Routing | NVIDIA NIM (DeepSeek V4 Flash, free) | provider `nvidia` in Hermes config | `NVIDIA_API_KEY` | 2026-06-17 |
 | 13 | Google Workspace (Hermes) | Gmail + Calendar + Drive + Sheets + Docs + Contacts | `google-workspace` skill on the VPS | OAuth (Google), token in `/opt/data/google_token.json` | 2026-06-17 |
-| 14 | Telephony / Messaging | Twilio | REST API + signed voice/SMS webhooks | Account SID + auth token in gitignored env | 2026-06-23 (US dev number live; AU mobile bundle pending) |
-| 15 | Voice agent (STT + TTS + hosted LLM) | Deepgram Voice Agent API | `wss://agent.deepgram.com/v1/agent/converse`, bridged from Twilio Media Streams in `voice_server.py` | `DEEPGRAM_API_KEY` (env; legacy `Deepgram_API` read as fallback) | 2026-06-26 (**deployed to VPS**: key in VPS `.env`, `dave` voice-enabled, image rebuilt; Deepgram handshake `SettingsApplied` + Aura-2 audio confirmed from prod; **real phone call still pending**) |
+| 14 | Telephony / Messaging | Twilio | REST API + signed voice/SMS webhooks | Account SID + auth token in gitignored env | 2026-06-29 (US dev number + AU mobile **+61468089224** live, wired to crown-st-auto + rapidflow; also the caller ID for the website "get a demo call" callback) |
+| 15 | Voice agent (STT + TTS + hosted LLM) | Deepgram Voice Agent API | `wss://agent.deepgram.com/v1/agent/converse`, bridged from Twilio Media Streams in `voice_server.py` | `DEEPGRAM_API_KEY` (env; legacy `Deepgram_API` read as fallback) | 2026-06-26 (**live on VPS**: Flux v2 listen, `claude-haiku-4-5` think, Aura Hyperion speak, post-call owner summary queue deployed; public `/health` ok and prod probe shows `SettingsApplied` + greeting audio; next live-call check should confirm the consolidated SMS/Telegram flush after hangup) |
 
 **Mechanism options:** `mcp` (MCP server), `script` (Python/Bash hitting an API, in `scripts/`), `export` (CSV/JSON dump pipeline), `key+ref` (`.env` key + `references/{tool}-api.md` guide), `not yet connected`.
 

@@ -73,6 +73,25 @@ def configure(db_path: str) -> None:
             )
             """
         )
+        # Website "get a demo call" form -> outbound AI callback. Drives the
+        # per-phone 24h cap and the global daily cap in /api/demo-call, which
+        # spends Twilio credit calling whoever fills the form, so it must be
+        # abuse-bounded.
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS demo_calls (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone         TEXT NOT NULL,
+                call_sid      TEXT,
+                prospect_name TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_demo_calls_phone_time "
+            "ON demo_calls (phone, created_at)"
+        )
         # Maps a Telegram message we posted -> the lead it's about, so when the
         # owner replies to that message we know which customer to text.
         db.execute(
@@ -626,6 +645,37 @@ def mark_seen(event_key: str) -> bool:
             (event_key,),
         )
         return cur.rowcount == 1
+
+
+def record_demo_call(phone: str, call_sid: str | None = None, prospect_name: str = "") -> None:
+    """Log a website 'get a demo call' callback. Feeds the caps below."""
+    with _connect() as db:
+        db.execute(
+            "INSERT INTO demo_calls (phone, call_sid, prospect_name) VALUES (?, ?, ?)",
+            (phone, call_sid, prospect_name),
+        )
+
+
+def recent_demo_calls(phone: str, hours: int = 24) -> int:
+    """How many demo callbacks `phone` has had in the last `hours`. The per-phone
+    cap stops a troll hammering one number or a repeat submitter burning calls."""
+    with _connect() as db:
+        row = db.execute(
+            "SELECT COUNT(*) FROM demo_calls WHERE phone = ? "
+            "AND created_at > datetime('now', ?)",
+            (phone, f"-{hours} hours"),
+        ).fetchone()
+    return row[0] if row else 0
+
+
+def demo_calls_today() -> int:
+    """Total demo callbacks since midnight UTC. The global daily cap bounding
+    Twilio spend if the public form is ever abused."""
+    with _connect() as db:
+        row = db.execute(
+            "SELECT COUNT(*) FROM demo_calls WHERE date(created_at) = date('now')"
+        ).fetchone()
+    return row[0] if row else 0
 
 
 def tg_map(chat_id: int, message_id: int, tenant_id: str, phone: str) -> None:

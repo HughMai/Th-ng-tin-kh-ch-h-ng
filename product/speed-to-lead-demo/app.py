@@ -15,6 +15,7 @@ import hmac
 import html
 import json
 import os
+import re
 import secrets
 import time
 import urllib.parse
@@ -57,6 +58,12 @@ app.include_router(voice_router)
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 # Fallback alert number when a tenant has no owner_mobile configured.
 FALLBACK_OWNER_MOBILE = os.environ.get("ELECTRICIAN_MOBILE", "")
+# Website "get a demo call" form. DEMO_FROM_NUMBER is the caller ID shown to the
+# prospect (the AU line +61468089224); DEMO_CALL_SECRET gates the Netlify
+# function as the only allowed caller; DEMO_DAILY_CAP bounds Twilio spend.
+DEMO_CALL_SECRET = os.environ.get("DEMO_CALL_SECRET", "").strip()
+DEMO_FROM_NUMBER = os.environ.get("DEMO_FROM_NUMBER", "").strip()
+DEMO_DAILY_CAP = int(os.environ.get("DEMO_DAILY_CAP", "20"))
 
 store.configure(os.environ.get("DB_PATH", "data/leads.db"))
 
@@ -78,6 +85,31 @@ def _ws_url(request: Request, path: str) -> str:
     URL; Caddy upgrades the WebSocket transparently."""
     host = _base_url(request).replace("https://", "").replace("http://", "").rstrip("/")
     return f"wss://{host}{path}"
+
+
+def _ws_url_base(path: str) -> str:
+    """wss:// URL for a Media Stream path off PUBLIC_BASE_URL — for outbound calls
+    fired without an inbound request (the website demo callback trigger)."""
+    if not PUBLIC_BASE_URL:
+        raise HTTPException(status_code=503, detail="PUBLIC_BASE_URL is not configured.")
+    host = PUBLIC_BASE_URL.replace("https://", "").replace("http://", "").rstrip("/")
+    return f"wss://{host}{path}"
+
+
+def _au_e164(phone: str) -> str | None:
+    """Normalise to an AU E.164 number (+61…), or None if it isn't one. AU-only
+    by design: the public demo form targets AU prospects and bounds the blast
+    radius. Accepts +61…, 61…, or 0[23478]… (mobile or geographic landline)."""
+    d = re.sub(r"\D", "", phone or "")
+    if d.startswith("61") and len(d) == 11:
+        rest = d[2:]
+    elif d.startswith("0") and len(d) == 10:
+        rest = d[1:]  # drop the trunk 0
+    else:
+        return None
+    if len(rest) == 9 and rest[0] in "23478":
+        return "+61" + rest
+    return None
 
 
 def _resolve_tenant(form: dict) -> dict:
@@ -251,6 +283,76 @@ async def _twilio_form(request: Request) -> dict:
 
 def _twiml(body: str) -> Response:
     return Response(content=body, media_type="application/xml")
+
+
+@app.post("/api/demo-call")
+async def api_demo_call(request: Request):
+    """Website 'get a demo call' form -> one outbound AI callback.
+
+    Called by the Netlify function, not the public. Validates the payload,
+    enforces the per-phone (24h) and global (daily) caps, then fires
+    twilio_io.place_call with an inline <Connect><Stream> that bridges to the
+    Deepgram demo agent. tenant_id=demo loads tenants/demo.json; caller ID is
+    DEMO_FROM_NUMBER (the AU line). Mirrors the inbound /twilio/voice TwiML but
+    is built off PUBLIC_BASE_URL since there's no inbound request to read from.
+    """
+    # 1. Auth — shared secret with the Netlify function. Not public: this endpoint
+    # spends Twilio credit calling whoever fills the form.
+    if not DEMO_CALL_SECRET:
+        raise HTTPException(status_code=503, detail="Demo callback is not configured.")
+    if not secrets.compare_digest(request.headers.get("x-demo-secret", ""), DEMO_CALL_SECRET):
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+
+    # 2. Validate payload.
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+    name = str(body.get("name", "")).strip()[:60]
+    consent = bool(body.get("consent"))
+    phone = _au_e164(str(body.get("phone", "")).strip())
+    if not name:
+        raise HTTPException(status_code=400, detail="Your name is required.")
+    if not consent:
+        raise HTTPException(status_code=400, detail="Consent is required to call you.")
+    if not phone:
+        raise HTTPException(
+            status_code=400,
+            detail="An Australian mobile or landline number is required.",
+        )
+
+    # 3. Abuse caps (reuse store): one callback per number per 24h, and a global
+    # daily ceiling. Stops a troll hammering one number or burning Twilio credit.
+    if store.recent_demo_calls(phone, 24) >= 1:
+        raise HTTPException(
+            status_code=429,
+            detail="You've had a demo call recently — please try again tomorrow.",
+        )
+    if store.demo_calls_today() >= DEMO_DAILY_CAP:
+        raise HTTPException(
+            status_code=429, detail="Today's demo limit has been reached. Try again tomorrow."
+        )
+
+    # 4. Build the outbound TwiML and place the call.
+    if not DEMO_FROM_NUMBER:
+        raise HTTPException(status_code=503, detail="DEMO_FROM_NUMBER is not configured.")
+    vr = VoiceResponse()
+    connect = Connect()
+    stream = connect.stream(url=_ws_url_base("/twilio/voice-stream"))
+    stream.parameter(name="tenant_id", value="demo")
+    stream.parameter(name="caller", value=phone)
+    stream.parameter(name="demo_mode", value="true")
+    stream.parameter(name="demo_prospect_name", value=name)
+    vr.append(connect)
+    status_cb = f"{PUBLIC_BASE_URL}/twilio/voice-status" if PUBLIC_BASE_URL else None
+    call_sid = twilio_io.place_call(
+        to=phone,
+        twiml=str(vr),
+        from_=DEMO_FROM_NUMBER,
+        status_callback=status_cb,
+    )
+    store.record_demo_call(phone, call_sid, name)
+    return JSONResponse({"ok": True})
 
 
 @app.post("/twilio/voice")
@@ -824,7 +926,9 @@ def _lead_detail_panel(tenant_id: str, selected: dict | None, k: str) -> str:
     ph = selected["phone"]
     ph_q = urllib.parse.quote(ph)
     thread = selected.get("thread") or []
+    voice_calls = selected.get("voice_calls") or []
     msg_count = len(thread)
+    voice_msg_count = sum(len(c.get("transcript") or []) for c in voice_calls)
     call_count = selected.get("call_count") or 0
     fields = []
     for label, key in (
@@ -845,7 +949,31 @@ def _lead_detail_panel(tenant_id: str, selected: dict | None, k: str) -> str:
         who = "Customer" if m.get("role") == "user" else "AI"
         bubbles += f"<div class='bubble {cls}'><b>{who}</b><br>{_esc(m.get('content'))}</div>"
     if not bubbles:
-        bubbles = "<div class=empty-state>No transcript yet. This is likely a missed call lead.</div>"
+        bubbles = "<div class=empty-state>No text transcript yet.</div>"
+    voice_html = ""
+    if voice_calls:
+        latest_call = voice_calls[0]
+        voice_bubbles = ""
+        for m in (latest_call.get("transcript") or [])[-8:]:
+            cls = "cust" if m.get("role") == "user" else "ai"
+            who = "Caller" if m.get("role") == "user" else "Syanna"
+            voice_bubbles += f"<div class='bubble {cls}'><b>{who}</b><br>{_esc(m.get('content'))}</div>"
+        if not voice_bubbles:
+            voice_bubbles = "<div class=empty-state>Call connected; no transcript captured yet.</div>"
+        meta = " · ".join(
+            part
+            for part in (
+                latest_call.get("started_at"),
+                latest_call.get("close_reason"),
+                latest_call.get("call_sid"),
+            )
+            if part
+        )
+        voice_html = (
+            "<div class=detail-card><h2>Latest voice call</h2>"
+            f"<p class=muted>{_esc(meta)}</p>"
+            f"<div class=preview-thread>{voice_bubbles}</div></div>"
+        )
     return (
         "<section class=detail-pane>"
         "<div class=detail-head>"
@@ -862,11 +990,13 @@ def _lead_detail_panel(tenant_id: str, selected: dict | None, k: str) -> str:
         "</div>"
         "<div class=channel-tabs>"
         f"<span class='channel-tab active'>Call {call_count}</span>"
-        f"<span class=channel-tab>Text {msg_count}</span>"
+        f"<span class=channel-tab>Voice text {voice_msg_count}</span>"
+        f"<span class=channel-tab>SMS {msg_count}</span>"
         "<span class=channel-tab>Email 0</span><span class=channel-tab>Webform 0</span>"
         "</div>"
         "<div class=detail-body>"
         f"<div class=detail-card><h2>Summary</h2><ul class=summary-points>{''.join(fields)}</ul></div>"
+        f"{voice_html}"
         f"<div class=detail-card><h2>Transcript preview</h2><div class=preview-thread>{bubbles}</div></div>"
         "</div>"
         "</section>"
@@ -1461,9 +1591,33 @@ def dashboard_lead(
         bubbles += f"<div class='bubble {cls}'><b>{who}</b><br>{_esc(m['content'])}</div>"
     if not bubbles:
         bubbles = (
-            "<p class=muted>📞 Missed call — we texted this caller back "
-            "automatically. No reply yet; might be worth a ring.</p>"
+            "<p class=muted>No SMS transcript yet.</p>"
         )
+    voice_sections = ""
+    for call in lead.get("voice_calls") or []:
+        call_rows = ""
+        for m in call.get("transcript") or []:
+            cls = "cust" if m.get("role") == "user" else "ai"
+            who = "Caller" if m.get("role") == "user" else "Syanna"
+            call_rows += f"<div class='bubble {cls}'><b>{who}</b><br>{_esc(m.get('content'))}</div>"
+        if not call_rows:
+            call_rows = "<p class=muted>Call connected; no transcript captured yet.</p>"
+        meta = " · ".join(
+            part
+            for part in (
+                call.get("started_at"),
+                call.get("close_reason"),
+                call.get("call_sid"),
+            )
+            if part
+        )
+        voice_sections += (
+            "<div class=detail-card>"
+            f"<h2>Voice call</h2><p class=muted>{_esc(meta)}</p>"
+            f"<div class=row>{call_rows}</div></div>"
+        )
+    if not voice_sections:
+        voice_sections = "<p class=muted>No voice transcript captured yet.</p>"
     try:
         brand = f"{tenants.load_tenant(tenant_id)['business_name']} — Leads"
     except (FileNotFoundError, ValueError):
@@ -1471,7 +1625,8 @@ def dashboard_lead(
     body = (
         f"<p><a href='/dashboard/{_esc(tenant_id)}?key={k}'>← back</a></p>"
         f"<h1>{_esc(lead['phone'])}</h1><p class=muted>{fields}</p>"
-        f"<div class=row>{bubbles}</div>"
+        f"{voice_sections}"
+        f"<h2>SMS transcript</h2><div class=row>{bubbles}</div>"
     )
     shell_body = _dashboard_shell(
         t,
