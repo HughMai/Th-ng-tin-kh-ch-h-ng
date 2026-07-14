@@ -1006,6 +1006,15 @@ def order_paid(order_id: int) -> int:
     return r["paid"]
 
 
+def delete_order_payment(payment_id: int) -> bool:
+    """Remove a cọc/thanh toán entry — reopens a KH order that was marked paid
+    by mistake. Balance is derived, so deleting the payment restores the
+    outstanding balance (the reverse of add_order_payment)."""
+    with _connect() as db:
+        cur = db.execute("DELETE FROM order_payments WHERE id = ?", (payment_id,))
+        return cur.rowcount > 0
+
+
 _ORDER_STAGES = ("cho_san_xuat", "dang_san_xuat", "dang_lap", "hoan_thanh")
 
 
@@ -1310,6 +1319,24 @@ def dealer_balances() -> list:
             WHERE c.type = 'DL'
             GROUP BY c.id HAVING balance > 0
             ORDER BY balance DESC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def customer_debts() -> list:
+    """All KH (retail) orders still carrying a balance (value − payments > 0) —
+    the khách-hàng side of /cong-no, mirroring dealer_balances() for ĐL. Unlike
+    orders_debt_due() there is NO install-age gate: every unpaid KH order is
+    queued so it can be marked Đã thanh toán from the Nợ tab."""
+    with _connect() as db:
+        rows = db.execute(
+            _ORDER_SELECT + """
+            WHERE c.type = 'KH'
+              AND COALESCE(o.value_vnd, 0) - (
+                    SELECT COALESCE(SUM(amount_vnd), 0) FROM order_payments p WHERE p.order_id = o.id
+                  ) > 0
+            ORDER BY o.install_date IS NULL, o.install_date
             """
         ).fetchall()
     return [dict(r) for r in rows]

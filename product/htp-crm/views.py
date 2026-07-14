@@ -1668,10 +1668,17 @@ def order_detail_page(o: dict, calls: list, today: str,
         paid, bal = o.get("paid_vnd", 0), o.get("balance_vnd", 0)
         kind_lbl = {"coc": "Cọc", "thanh_toan": "Thanh toán"}
         pay_rows = "".join(
-            '<div class="sub" style="display:flex;justify-content:space-between">'
+            '<div class="sub" style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
             f'<span>{fmt_date(p["pay_date"])} · {kind_lbl.get(p["kind"], p["kind"])}'
             f'{" · " + esc(p["method"]) if p.get("method") else ""}</span>'
-            f'<b>{fmt_vnd(p["amount_vnd"])}</b></div>'
+            '<span style="display:flex;align-items:center;gap:8px">'
+            f'<b>{fmt_vnd(p["amount_vnd"])}</b>'
+            f'<form method="post" action="/don-hang/{o["id"]}/thanh-toan/{p["id"]}/xoa" '
+            "onsubmit=\"return confirm('Xóa khoản này? Đơn sẽ trở lại còn nợ.')\">"
+            f'<input type="hidden" name="next" value="/don-hang/{o["id"]}">'
+            '<button title="Xóa khoản thanh toán" '
+            'style="background:none;border:none;color:#b91c1c;cursor:pointer;font-size:14px;padding:0">✕</button>'
+            "</form></span></div>"
             for p in payments
         ) or '<div class="sub">Chưa có thanh toán nào.</div>'
         bal_color = "#059669" if bal <= 0 else "#b91c1c"
@@ -1785,20 +1792,54 @@ def invoice_page(o: dict, items: list, company: dict, today: str) -> str:
 
 # ---------------------------------------------------------------- công nợ
 
-def debts_page(rows: list, today: str) -> str:
-    cards = []
-    for d in rows:
-        days = _days_since(d["last_payment"] or d["first_charge"], today)
-        overdue = days >= 30
-        style = ' style="border-left:4px solid #b91c1c"' if overdue else ""
-        last = f"trả lần cuối {fmt_date(d['last_payment'])}" if d["last_payment"] else "chưa trả lần nào"
-        cards.append(f"""
+def debts_page(dealer_rows: list, customer_rows: list, loc: str, today: str) -> str:
+    """Công nợ tab. ``loc`` filters the view: 'tat-ca' (both), 'kh' (retail
+    khách lẻ — orders still owing, from order_payments) or 'dl' (đại lý ledger).
+    Dealers link to their sổ nợ; each unpaid KH order gets a Đã thanh toán
+    button that settles the full remaining balance."""
+    seg = "".join(
+        f'<a class="btn {"call" if loc == key else "done"}" href="/cong-no?loc={key}" '
+        f'style="flex:1;text-align:center">{lbl}</a>'
+        for key, lbl in (("tat-ca", "Tất cả"), ("kh", "Khách hàng"), ("dl", "Đại lý"))
+    )
+    out = [f'<div class="row" style="margin-bottom:10px">{seg}</div>']
+
+    if loc in ("tat-ca", "dl"):
+        if loc == "tat-ca":
+            out.append("<h2>Đại lý (sổ nợ)</h2>")
+        cards = []
+        for d in dealer_rows:
+            days = _days_since(d["last_payment"] or d["first_charge"], today)
+            style = ' style="border-left:4px solid #b91c1c"' if days >= 30 else ""
+            last = f"trả lần cuối {fmt_date(d['last_payment'])}" if d["last_payment"] else "chưa trả lần nào"
+            cards.append(f"""
 <a href="/cong-no/{d["id"]}"><div class="card"{style}>
-  <div class="name">{esc(d["name"])} <span class="chip warn">{fmt_vnd(d["balance"])}</span></div>
+  <div class="name">{esc(d["name"])} <span class="chip warn">{fmt_vnd(d["balance"])}</span> {type_chip("DL")}</div>
   <div class="sub">{last} ({days} ngày)</div>
 </div></a>""")
-    body = "".join(cards) or '<div class="empty">Không có đại lý nào đang nợ 🎉</div>'
-    return body
+        out.append("".join(cards) or '<div class="empty">Không có đại lý nào đang nợ 🎉</div>')
+
+    if loc in ("tat-ca", "kh"):
+        if loc == "tat-ca":
+            out.append("<h2>Khách lẻ (đơn chưa thu đủ)</h2>")
+        cards = []
+        for o in customer_rows:
+            when = f"lắp {fmt_date(o['install_date'])}" if o["install_date"] else "chưa lắp"
+            cards.append(f"""
+<div class="card">
+  <a href="/don-hang/{o["id"]}">
+    <div class="name">{esc(o["customer_name"])} <span class="chip warn">{fmt_vnd(o["balance_vnd"])}</span> {type_chip("KH")}</div>
+    <div class="sub">Đơn #{o["id"]} · {when}</div>
+  </a>
+  <form method="post" action="/don-hang/{o["id"]}/thu-du" style="margin-top:8px"
+    onsubmit="return confirm('Đánh dấu đã thu đủ đơn #{o["id"]}? Đơn sẽ rời khỏi danh sách nợ.')">
+    <input type="hidden" name="next" value="/cong-no?loc={esc(loc)}">
+    <button class="btn done" style="width:100%">✅ Đã thanh toán</button>
+  </form>
+</div>""")
+        out.append("".join(cards) or '<div class="empty">Không có khách lẻ nào còn nợ 🎉</div>')
+
+    return "".join(out)
 
 
 def _days_since(d: str, today: str) -> int:

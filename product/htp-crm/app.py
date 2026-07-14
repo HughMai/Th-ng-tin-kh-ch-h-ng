@@ -858,6 +858,31 @@ def order_add_payment(request: Request, order_id: int, amount_vnd: str = Form(..
     return RedirectResponse(_safe_next(next, f"/don-hang/{order_id}"), status_code=303)
 
 
+@app.post("/don-hang/{order_id}/thu-du")
+def order_settle_full(request: Request, order_id: int, next: str = Form("")):
+    """Mark a KH order Đã thanh toán — record a payment for the full remaining
+    balance (computed server-side to avoid stale amounts). Powers the 'Đã thanh
+    toán' button in the Công nợ / Nợ tab."""
+    if r := _guard(request):
+        return r
+    o = store.get_order(order_id)
+    if not o:
+        raise HTTPException(status_code=404)
+    bal = o.get("balance_vnd", 0)
+    if bal > 0:
+        store.add_order_payment(order_id, "thanh_toan", bal)
+    return RedirectResponse(_safe_next(next, "/cong-no"), status_code=303)
+
+
+@app.post("/don-hang/{order_id}/thanh-toan/{pay_id}/xoa")
+def order_payment_delete(request: Request, order_id: int, pay_id: int, next: str = Form("")):
+    """Reopen an order marked paid by mistake — remove one cọc/thanh toán entry."""
+    if r := _guard(request):
+        return r
+    store.delete_order_payment(pay_id)
+    return RedirectResponse(_safe_next(next, f"/don-hang/{order_id}"), status_code=303)
+
+
 # ---- hạng mục hóa đơn (invoice line items) ------------------------------------
 @app.post("/don-hang/{order_id}/hang-muc/moi")
 def order_item_new(request: Request, order_id: int, description: str = Form(...),
@@ -934,10 +959,12 @@ def order_review_requested(request: Request, order_id: int, next: str = Form("")
 
 # ---- công nợ ------------------------------------------------------------------------
 @app.get("/cong-no", response_class=HTMLResponse)
-def debts(request: Request):
+def debts(request: Request, loc: str = "tat-ca"):
     if r := _guard(request):
         return r
-    body = views.debts_page(store.dealer_balances(), store.today_vn())
+    if loc not in ("tat-ca", "kh", "dl"):
+        loc = "tat-ca"
+    body = views.debts_page(store.dealer_balances(), store.customer_debts(), loc, store.today_vn())
     return views.page("Công nợ", body, active="/cong-no")
 
 
