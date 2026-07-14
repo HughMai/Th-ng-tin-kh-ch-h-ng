@@ -1,0 +1,33 @@
+# HTP CRM — app service only.
+#
+# On the Hermes VPS the existing speed-to-lead Caddy owns ports 80/443, so this
+# compose file does NOT ship its own Caddy. Instead the app joins the external
+# `caddy_shared` network and the STL Caddyfile gains a site block:
+#
+#   crm.187-77-133-39.sslip.io {
+#       reverse_proxy htp-crm-app:8000
+#   }
+#
+# Setup on the VPS (once):
+#   docker network create caddy_shared
+#   # add `caddy_shared` to the caddy service networks in /opt/speed-to-lead/docker-compose.yml
+#
+# If this app ever moves to its own box, copy the caddy service block from
+# product/qr-menu/docker-compose.yml and drop the external network.
+
+services:
+  app:
+    build: .
+    container_name: htp-crm-app
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8000"
+    networks:
+      - caddy_shared
+
+networks:
+  caddy_shared:
+    external: true
