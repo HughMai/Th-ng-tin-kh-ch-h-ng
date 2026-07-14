@@ -899,9 +899,6 @@ def customer_detail_page(c: dict, quotes: list, orders: list, reminders: list,
   <div class="row"><a class="btn done" href="/khach/{c["id"]}/sua">✏️ Sửa</a></div>
 </div>
 {zalo_block}
-<div class="row" style="margin:2px 0 6px">
-  <a class="btn copy" href="/don-hang/moi?khach={c["id"]}">+ Đơn hàng (bán lẻ, không qua báo giá)</a>
-</div>
 <details class="card"><summary style="font-weight:700;min-height:32px;display:flex;align-items:center">⏰ + Nhắc lại (hẹn gọi sau)</summary>
   <form method="post" action="/khach/{c["id"]}/nhac">
     <label>Ngày nhắc</label><input type="date" name="due_date" required min="{today}" value="{today}">
@@ -996,7 +993,7 @@ def _quote_pipeline_controls(q: dict, next_url: str = "/bao-gia") -> str:
     return ""
 
 
-def quotes_page(rows: list, summary: dict) -> str:
+def quotes_page(rows: list, archived: list, summary: dict) -> str:
     header = (f'<div class="total">Đang theo dõi: {summary["n"]} báo giá — '
               f'{fmt_vnd_short(summary["total"])}</div>')
     cards = []
@@ -1018,11 +1015,24 @@ def quotes_page(rows: list, summary: dict) -> str:
 </div>""")
     body = "".join(cards) or '<div class="empty">Chưa có báo giá nào.</div>'
     kanban = _kanban_html(rows)
+    archive = ""
+    if archived:
+        arch_cards = "".join(f"""
+<a href="/don-hang/{q["order_id"]}"><div class="card" style="opacity:.6">
+  <div class="name">{esc(q["customer_name"])} {status_chip(q["status"])}</div>
+  <div class="sub">{bao_gia_so(q["id"], q.get("sent_date"))} · {esc(PRODUCT_LABELS.get(q["product"], "").capitalize())} — {fmt_vnd(q["value_vnd"])}</div>
+</div></a>""" for q in archived)
+        archive = f"""
+<details class="card" style="margin-top:12px">
+  <summary style="font-weight:700;min-height:32px;display:flex;align-items:center">🗄️ Đã hoàn thành ({len(archived)})</summary>
+  <div class="cards-grid" style="margin-top:8px">{arch_cards}</div>
+</details>"""
     return f"""
 {header}
 <a class="btn add" href="/khach/tiep-nhan">+ Khách hàng mới (tạo báo giá)</a>
 <div class="quotes-list-mobile">{body}</div>
-{kanban}"""
+{kanban}
+{archive}"""
 
 
 # (statuses in this column, status posted on drop, label). "sent" and
@@ -1482,11 +1492,12 @@ def quote_item_form_page(quote: dict, item: dict = None) -> str:
 
 # ---------------------------------------------------------------- orders
 
-def orders_page(rows: list, today: str) -> str:
-    """Tiến độ sản xuất — jobs already sorted by store.list_orders (urgent first,
-    then oldest chốt first, finished sink to bottom)."""
-    cards = []
-    for o in rows:
+def orders_page(active: list, completed: list, today: str) -> str:
+    """Tiến độ sản xuất — split into đang làm (default view) and đã hoàn thành
+    (archived, collapsed — only shows when opened). Đơn hàng only ever come
+    from a báo giá đã chốt (store.create_order_from_quote); there's no manual
+    "+ Đơn hàng" entry point."""
+    def _card(o: dict, dim: bool = False) -> str:
         badges = ""
         if o.get("urgent"):
             badges += '<span class="chip urgent">🔥 Gấp</span> '
@@ -1496,60 +1507,53 @@ def orders_page(rows: list, today: str) -> str:
                 badges += ' <span class="chip sent">Hết BH</span>'
             elif o["expiry_date"] <= _add_days(today, 30):
                 badges += ' <span class="chip warn">Sắp hết BH</span>'
+        bal = o.get("balance_vnd", 0) if o.get("customer_type") == "KH" else 0
+        if bal > 0:
+            badges += f' <span class="chip warn">còn nợ {fmt_vnd(bal)}</span>'
         inst = f"lắp {fmt_date(o['install_date'])}" if o["install_date"] else "Chưa lắp"
-        dim = ' style="opacity:.6"' if (o.get("stage") == "hoan_thanh") else ""
-        cards.append(f"""
-<a href="/don-hang/{o["id"]}"><div class="card"{dim}>
-  <div class="name">{esc(o["customer_name"])}</div>
-  <div class="sub">{badges}</div>
-  <div class="sub">{esc(PRODUCT_LABELS.get(o["product"], "").capitalize())} — {fmt_vnd(o["value_vnd"])} — {inst}</div>
-</div></a>""")
-    body = (f'<div class="cards-grid">{"".join(cards)}</div>' if cards
-            else '<div class="empty">Chưa có đơn hàng nào.</div>')
-    return f'<a class="btn add" href="/don-hang/moi">+ Thêm đơn hàng</a>{body}'
+        style = ' style="opacity:.6"' if dim else ""
+        actions = ""
+        if bal > 0:
+            actions = f"""
+<div class="row" style="margin-top:6px">
+  <details style="flex:1"><summary class="btn done" style="text-align:center">✏️ Điều chỉnh</summary>
+    <form method="post" action="/don-hang/{o["id"]}/thanh-toan" style="margin-top:6px">
+      <input type="hidden" name="next" value="/don-hang">
+      <input name="amount_vnd" required inputmode="numeric" oninput="fmtMoney(this)" placeholder="Số tiền đã thu thêm">
+      <button class="btn big" style="margin-top:6px;width:100%">Ghi thanh toán</button>
+    </form>
+  </details>
+  <form method="post" action="/don-hang/{o["id"]}/thu-du" style="flex:1"
+    onsubmit="return confirm('Đánh dấu đã thu đủ đơn #{o["id"]}?')">
+    <input type="hidden" name="next" value="/don-hang">
+    <button class="btn call" style="width:100%">✅ Đã thanh toán</button>
+  </form>
+</div>"""
+        return f"""
+<div class="card"{style}>
+  <a href="/don-hang/{o["id"]}" style="display:block">
+    <div class="name">{esc(o["customer_name"])}</div>
+    <div class="sub">{badges}</div>
+    <div class="sub">{esc(PRODUCT_LABELS.get(o["product"], "").capitalize())} — {fmt_vnd(o["value_vnd"])} — {inst}</div>
+  </a>
+  {actions}
+</div>"""
+
+    active_body = (f'<div class="cards-grid">{"".join(_card(o) for o in active)}</div>' if active
+                   else '<div class="empty">Chưa có đơn hàng nào đang làm.</div>')
+    archive = ""
+    if completed:
+        archive = f"""
+<details class="card" style="margin-top:12px">
+  <summary style="font-weight:700;min-height:32px;display:flex;align-items:center">🗄️ Đã hoàn thành ({len(completed)})</summary>
+  <div class="cards-grid" style="margin-top:8px">{"".join(_card(o, dim=True) for o in completed)}</div>
+</details>"""
+    return f"{active_body}{archive}"
 
 
 def _add_days(d: str, n: int) -> str:
     from datetime import datetime, timedelta
     return (datetime.strptime(d, "%Y-%m-%d") + timedelta(days=n)).strftime("%Y-%m-%d")
-
-
-def order_form_page(customer: dict, quote: dict = None) -> str:
-    q = quote or {}
-    val = fmt_vnd(q["value_vnd"])[:-1].strip() if q.get("value_vnd") else ""
-    # orders.product CHECK doesn't allow 'xingfa' either — same exclusion as quote_form_page.
-    prods = "".join(
-        f'<label><input type="radio" name="product" value="{v}" '
-        f'{"checked" if v == q.get("product", "cua_cuon") else ""}>'
-        f'<span>{label.capitalize()}</span></label>'
-        for v, label in PRODUCT_LABELS.items() if v not in ("khac", "xingfa")
-    )
-    from_quote = (f'<input type="hidden" name="quote_id" value="{q["id"]}">'
-                  if q.get("id") else "")
-    note = ('<div class="card"><div class="sub">📋 Tạo từ báo giá đã chốt — kiểm tra lại rồi lưu.</div></div>'
-            if q.get("id") else "")
-    return f"""
-{note}
-<div class="card"><div class="name">{esc(customer["name"])} {type_chip(customer["type"])}</div>
-<div class="sub">{esc(customer["phone"] or "")}</div></div>
-<form method="post" action="/don-hang/moi">
-  <input type="hidden" name="customer_id" value="{customer["id"]}">{from_quote}
-  <label>Sản phẩm</label>
-  <div class="seg" style="flex-wrap:wrap">{prods}
-    <label><input type="radio" name="product" value="khac" {"checked" if q.get("product") == "khac" else ""}><span>Khác</span></label></div>
-  <label>Giá trị đơn (VND)</label>
-  <input name="value_vnd" inputmode="numeric" oninput="fmtMoney(this)" value="{esc(val)}">
-  <label>Mô tả</label>
-  <textarea name="description">{esc(q.get("description", "") or "")}</textarea>
-  <label>Ngày lắp đặt (bỏ trống nếu chưa lắp)</label>
-  <input type="date" name="install_date">
-  <label>Bảo hành</label>
-  <div class="seg">
-    <label><input type="radio" name="warranty_months" value="24" checked><span>24 tháng</span></label>
-    <label><input type="radio" name="warranty_months" value="36"><span>36 tháng</span></label>
-  </div>
-  <button class="btn big" style="margin-top:18px">Lưu đơn hàng</button>
-</form>"""
 
 
 def order_detail_page(o: dict, calls: list, today: str,
@@ -1717,6 +1721,13 @@ def order_detail_page(o: dict, calls: list, today: str,
   {contact_buttons(o["phone"], o["zalo_phone"])}
   <div class="row"><a class="btn done" href="/khach/{o["customer_id"]}">👤 Xem khách</a>{debt_link}</div>
 </div>
+<details class="card"><summary style="font-weight:700;min-height:32px;display:flex;align-items:center;color:#b91c1c">🗑️ Xóa đơn hàng</summary>
+  <div class="sub" style="margin-top:6px">Xóa hạng mục, thanh toán, sửa chữa của đơn này. Báo giá gốc quay lại "Đã gửi" để chốt lại nếu cần. Lịch sử chăm sóc của khách không bị mất.</div>
+  <form method="post" action="/don-hang/{o["id"]}/xoa" style="margin-top:8px"
+    onsubmit="return confirm('Xóa đơn hàng #{o["id"]}? Không thể hoàn tác.')">
+    <button class="btn danger" style="width:100%">Xóa đơn hàng #{o["id"]}</button>
+  </form>
+</details>
 {handoff}
 {bo_cua_block}
 {payment_block}

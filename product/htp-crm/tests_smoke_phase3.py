@@ -62,13 +62,14 @@ assert order_value == sum(i["thanh_tien"] for i in items), "value_vnd != SUM(ite
 assert order_value == quote_value, f"order {order_value} != quote {quote_value}"
 print(f"2. won-snapshot OK (don #{oid}: {len(items)} items, {order_value} VND)")
 
-# ---- 3. quick order (lump value, no quote) -> one generic line ------------------
-r = client.post("/don-hang/moi", data={
-    "customer_id": cid, "product": "khac", "value_vnd": "5.000.000",
-    "description": "Sửa cửa lẻ",
-}, follow_redirects=False)
-assert r.status_code == 303, f"POST /don-hang/moi -> {r.status_code} {r.text}"
-oid2 = int(r.headers["location"].rsplit("/", 1)[-1])
+# ---- 3. quick quote (lump value, no items) -> chốt -> one generic order line ----
+# Orders only ever come from a báo giá đã chốt (no manual "+ Đơn hàng" route).
+qid_lump = store.create_quote(cid, "khac", "Sửa cửa lẻ", 5_000_000)
+r = client.post(f"/bao-gia/{qid_lump}/trang-thai", data={"trang_thai": "won"},
+                follow_redirects=False)
+assert r.status_code == 303, f"chốt lump quote -> {r.status_code} {r.text}"
+oid2 = store.get_quote(qid_lump)["order_id"]
+assert oid2, "lump quote has no linked order after chốt"
 items2 = store.order_items_for(oid2)
 assert len(items2) == 1, f"quick order should have 1 generic line, got {len(items2)}"
 assert items2[0]["thanh_tien"] == 5_000_000 and items2[0]["description"] == "Sửa cửa lẻ"

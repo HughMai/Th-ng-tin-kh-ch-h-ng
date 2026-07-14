@@ -569,7 +569,10 @@ def get_quote(quote_id: int) -> Optional[dict]:
 
 
 def list_quotes(segment: str = "open") -> list:
-    """segment: open (sent+chasing) | won | lost | all."""
+    """segment: open (sent+chasing) | won | lost | all.
+    'all' (the /bao-gia board) excludes won quotes whose order has reached
+    hoàn thành — those move to quotes_archived() instead. 'won'/'lost' stay
+    exhaustive since báo cáo/reporting reads those segments directly."""
     base = (
         "SELECT q.*, c.name AS customer_name, c.phone, c.zalo_phone, "
         "CAST(julianday(?) - julianday(q.sent_date) AS INTEGER) AS days_sent, "
@@ -582,9 +585,26 @@ def list_quotes(segment: str = "open") -> list:
     elif segment in ("won", "lost"):
         base += " WHERE q.status = ?"
         params.append(segment)
+    elif segment == "all":
+        base += (" WHERE NOT (q.status = 'won' AND q.order_id IN "
+                  "(SELECT id FROM orders WHERE stage = 'hoan_thanh'))")
     base += " ORDER BY q.sent_date DESC, q.id DESC"
     with _connect() as db:
         rows = db.execute(base, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def quotes_archived() -> list:
+    """Won quotes whose order has reached hoàn thành — archived out of the
+    default báo giá board, still viewable in a collapsed section."""
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT q.*, c.name AS customer_name, c.phone, c.zalo_phone "
+            "FROM quotes q JOIN customers c ON c.id = q.customer_id "
+            "JOIN orders o ON o.id = q.order_id "
+            "WHERE q.status = 'won' AND o.stage = 'hoan_thanh' "
+            "ORDER BY o.updated_at DESC, q.id DESC"
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -1061,13 +1081,48 @@ def get_order(order_id: int) -> Optional[dict]:
     return dict(r) if r else None
 
 
-def list_orders() -> list:
-    """Tiến độ (production) order: unfinished jobs first, urgent (gấp) pinned to
-    the top, then oldest chốt first (FIFO); finished jobs sink to the bottom."""
+def delete_order(order_id: int) -> bool:
+    """Xóa đơn hàng — purges everything that belongs to the order (hạng mục,
+    thanh toán, sửa chữa, digest entries) and reverts the originating báo giá
+    back to 'sent' (unlinked) so it can be chốt lại. Keeps the customer's
+    lịch sử chăm sóc (touches) and any công nợ ledger entries — only detaches
+    their dangling order_id reference."""
+    with _connect() as db:
+        o = db.execute("SELECT quote_id FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if not o:
+            return False
+        if o["quote_id"]:
+            db.execute(
+                "UPDATE quotes SET status='sent', order_id=NULL, updated_at=datetime('now') WHERE id = ?",
+                (o["quote_id"],),
+            )
+        db.execute("UPDATE touches SET order_id = NULL WHERE order_id = ?", (order_id,))
+        db.execute("UPDATE debt_entries SET order_id = NULL WHERE order_id = ?", (order_id,))
+        db.execute("DELETE FROM bot_digest WHERE order_id = ?", (order_id,))
+        db.execute("DELETE FROM service_calls WHERE order_id = ?", (order_id,))
+        db.execute("DELETE FROM order_payments WHERE order_id = ?", (order_id,))
+        db.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+        cur = db.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+    return cur.rowcount > 0
+
+
+def orders_active() -> list:
+    """Tiến độ (production) — orders not yet hoàn thành. Urgent (gấp) pinned to
+    the top, then oldest chốt first (FIFO)."""
     with _connect() as db:
         rows = db.execute(
-            _ORDER_SELECT + " ORDER BY (o.stage = 'hoan_thanh') ASC, o.urgent DESC, "
-            "o.created_at ASC, o.id ASC"
+            _ORDER_SELECT + " WHERE o.stage != 'hoan_thanh' "
+            "ORDER BY o.urgent DESC, o.created_at ASC, o.id ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def orders_completed() -> list:
+    """Đã hoàn thành — archived out of the default Đơn hàng view, still fully
+    viewable on demand (newest first)."""
+    with _connect() as db:
+        rows = db.execute(
+            _ORDER_SELECT + " WHERE o.stage = 'hoan_thanh' ORDER BY o.updated_at DESC, o.id DESC"
         ).fetchall()
     return [dict(r) for r in rows]
 

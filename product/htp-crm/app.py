@@ -265,8 +265,6 @@ def customer_new(request: Request, name: str = Form(...), phone: str = Form(...)
     cid = store.create_customer(name, phone, type, source, address, note, zalo_phone, email=email)
     if next == "bao-gia-moi":
         return RedirectResponse(f"/bao-gia/moi?khach={cid}", status_code=303)
-    if next == "don-hang-moi":
-        return RedirectResponse(f"/don-hang/moi?khach={cid}", status_code=303)
     return RedirectResponse(f"/khach/{cid}", status_code=303)
 
 
@@ -485,7 +483,7 @@ def import_submit(request: Request, action: str = Form("preview"), raw: str = Fo
 def quotes(request: Request):
     if r := _guard(request):
         return r
-    body = views.quotes_page(store.list_quotes("all"), store.open_quotes_summary())
+    body = views.quotes_page(store.list_quotes("all"), store.quotes_archived(), store.open_quotes_summary())
     return views.page("Báo giá", body, active="/bao-gia")
 
 
@@ -736,46 +734,26 @@ def quote_build(request: Request, quote_id: int):
 
 
 # ---- đơn hàng ---------------------------------------------------------------------
+# Orders are only ever created by chốt-ing a báo giá (store.create_order_from_quote,
+# triggered from /bao-gia/{id}/trang-thai) — there is no manual "+ Đơn hàng" path.
 @app.get("/don-hang", response_class=HTMLResponse)
 def orders(request: Request):
     if r := _guard(request):
         return r
-    body = views.orders_page(store.list_orders(), store.today_vn())
+    body = views.orders_page(store.orders_active(), store.orders_completed(), store.today_vn())
     return views.page("Đơn hàng", body, active="/don-hang")
 
 
-@app.get("/don-hang/moi", response_class=HTMLResponse)
-def order_new_form(request: Request, khach: int = 0, bao_gia: int = 0, q: str = ""):
+@app.post("/don-hang/{order_id}/xoa")
+def order_delete(request: Request, order_id: int):
+    """Xóa đơn hàng: purges hạng mục/thanh toán/sửa chữa and reverts the
+    originating báo giá to 'sent' so it can be chốt lại. Customer lịch sử
+    chăm sóc (touches) is kept — see store.delete_order."""
     if r := _guard(request):
         return r
-    quote = store.get_quote(bao_gia) if bao_gia else None
-    if quote:
-        c = store.get_customer(quote["customer_id"])
-        return views.page("Thêm đơn hàng", views.order_form_page(c, quote), active="/don-hang")
-    if not khach:
-        rows = store.list_customers(q=q)
-        return views.page("Thêm đơn hàng",
-                          views.pick_customer_page(rows, q, "/don-hang/moi", "Đơn hàng của khách nào?"),
-                          active="/don-hang")
-    c = store.get_customer(khach)
-    if not c:
+    if not store.delete_order(order_id):
         raise HTTPException(status_code=404)
-    return views.page("Thêm đơn hàng", views.order_form_page(c), active="/don-hang")
-
-
-@app.post("/don-hang/moi")
-def order_new(request: Request, customer_id: int = Form(...), product: str = Form(...),
-              value_vnd: str = Form(""), description: str = Form(""),
-              install_date: str = Form(""), warranty_months: int = Form(24),
-              quote_id: int = Form(0)):
-    if r := _guard(request):
-        return r
-    oid = store.create_order(customer_id, product, description, _parse_vnd(value_vnd),
-                             install_date, warranty_months, quote_id or None)
-    if quote_id:
-        store.link_quote_order(quote_id, oid)
-        store.snapshot_order_items_from_quote(oid, quote_id)
-    return RedirectResponse(f"/don-hang/{oid}", status_code=303)
+    return RedirectResponse("/don-hang", status_code=303)
 
 
 @app.get("/don-hang/{order_id}", response_class=HTMLResponse)
