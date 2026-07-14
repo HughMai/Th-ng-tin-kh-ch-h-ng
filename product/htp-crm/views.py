@@ -22,6 +22,19 @@ def esc(x) -> str:
     return html.escape(str(x if x is not None else ""))
 
 
+# Inline SVG favicon (navy "H" monogram, brand #0f4c81) served as a data URI so
+# browsers stop requesting /favicon.ico — which has no route/file and 404s on
+# every page load — and the tab shows a brand icon. No extra file or HTTP request.
+FAVICON = (
+    "<link rel=\"icon\" href=\"data:image/svg+xml,"
+    "%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E"
+    "%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230f4c81'/%3E"
+    "%3Ctext%20x='16'%20y='23'%20font-family='Arial,sans-serif'%20font-size='18'"
+    "%20font-weight='bold'%20fill='%23fff'%20text-anchor='middle'%3EH%3C/text%3E"
+    "%3C/svg%3E\">"
+)
+
+
 def fmt_vnd(n) -> str:
     if n is None:
         return "—"
@@ -114,7 +127,7 @@ def page(title: str, body: str, active: str = "", show_nav: bool = True,
 <html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(title)} — HTP</title>
-<link rel="stylesheet" href="/static/app.css"></head>
+<link rel="stylesheet" href="/static/app.css">{FAVICON}</head>
 <body>
 {sidebar}
 <div class="top">{esc(title)}<a href="/logout" onclick="event.preventDefault();document.getElementById('lo').submit()">Thoát</a></div>
@@ -143,7 +156,7 @@ def login_page(error: str = "") -> str:
     return f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Đăng nhập — HTP</title><link rel="stylesheet" href="/static/app.css"></head>
+<title>Đăng nhập — HTP</title><link rel="stylesheet" href="/static/app.css">{FAVICON}</head>
 <body><div class="wrap">{body}</div></body></html>"""
 
 
