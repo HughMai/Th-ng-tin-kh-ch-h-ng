@@ -1923,7 +1923,8 @@ def reports_page(r: dict) -> str:
 
 # ---------------------------------------------------------------- Zalo OA admin
 
-def zalo_admin_page(connected: bool, configured: bool, unlinked: list) -> str:
+def zalo_admin_page(connected: bool, configured: bool, unlinked: list,
+                    bot_configured: bool = False, bot_health: dict = None) -> str:
     if not configured:
         status = '<div class="card"><div class="sub">Chưa có ZALO_APP_ID/ZALO_APP_SECRET trong .env</div></div>'
     elif connected:
@@ -1934,6 +1935,23 @@ def zalo_admin_page(connected: bool, configured: bool, unlinked: list) -> str:
         status = ('<div class="card"><div class="sub">Chưa kết nối — bấm để đăng nhập Zalo và cấp quyền</div>'
                   '<a class="btn zalo" style="display:flex;margin-top:8px" href="/zalo/oauth/start">'
                   'Kết nối Zalo OA</a></div>')
+
+    if not bot_configured:
+        bot_status = '<div class="card"><div class="sub">Chưa cấu hình BOT_URL/BOT_TOKEN trong .env</div></div>'
+    elif bot_health is None:
+        bot_status = ('<div class="card"><div class="sub">⚠️ Không kết nối được bot — '
+                      'kiểm tra container htp-crm-bot</div></div>')
+    elif bot_health.get("awaitingQR"):
+        bot_status = ('<div class="card"><div class="sub">📷 Đang chờ quét mã QR — dùng tài khoản Zalo phụ để quét</div>'
+                      '<img src="/zalo/bot/qr" style="max-width:240px;display:block;margin-top:8px" /></div>')
+    elif bot_health.get("loggedIn"):
+        bot_status = ('<div class="card"><div class="sub">✅ Bot đã kết nối</div>'
+                      '<form method="post" action="/zalo/bot/gui" style="margin-top:8px">'
+                      '<button class="btn done" style="width:100%" type="submit">'
+                      '📤 Gửi bảng công việc vào nhóm</button></form></div>')
+    else:
+        bot_status = '<div class="card"><div class="sub">⚠️ Bot mất kết nối</div></div>'
+    bot_html = f"<h2>🤖 Bot nhóm</h2>{bot_status}"
 
     if unlinked:
         rows = "".join(f"""
@@ -1948,4 +1966,4 @@ def zalo_admin_page(connected: bool, configured: bool, unlinked: list) -> str:
     else:
         unlinked_html = '<h2>Tin nhắn Zalo chưa gắn khách</h2><div class="empty">Chưa có tin nhắn nào.</div>'
 
-    return f"{status}{unlinked_html}"
+    return f"{status}{bot_html}{unlinked_html}"

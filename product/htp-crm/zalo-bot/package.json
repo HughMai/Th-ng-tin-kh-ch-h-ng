@@ -1,0 +1,14 @@
+{
+  "name": "htp-crm-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Zalo group bot sidecar for htp-crm — zca-js personal-account automation",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "zca-js": "^2.0.0"
+  }
+}

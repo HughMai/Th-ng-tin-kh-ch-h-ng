@@ -12,11 +12,13 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from collections import deque
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -44,6 +46,10 @@ ZALO_APP_ID = os.environ.get("ZALO_APP_ID", "")
 ZALO_APP_SECRET = os.environ.get("ZALO_APP_SECRET", "")
 PUBLIC_HOSTNAME = os.environ.get("PUBLIC_HOSTNAME", "")
 ZALO_REDIRECT_URI = f"https://{PUBLIC_HOSTNAME}/zalo/oauth/callback"
+# Zalo group bot sidecar (zca-js) — optional. Every bot feature below no-ops
+# when either is blank, so the app runs unchanged without the bot container.
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+BOT_URL = os.environ.get("BOT_URL", "")
 # Company header printed on the exported Báo Giá. Blank phone/address are simply
 # omitted from the sheet — nothing is invented when unset.
 COMPANY = {
@@ -811,6 +817,7 @@ def order_set_stage(request: Request, order_id: int, stage: str = Form(...)):
         store.set_order_stage(order_id, stage)
     except ValueError:
         raise HTTPException(status_code=400, detail="Giai đoạn không hợp lệ")
+    _stage_ping(order_id, stage)
     return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
 
 
@@ -819,6 +826,8 @@ def order_set_install(request: Request, order_id: int, install_date: str = Form(
     if r := _guard(request):
         return r
     store.set_order_install(order_id, install_date)
+    if install_date:
+        _install_ping(order_id, install_date)
     return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
 
 
@@ -991,6 +1000,8 @@ def zalo_admin(request: Request):
         connected=zalo_client.is_connected(),
         configured=bool(ZALO_APP_ID and ZALO_APP_SECRET),
         unlinked=store.recent_unlinked_zalo_events(),
+        bot_configured=bool(BOT_URL and BOT_TOKEN),
+        bot_health=_bot_health(),
     )
     return views.page("Zalo OA", body, active="/khach")
 
@@ -1075,3 +1086,143 @@ def customer_send_zalo(request: Request, customer_id: int, text: str = Form(...)
         raise HTTPException(status_code=502, detail=f"Gửi Zalo thất bại: {e}")
     store.add_touch(customer_id, "zalo_api", text)
     return RedirectResponse(f"/khach/{customer_id}", status_code=303)
+
+
+# ---- Zalo group bot (zca-js sidecar) ------------------------------------------
+# The bot lives in its own container and talks to the CRM over a tiny internal
+# HTTP API, authenticated with a shared secret (X-Bot-Token). A dead/unconfigured
+# bot must never break a CRM request, so every outbound call is best-effort.
+_XONG_RE = re.compile(r"(?i)^\s*xong\s+(\d+)\s*$")
+
+
+def _bot_send(text: str) -> None:
+    if not (BOT_URL and BOT_TOKEN and text):
+        return
+    try:
+        requests.post(f"{BOT_URL}/send", json={"text": text},
+                      headers={"X-Bot-Token": BOT_TOKEN}, timeout=3)
+    except Exception:
+        pass
+
+
+def _bot_health() -> dict | None:
+    if not BOT_URL:
+        return None
+    try:
+        r = requests.get(f"{BOT_URL}/health", timeout=1.5)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+
+def _job_desc(o: dict) -> str:
+    return o.get("description") or views.PRODUCT_LABELS.get(o["product"], "")
+
+
+def _digest_text(today: str) -> str:
+    """Numbered work list for the Zalo group — overdue/today/tomorrow/urgent
+    jobs. Every call re-saves the numbering (store.save_digest) so "xong <N>"
+    always resolves against the freshest message sent to the group."""
+    rows = store.orders_for_digest(today)
+    store.save_digest(today, [o["id"] for o in rows])
+    if not rows:
+        return ""
+    lines = [f"🔨 CÔNG VIỆC {views.fmt_date(today)}"]
+    for idx, o in enumerate(rows, 1):
+        inst = o.get("install_date")
+        if inst and inst < today:
+            tag = f"[QUÁ HẸN {views.fmt_date(inst)}] "
+        elif inst == today:
+            tag = "[Hôm nay] "
+        elif inst:
+            tag = f"[{views.fmt_date(inst)}] "
+        else:
+            tag = ""
+        addr = f" — {o['address']}" if o.get("address") else ""
+        phone = f" — {o['phone']}" if o.get("phone") else ""
+        lines.append(f"{idx}. {tag}{o['customer_name']} — {_job_desc(o)}{addr}{phone}")
+    lines.append("Lắp xong nhắn: xong <số> · Xem việc: viec")
+    return "\n".join(lines)
+
+
+def _stage_ping(order_id: int, stage: str) -> None:
+    o = store.get_order(order_id)
+    if not o:
+        return
+    label = views.STAGE_LABELS.get(stage, stage)
+    _bot_send(f"🔔 {o['customer_name']} — {_job_desc(o)}: {label}")
+
+
+def _install_ping(order_id: int, install_date: str) -> None:
+    o = store.get_order(order_id)
+    if not o:
+        return
+    _bot_send(f"🔔 {o['customer_name']} — {_job_desc(o)}: lắp {views.fmt_date(install_date)}")
+
+
+def _check_bot_token(request: Request) -> None:
+    token = request.headers.get("x-bot-token", "")
+    if not BOT_TOKEN or not secrets.compare_digest(token, BOT_TOKEN):
+        raise HTTPException(status_code=403)
+
+
+@app.post("/bot/inbound")
+async def bot_inbound(request: Request):
+    """Zalo group message, forwarded by the bot sidecar. No cookie auth —
+    server-to-server, same shared-secret pattern as /zalo/webhook."""
+    _check_bot_token(request)
+    payload = await request.json()
+    text = (payload.get("text") or "").strip()
+    name = payload.get("name") or ""
+    today = store.today_vn()
+
+    m = _XONG_RE.match(text)
+    if m:
+        order_id = store.get_digest_order(today, int(m.group(1)))
+        o = store.get_order(order_id) if order_id else None
+        if not o:
+            return {"reply": f"Không thấy số {m.group(1)} trong bảng hôm nay. Gõ: viec để xem bảng mới."}
+        if o["stage"] == "hoan_thanh":
+            return {"reply": f"{o['customer_name']} — đã xong rồi."}
+        store.set_order_stage(order_id, "hoan_thanh")
+        if not o.get("install_date"):
+            store.set_order_install(order_id, today)
+        who = f" ({name} báo)" if name else ""
+        return {"reply": f"✅ {o['customer_name']} — {_job_desc(o)}: LẮP XONG{who}"}
+
+    if text.lower() in ("viec", "việc"):
+        return {"reply": _digest_text(today) or "Hôm nay không có việc 🎉"}
+
+    if text.lower().startswith("xong"):
+        return {"reply": "Gõ: xong <số> (số trong bảng công việc)"}
+
+    return {}
+
+
+@app.get("/bot/digest")
+def bot_digest_pull(request: Request):
+    _check_bot_token(request)
+    return {"text": _digest_text(store.today_vn())}
+
+
+@app.get("/zalo/bot/qr")
+def zalo_bot_qr(request: Request):
+    if r := _guard(request):
+        return r
+    if not BOT_URL:
+        raise HTTPException(status_code=404)
+    try:
+        resp = requests.get(f"{BOT_URL}/qr", timeout=3)
+        resp.raise_for_status()
+    except Exception:
+        raise HTTPException(status_code=404)
+    return Response(content=resp.content, media_type="image/png")
+
+
+@app.post("/zalo/bot/gui")
+def zalo_bot_send_digest(request: Request):
+    if r := _guard(request):
+        return r
+    _bot_send(_digest_text(store.today_vn()))
+    return RedirectResponse("/zalo", status_code=303)

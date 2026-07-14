@@ -28,6 +28,21 @@ services:
     networks:
       - caddy_shared
 
+  # Zalo group bot sidecar (zca-js, unofficial personal-account API) — optional.
+  # Runs unattended once logged in; app.py no-ops every bot feature when
+  # BOT_URL/BOT_TOKEN are unset, so the app works fine without this service.
+  bot:
+    build: ./zalo-bot
+    container_name: htp-crm-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data-bot:/app/data
+    expose:
+      - "8100"
+    networks:
+      - caddy_shared
+
 networks:
   caddy_shared:
     external: true

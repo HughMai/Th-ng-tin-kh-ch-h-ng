@@ -285,6 +285,20 @@ def configure(db_path: str) -> None:
             """
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_touches_customer ON touches(customer_id, created_at)")
+        # Numbered work list last sent to the Zalo group bot ("1. Cô Lan...").
+        # "xong <N>" resolves against the row for today's date + that number.
+        # Overwritten on every send (morning digest, manual re-send, "viec")
+        # so a reply always resolves against the freshest message in the group.
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_digest (
+                digest_date TEXT NOT NULL,
+                item_no     INTEGER NOT NULL,
+                order_id    INTEGER NOT NULL REFERENCES orders(id),
+                PRIMARY KEY (digest_date, item_no)
+            )
+            """
+        )
         # Backfill khách-chính stage for rows that predate the split: anyone with
         # an order or a won quote is a converted customer. Idempotent + safe to
         # run every startup — it only promotes lead -> customer, never demotes.
@@ -1064,6 +1078,48 @@ def set_order_install(order_id: int, install_date: str) -> bool:
             (install_date or None, order_id),
         )
         return cur.rowcount > 0
+
+
+# --------------------------------------------------- Zalo group bot digest
+
+def orders_for_digest(today: str = "") -> list:
+    """Unfinished orders worth putting in the Zalo group work list: overdue,
+    due today, due tomorrow, or flagged urgent regardless of date. Ordered
+    overdue-first so the most pressing jobs lead the numbered list."""
+    today = today or today_vn()
+    with _connect() as db:
+        rows = db.execute(
+            _ORDER_SELECT + " WHERE o.stage != 'hoan_thanh' "
+            "AND (o.urgent = 1 OR (o.install_date IS NOT NULL AND o.install_date <= date(?, '+1 day'))) "
+            "ORDER BY "
+            "CASE WHEN o.install_date IS NOT NULL AND o.install_date < ? THEN 0 "
+            "     WHEN o.install_date = ? THEN 1 "
+            "     WHEN o.install_date IS NOT NULL AND o.install_date = date(?, '+1 day') THEN 2 "
+            "     ELSE 3 END, "
+            "o.urgent DESC, o.install_date ASC, o.id ASC",
+            (today, today, today, today),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_digest(digest_date: str, order_ids: list) -> None:
+    """Overwrite today's numbered list — every send (morning, manual, "viec")
+    replaces it so "xong <N>" always resolves against the latest message."""
+    with _connect() as db:
+        db.execute("DELETE FROM bot_digest WHERE digest_date = ?", (digest_date,))
+        db.executemany(
+            "INSERT INTO bot_digest (digest_date, item_no, order_id) VALUES (?, ?, ?)",
+            [(digest_date, i, order_id) for i, order_id in enumerate(order_ids, 1)],
+        )
+
+
+def get_digest_order(digest_date: str, item_no: int) -> Optional[int]:
+    with _connect() as db:
+        row = db.execute(
+            "SELECT order_id FROM bot_digest WHERE digest_date = ? AND item_no = ?",
+            (digest_date, item_no),
+        ).fetchone()
+    return row["order_id"] if row else None
 
 
 _ORDER_FLAGS = {"checkin_done_at", "expiry_notified_at", "review_requested_at"}
