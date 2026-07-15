@@ -57,9 +57,11 @@ oid = store.get_quote(qid)["order_id"]
 assert oid, "won quote has no linked order"
 items = store.order_items_for(oid)
 assert len(items) == 3, f"expected 2 doors + 1 accessory, got {len(items)}: {items}"
+def vat_incl(v):  # an order's value_vnd is VAT-inclusive (subtotal + 10%)
+    return v + round(v * 0.1)
 order_value = store.get_order(oid)["value_vnd"]
-assert order_value == sum(i["thanh_tien"] for i in items), "value_vnd != SUM(items)"
-assert order_value == quote_value, f"order {order_value} != quote {quote_value}"
+assert order_value == vat_incl(sum(i["thanh_tien"] for i in items)), "value_vnd != SUM(items)+VAT"
+assert order_value == vat_incl(quote_value), f"order {order_value} != quote+VAT {vat_incl(quote_value)}"
 print(f"2. won-snapshot OK (don #{oid}: {len(items)} items, {order_value} VND)")
 
 # ---- 3. quick quote (lump value, no items) -> chốt -> one generic order line ----
@@ -87,16 +89,16 @@ r = client.post(f"/don-hang/{oid2}/hang-muc/moi", data={
     "description": "Phí vận chuyển", "so_luong": 1, "thanh_tien": "300.000",
 }, follow_redirects=False)
 assert r.status_code == 303, f"add item -> {r.status_code} {r.text}"
-assert store.get_order(oid2)["value_vnd"] == 5_300_000, "value not recomputed on add"
+assert store.get_order(oid2)["value_vnd"] == vat_incl(5_300_000), "value not recomputed on add"
 new_item = store.order_items_for(oid2)[-1]
 r = client.post(f"/don-hang/{oid2}/hang-muc/{new_item['id']}/sua", data={
     "description": "Phí vận chuyển xa", "so_luong": 1, "thanh_tien": "400.000",
 }, follow_redirects=False)
 assert r.status_code == 303, f"edit item -> {r.status_code} {r.text}"
-assert store.get_order(oid2)["value_vnd"] == 5_400_000, "value not recomputed on edit"
+assert store.get_order(oid2)["value_vnd"] == vat_incl(5_400_000), "value not recomputed on edit"
 r = client.post(f"/don-hang/{oid2}/hang-muc/{new_item['id']}/xoa", follow_redirects=False)
 assert r.status_code == 303, f"delete item -> {r.status_code}"
-assert store.get_order(oid2)["value_vnd"] == 5_000_000, "value not recomputed on delete"
+assert store.get_order(oid2)["value_vnd"] == vat_incl(5_000_000), "value not recomputed on delete"
 print("5. line-item add/edit/delete + recompute OK")
 
 # ---- 6. order detail shows hạng mục card ----------------------------------------

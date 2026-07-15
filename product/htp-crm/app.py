@@ -50,13 +50,16 @@ ZALO_REDIRECT_URI = f"https://{PUBLIC_HOSTNAME}/zalo/oauth/callback"
 # when either is blank, so the app runs unchanged without the bot container.
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 BOT_URL = os.environ.get("BOT_URL", "")
-# Company header printed on the exported Báo Giá. Blank phone/address are simply
-# omitted from the sheet — nothing is invented when unset.
+# Company header printed on the exported Báo Giá. Defaults are HTP's real brand
+# details (from the quote template); any field can be overridden via env, and a
+# field left blank is simply omitted from the sheet.
 COMPANY = {
-    "name": os.environ.get("COMPANY_NAME", "HƯNG THÀNH PHÁT"),
-    "tagline": os.environ.get("COMPANY_TAGLINE", "Cửa cuốn · Cửa kéo · Cửa nhôm kính"),
-    "phone": os.environ.get("COMPANY_PHONE", ""),
-    "address": os.environ.get("COMPANY_ADDRESS", ""),
+    "name": os.environ.get("COMPANY_NAME", "HƯNG THÀNH PHÁT DOOR"),
+    "tagline": os.environ.get("COMPANY_TAGLINE", "Cửa Cuốn · Cửa Kéo · Cửa Nhôm Kính"),
+    "phone": os.environ.get("COMPANY_PHONE", "0945 042 345 | 0913 574 077"),
+    "address": os.environ.get("COMPANY_ADDRESS", "235 - 237 (281 Cũ) Võ Văn Kiệt, Bình Thủy, Cần Thơ"),
+    "email": os.environ.get("COMPANY_EMAIL", "hungthanhphat6688@gmail.com"),
+    "website": os.environ.get("COMPANY_WEBSITE", "hungthanhphat.vn"),
 }
 
 store.configure(DB_PATH)
@@ -1146,6 +1149,18 @@ def customer_unlink_zalo(request: Request, customer_id: int):
     if r := _guard(request):
         return r
     store.unlink_customer_zalo(customer_id)
+    return RedirectResponse(f"/khach/{customer_id}", status_code=303)
+
+
+@app.post("/khach/{customer_id}/gop")
+def customer_merge(request: Request, customer_id: int, dup_id: int = Form(...)):
+    """Fold a same-phone duplicate (``dup_id``) into this customer, then land
+    back on this customer's page. Powers the "⚠️ Trùng SĐT" merge button."""
+    if r := _guard(request):
+        return r
+    if not store.get_customer(customer_id) or not store.get_customer(dup_id):
+        raise HTTPException(status_code=404)
+    store.merge_customers(customer_id, dup_id)
     return RedirectResponse(f"/khach/{customer_id}", status_code=303)
 
 

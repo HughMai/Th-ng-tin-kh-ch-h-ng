@@ -879,11 +879,20 @@ def customer_detail_page(c: dict, quotes: list, orders: list, reminders: list,
 
     dup_banner = ""
     if phone_dups:
-        links = ", ".join(f'<a href="/khach/{d["id"]}">{esc(d["name"])} (#{d["id"]})</a>'
-                          for d in phone_dups)
+        dup_rows = "".join(
+            f'<div class="row" style="align-items:center;gap:8px;margin-top:6px">'
+            f'<a href="/khach/{d["id"]}" style="flex:1">{esc(d["name"])} (#{d["id"]})</a>'
+            f'<form method="post" action="/khach/{c["id"]}/gop" '
+            f'onsubmit="return confirm(\'Gộp khách trùng này vào «{esc(c["name"])}»? '
+            f'Mọi báo giá, đơn hàng, chăm sóc của bản trùng sẽ dồn về đây và bản trùng bị xoá — '
+            f'không thể hoàn tác.\')">'
+            f'<input type="hidden" name="dup_id" value="{d["id"]}">'
+            f'<button type="submit" class="btn done">Gộp vào đây</button></form></div>'
+            for d in phone_dups)
         dup_banner = (f'<div class="card" style="border-left:4px solid #b91c1c">'
                       f'<div class="sub" style="font-weight:700">⚠️ Trùng số điện thoại</div>'
-                      f'<div class="sub">Cùng SĐT với: {links} — kiểm tra xem có bị nhập trùng không.</div></div>')
+                      f'<div class="sub">Cùng SĐT với các khách sau — gộp lại nếu là cùng một người:</div>'
+                      f'{dup_rows}</div>')
 
     debt = ""
     if c["type"] == "DL":
@@ -1731,7 +1740,7 @@ def order_detail_page(o: dict, calls: list, today: str,
         payment_block = f"""
 <h2>Thanh toán</h2>
 <div class="card">
-  <div class="sub" style="display:flex;justify-content:space-between"><span>Giá trị đơn</span><b>{fmt_vnd(o["value_vnd"])}</b></div>
+  <div class="sub" style="display:flex;justify-content:space-between"><span>Giá trị đơn (gồm VAT)</span><b>{fmt_vnd(o["value_vnd"])}</b></div>
   <div class="sub" style="display:flex;justify-content:space-between"><span>Đã thu</span><b>{fmt_vnd(paid)}</b></div>
   <div class="total" style="display:flex;justify-content:space-between;margin-top:6px">
     <span>Còn lại</span><span style="color:{bal_color}">{fmt_vnd(bal)}</span></div>

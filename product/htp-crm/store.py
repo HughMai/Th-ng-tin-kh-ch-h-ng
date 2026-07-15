@@ -311,6 +311,7 @@ def configure(db_path: str) -> None:
     # connections and would deadlock against an uncommitted write lock.
     _backfill_order_items()
     _backfill_order_deposits()
+    _recompute_order_values_with_vat()
 
 
 def _backfill_order_deposits() -> None:
@@ -346,6 +347,18 @@ def _backfill_order_items() -> None:
         elif o["value_vnd"]:
             add_order_item(o["id"], description=o["description"] or "Đơn hàng",
                            thanh_tien=o["value_vnd"])
+
+
+def _recompute_order_values_with_vat() -> None:
+    """Re-derive every order's value_vnd from its (pre-VAT) invoice lines so orders
+    created before value_vnd became VAT-inclusive pick up the tax. Idempotent —
+    recompute_order_value reads the line items and re-applies the rate each run,
+    so this is safe to run on every startup (same contract as the backfills)."""
+    with _connect() as db:
+        ids = [r["order_id"] for r in
+               db.execute("SELECT DISTINCT order_id FROM order_items").fetchall()]
+    for oid in ids:
+        recompute_order_value(oid)
 
 
 def _migrate_customers_columns(db: sqlite3.Connection) -> None:
@@ -531,6 +544,42 @@ def customers_sharing_phone(customer_id: int) -> list:
             (row["phone"], customer_id),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# Every table that carries a customers(id) foreign key — merge reassigns them all.
+_CUSTOMER_FK_TABLES = ("quotes", "orders", "reminders", "debt_entries", "touches")
+
+
+def merge_customers(survivor_id: int, dup_id: int) -> bool:
+    """Fold duplicate customer ``dup_id`` into ``survivor_id`` (same person, same
+    phone). Every quote / order / reminder / debt entry / touch is reassigned to
+    the survivor; the survivor backfills any contact field it's missing from the
+    dup (Zalo link, zalo_phone, email, address, note) and is promoted to "khách
+    chính" if the dup was one; then the dup row is deleted. One transaction.
+    Returns False if either id is unknown or they're the same row."""
+    if survivor_id == dup_id:
+        return False
+    with _connect() as db:
+        surv = db.execute("SELECT * FROM customers WHERE id = ?", (survivor_id,)).fetchone()
+        dup = db.execute("SELECT * FROM customers WHERE id = ?", (dup_id,)).fetchone()
+        if not surv or not dup:
+            return False
+        surv, dup = dict(surv), dict(dup)
+        for tbl in _CUSTOMER_FK_TABLES:  # tbl is from a fixed whitelist, not user input
+            db.execute(f"UPDATE {tbl} SET customer_id = ? WHERE customer_id = ?",
+                       (survivor_id, dup_id))
+        backfill = {col: dup[col] for col in
+                    ("zalo_user_id", "zalo_linked_at", "zalo_last_inbound_at",
+                     "zalo_phone", "email", "address", "address_search", "note")
+                    if not surv.get(col) and dup.get(col)}
+        if dup.get("stage") == "customer" and surv.get("stage") != "customer":
+            backfill["stage"] = "customer"
+        if backfill:
+            sets = ", ".join(f"{c} = ?" for c in backfill)
+            db.execute(f"UPDATE customers SET {sets}, updated_at = datetime('now') WHERE id = ?",
+                       (*backfill.values(), survivor_id))
+        db.execute("DELETE FROM customers WHERE id = ?", (dup_id,))
+    return True
 
 
 # ---------------------------------------------------------------- touches (chăm sóc)
@@ -948,10 +997,18 @@ def delete_order_item(item_id: int) -> None:
     recompute_order_value(order_id)
 
 
+# VAT applied to order totals. Quotes stay pre-VAT (recompute_quote_derived_fields);
+# an order's value_vnd is the VAT-inclusive amount the customer actually owes — it
+# matches the báo giá's TỔNG CỘNG and the hóa đơn's Tổng tiền, so the đơn hàng price
+# and còn nợ (both derived from value_vnd) already include VAT.
+VAT_RATE = 0.1
+
+
 def recompute_order_value(order_id: int) -> None:
-    """Once an order has invoice lines, SUM(thanh_tien) is the source of truth
-    for orders.value_vnd (mirrors recompute_quote_derived_fields on the quote
-    side). Zero items = legacy/lump order — leave value_vnd untouched."""
+    """Once an order has invoice lines, value_vnd = SUM(thanh_tien) + VAT — the
+    VAT-inclusive total the customer owes (mirrors the báo giá TỔNG CỘNG and the
+    hóa đơn Tổng tiền; per-line thanh_tien stay pre-VAT). Zero items =
+    legacy/lump order — leave value_vnd untouched."""
     with _connect() as db:
         r = db.execute(
             "SELECT COUNT(*) AS n, COALESCE(SUM(thanh_tien), 0) AS total "
@@ -959,9 +1016,11 @@ def recompute_order_value(order_id: int) -> None:
             (order_id,),
         ).fetchone()
         if r["n"]:
+            subtotal = r["total"]
+            value = subtotal + round(subtotal * VAT_RATE)
             db.execute(
                 "UPDATE orders SET value_vnd = ?, updated_at = datetime('now') WHERE id = ?",
-                (r["total"], order_id),
+                (value, order_id),
             )
 
 

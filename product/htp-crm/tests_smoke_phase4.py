@@ -47,7 +47,9 @@ print(f"1. bao gia number OK ({so})")
 # ---- 2. deposit carries onto the order as a 'coc' payment on chốt --------------
 qid2 = store.create_quote_header(cid, accessories="", deposit_vnd=2_000_000)
 store.add_quote_item(qid2, "cua_keo", "Có lá", "6zem", 3000, 2500, 8_000_000, True)
-qval = store.get_quote(qid2)["value_vnd"]
+def vat_incl(v):  # an order's value_vnd is VAT-inclusive (subtotal + 10%)
+    return v + round(v * 0.1)
+qval = vat_incl(store.get_quote(qid2)["value_vnd"])  # order carries VAT; quote is pre-VAT
 r = client.post(f"/bao-gia/{qid2}/trang-thai", data={"trang_thai": "won"},
                 follow_redirects=False)
 assert r.status_code == 303, f"chốt failed: {r.status_code} {r.text}"
@@ -83,8 +85,10 @@ assert "Đại lý Nợ" not in r.text, "DL order leaked into Hôm nay KH debt s
 print(f"4. Khach le con no surfaces OK (don #{oid_kh}, DL #{oid_dl} excluded)")
 
 # ---- 5. "Đã thu đủ" clears the balance and drops the section -------------------
+# oid_kh's value is VAT-inclusive (10.000.000 + 10% = 11.000.000), so settling in
+# full means paying 11.000.000.
 r = client.post(f"/don-hang/{oid_kh}/thanh-toan",
-                data={"amount_vnd": "10.000.000", "kind": "thanh_toan", "next": "/"},
+                data={"amount_vnd": "11.000.000", "kind": "thanh_toan", "next": "/"},
                 follow_redirects=False)
 assert r.status_code == 303, f"thu đủ failed: {r.status_code} {r.text}"
 assert store.get_order(oid_kh)["balance_vnd"] == 0, "balance not zero after full payment"

@@ -70,7 +70,8 @@ pay_id = store.order_payments_for(oid_kh)[-1]["id"]
 r = client.post(f"/don-hang/{oid_kh}/thanh-toan/{pay_id}/xoa",
                 data={"next": f"/don-hang/{oid_kh}"}, follow_redirects=False)
 assert r.status_code == 303, f"delete payment failed: {r.status_code} {r.text}"
-assert store.get_order(oid_kh)["balance_vnd"] == 10_000_000, "balance not restored after reopen"
+# value is VAT-inclusive: 10.000.000 + 10% = 11.000.000
+assert store.get_order(oid_kh)["balance_vnd"] == 11_000_000, "balance not restored after reopen"
 assert oid_kh in [o["id"] for o in store.customer_debts()], "reopened order not back in queue"
 print("5. delete-payment reopen restores balance + queue OK")
 
