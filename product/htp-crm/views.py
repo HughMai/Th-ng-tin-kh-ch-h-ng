@@ -863,7 +863,8 @@ def _customer_quote_card(c: dict, q: dict) -> str:
 
 
 def customer_detail_page(c: dict, quotes: list, orders: list, reminders: list,
-                         balance: int, today: str, touches: list = None) -> str:
+                         balance: int, today: str, touches: list = None,
+                         phone_dups: list = None) -> str:
     qs = "".join(_customer_quote_card(c, q) for q in quotes)
     os_ = "".join(f"""
 <a href="/don-hang/{o["id"]}"><div class="card">
@@ -875,6 +876,14 @@ def customer_detail_page(c: dict, quotes: list, orders: list, reminders: list,
 <div class="card"><div class="sub">⏰ {esc(r["note"])} — {fmt_date(r["due_date"])}</div>
 <div class="row">{_post_btn(f'/nhac/{r["id"]}/xong', "✔ Xong", next_url=f'/khach/{c["id"]}')}</div></div>"""
         for r in reminders)
+
+    dup_banner = ""
+    if phone_dups:
+        links = ", ".join(f'<a href="/khach/{d["id"]}">{esc(d["name"])} (#{d["id"]})</a>'
+                          for d in phone_dups)
+        dup_banner = (f'<div class="card" style="border-left:4px solid #b91c1c">'
+                      f'<div class="sub" style="font-weight:700">⚠️ Trùng số điện thoại</div>'
+                      f'<div class="sub">Cùng SĐT với: {links} — kiểm tra xem có bị nhập trùng không.</div></div>')
 
     debt = ""
     if c["type"] == "DL":
@@ -905,6 +914,7 @@ def customer_detail_page(c: dict, quotes: list, orders: list, reminders: list,
     return f"""
 <div class="detail-cols">
 <div class="detail-main">
+{dup_banner}
 <div class="card">
   <div class="name">{esc(c["name"])} {type_chip(c["type"])}</div>
   <div class="sub">{esc(c["phone"] or "—")} · {SOURCE_LABELS.get(c["source"], "")}</div>
@@ -1856,10 +1866,17 @@ def debts_page(dealer_rows: list, customer_rows: list, loc: str, today: str) -> 
             style = ' style="border-left:4px solid #b91c1c"' if days >= 30 else ""
             last = f"trả lần cuối {fmt_date(d['last_payment'])}" if d["last_payment"] else "chưa trả lần nào"
             cards.append(f"""
-<a href="/cong-no/{d["id"]}"><div class="card"{style}>
-  <div class="name">{esc(d["name"])} <span class="chip warn">{fmt_vnd(d["balance"])}</span> {type_chip("DL")}</div>
-  <div class="sub">{last} ({days} ngày)</div>
-</div></a>""")
+<div class="card"{style}>
+  <a href="/cong-no/{d["id"]}">
+    <div class="name">{esc(d["name"])} <span class="chip warn">{fmt_vnd(d["balance"])}</span> {type_chip("DL")}</div>
+    <div class="sub">{last} ({days} ngày)</div>
+  </a>
+  <form method="post" action="/cong-no/{d["id"]}/thanh-toan-du" style="margin-top:8px"
+    onsubmit="return confirm('Đại lý {esc(d["name"])} đã trả đủ {fmt_vnd(d["balance"])}?')">
+    <input type="hidden" name="next" value="/cong-no?loc={esc(loc)}">
+    <button class="btn done" style="width:100%">✅ Đã thanh toán</button>
+  </form>
+</div>""")
         out.append("".join(cards) or '<div class="empty">Không có đại lý nào đang nợ 🎉</div>')
 
     if loc in ("tat-ca", "kh"):
@@ -1895,8 +1912,16 @@ def ledger_page(c: dict, entries: list, balance: int) -> str:
 <tr><td>{fmt_date(e["entry_date"])}</td><td>{esc(e["note"] or ("Đơn #" + str(e["order_id"]) if e["order_id"] else ""))}</td>
 <td class="{"pos" if e["entry_type"] == "charge" else "neg"}">
 {"+" if e["entry_type"] == "charge" else "−"}{fmt_vnd(e["amount_vnd"])}</td>
-<td class="run">{fmt_vnd(e["running"])}</td></tr>""" for e in entries)
+<td class="run">{fmt_vnd(e["running"])}</td>
+<td><form method="post" action="/cong-no/{c["id"]}/xoa/{e["id"]}" style="display:inline"
+  onsubmit="return confirm('Xóa dòng này khỏi sổ nợ? Không thể hoàn tác.')">
+  <button class="btn danger" style="padding:2px 8px">✖</button></form></td></tr>""" for e in entries)
     msg = render("debt_reminder", ten=c["name"], so_tien=fmt_vnd(balance)) if balance > 0 else ""
+    settle = (f"""
+<form method="post" action="/cong-no/{c["id"]}/thanh-toan-du" style="margin-bottom:10px"
+  onsubmit="return confirm('{esc(c["name"])} đã trả đủ {fmt_vnd(balance)}? Sổ nợ sẽ về 0.')">
+  <button class="btn done" style="width:100%">✅ Đã thanh toán đủ</button>
+</form>""" if balance > 0 else "")
     return f"""
 <div class="total">Hiện nợ: {fmt_vnd(balance)}</div>
 <div class="card">
@@ -1908,9 +1933,10 @@ def ledger_page(c: dict, entries: list, balance: int) -> str:
   <a class="btn danger" href="/cong-no/{c["id"]}/them?loai=charge">+ Ghi nợ</a>
   <a class="btn call" href="/cong-no/{c["id"]}/them?loai=payment">+ Thanh toán</a>
 </div>
+{settle}
 <div class="card" style="overflow-x:auto">
-<table class="ledger"><tr><th>Ngày</th><th>Nội dung</th><th>Số tiền</th><th style="text-align:right">Còn nợ</th></tr>
-{rows or '<tr><td colspan="4">Chưa có ghi chép nào.</td></tr>'}</table>
+<table class="ledger"><tr><th>Ngày</th><th>Nội dung</th><th>Số tiền</th><th style="text-align:right">Còn nợ</th><th></th></tr>
+{rows or '<tr><td colspan="5">Chưa có ghi chép nào.</td></tr>'}</table>
 </div>"""
 
 

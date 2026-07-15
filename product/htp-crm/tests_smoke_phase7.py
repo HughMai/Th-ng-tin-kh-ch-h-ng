@@ -101,8 +101,8 @@ assert store.order_payments_for(oid2) == [], "order_payments should be purged"
 assert store.service_calls_for_order(oid2) == [], "service_calls should be purged"
 
 q2 = store.get_quote(qid2)
-assert q2["status"] == "sent" and q2["order_id"] is None, \
-    f"quote should revert to sent/unlinked, got status={q2['status']} order_id={q2['order_id']}"
+assert q2["status"] == "lost" and q2["order_id"] is None, \
+    f"quote should go to lost/unlinked, got status={q2['status']} order_id={q2['order_id']}"
 
 touches_after = store.list_touches(cid, limit=50)
 assert len(touches_after) == touches_before, "customer lịch sử chăm sóc must survive xóa đơn hàng"
@@ -110,6 +110,6 @@ assert all(t["order_id"] != oid2 for t in touches_after), "surviving touches sho
 
 r = client.post(f"/don-hang/{oid2}/xoa", follow_redirects=False)
 assert r.status_code == 404, "deleting an already-gone order should 404"
-print(f"5. xóa đơn hàng OK — order purged, báo giá reverted to sent, {touches_after and touches_after[0]['kind']} touch kept")
+print(f"5. xóa đơn hàng OK — order purged, báo giá marked lost, {touches_after and touches_after[0]['kind']} touch kept")
 
 print("ALL PHASE 7 SMOKE TESTS PASSED")

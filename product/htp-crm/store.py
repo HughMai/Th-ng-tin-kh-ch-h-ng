@@ -519,6 +519,20 @@ def find_customer_by_phone(phone: str) -> Optional[dict]:
     return dict(r) if r else None
 
 
+def customers_sharing_phone(customer_id: int) -> list:
+    """Other customers with the SAME phone as this one — powers the "⚠️ trùng
+    SĐT" warning on the customer page (duplicates are warned, never blocked)."""
+    with _connect() as db:
+        row = db.execute("SELECT phone FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        if not row or not row["phone"]:
+            return []
+        rows = db.execute(
+            "SELECT id, name, type FROM customers WHERE phone = ? AND id != ? ORDER BY id",
+            (row["phone"], customer_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------- touches (chăm sóc)
 
 def add_touch(customer_id: int, kind: str, detail: str = "", quote_id: Optional[int] = None,
@@ -1083,17 +1097,18 @@ def get_order(order_id: int) -> Optional[dict]:
 
 def delete_order(order_id: int) -> bool:
     """Xóa đơn hàng — purges everything that belongs to the order (hạng mục,
-    thanh toán, sửa chữa, digest entries) and reverts the originating báo giá
-    back to 'sent' (unlinked) so it can be chốt lại. Keeps the customer's
-    lịch sử chăm sóc (touches) and any công nợ ledger entries — only detaches
-    their dangling order_id reference."""
+    thanh toán, sửa chữa, digest entries) and marks the originating báo giá
+    'Mất' (lost, unlinked) so it drops out of the active pipeline instead of
+    re-surfacing in 'Đã gửi' with chase nudges. Drag the Mất card back to re-open
+    if the job comes back. Keeps the customer's lịch sử chăm sóc (touches) and
+    any công nợ ledger entries — only detaches their dangling order_id reference."""
     with _connect() as db:
         o = db.execute("SELECT quote_id FROM orders WHERE id = ?", (order_id,)).fetchone()
         if not o:
             return False
         if o["quote_id"]:
             db.execute(
-                "UPDATE quotes SET status='sent', order_id=NULL, updated_at=datetime('now') WHERE id = ?",
+                "UPDATE quotes SET status='lost', order_id=NULL, updated_at=datetime('now') WHERE id = ?",
                 (o["quote_id"],),
             )
         db.execute("UPDATE touches SET order_id = NULL WHERE order_id = ?", (order_id,))
@@ -1359,6 +1374,29 @@ def add_debt_entry(customer_id: int, entry_type: str, amount_vnd: int,
              note.strip() or None, order_id),
         )
         return cur.lastrowid
+
+
+def settle_dealer(customer_id: int) -> int:
+    """One-click "Đã thanh toán" for a đại lý: record a payment for the full
+    outstanding balance so công nợ clears to 0 (server-computed, mirrors the KH
+    order_settle_full). Returns the amount settled (0 if nothing was owed)."""
+    bal = dealer_balance(customer_id)
+    if bal > 0:
+        add_debt_entry(customer_id, "payment", bal, note="Thanh toán đủ")
+    return bal if bal > 0 else 0
+
+
+def delete_debt_entry(entry_id: int, customer_id: Optional[int] = None) -> bool:
+    """Remove one sổ nợ line — the correction tool for a mis-entered charge or
+    payment (the ledger is otherwise append-only). When customer_id is given the
+    delete is scoped to that dealer so an id can't be deleted cross-account."""
+    with _connect() as db:
+        if customer_id is None:
+            cur = db.execute("DELETE FROM debt_entries WHERE id = ?", (entry_id,))
+        else:
+            cur = db.execute("DELETE FROM debt_entries WHERE id = ? AND customer_id = ?",
+                             (entry_id, customer_id))
+        return cur.rowcount > 0
 
 
 def dealer_balances() -> list:

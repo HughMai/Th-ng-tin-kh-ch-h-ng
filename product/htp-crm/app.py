@@ -369,6 +369,7 @@ def customer_detail(request: Request, customer_id: int):
         balance=store.dealer_balance(customer_id) if c["type"] == "DL" else 0,
         today=store.today_vn(),
         touches=store.list_touches(customer_id),
+        phone_dups=store.customers_sharing_phone(customer_id),
     )
     return views.page(c["name"], body, active="/khach")
 
@@ -795,9 +796,9 @@ def orders(request: Request):
 
 @app.post("/don-hang/{order_id}/xoa")
 def order_delete(request: Request, order_id: int):
-    """Xóa đơn hàng: purges hạng mục/thanh toán/sửa chữa and reverts the
-    originating báo giá to 'sent' so it can be chốt lại. Customer lịch sử
-    chăm sóc (touches) is kept — see store.delete_order."""
+    """Xóa đơn hàng: purges hạng mục/thanh toán/sửa chữa and marks the
+    originating báo giá 'Mất' (out of the active pipeline; drag back to re-open).
+    Customer lịch sử chăm sóc (touches) is kept — see store.delete_order."""
     if r := _guard(request):
         return r
     if not store.delete_order(order_id):
@@ -1032,6 +1033,32 @@ def debt_entry_add(request: Request, customer_id: int, entry_type: str = Form(..
     if not amount or entry_type not in ("charge", "payment"):
         raise HTTPException(status_code=400, detail="Số tiền hoặc loại không hợp lệ")
     store.add_debt_entry(customer_id, entry_type, amount, entry_date, note, order_id or None)
+    return RedirectResponse(f"/cong-no/{customer_id}", status_code=303)
+
+
+@app.post("/cong-no/{customer_id}/thanh-toan-du")
+def debt_settle_full(request: Request, customer_id: int, next: str = Form("")):
+    """One-click 'Đã thanh toán' for a đại lý — records a payment for the full
+    outstanding balance (server-computed), mirroring the KH order_settle_full."""
+    if r := _guard(request):
+        return r
+    c = store.get_customer(customer_id)
+    if not c or c["type"] != "DL":
+        raise HTTPException(status_code=404)
+    store.settle_dealer(customer_id)
+    return RedirectResponse(_safe_next(next, f"/cong-no/{customer_id}"), status_code=303)
+
+
+@app.post("/cong-no/{customer_id}/xoa/{entry_id}")
+def debt_entry_delete(request: Request, customer_id: int, entry_id: int):
+    """Xóa một dòng sổ nợ — remove a mis-entered charge/payment. Scoped to the
+    dealer so an entry_id can't be deleted from another account's ledger."""
+    if r := _guard(request):
+        return r
+    c = store.get_customer(customer_id)
+    if not c or c["type"] != "DL":
+        raise HTTPException(status_code=404)
+    store.delete_debt_entry(entry_id, customer_id)
     return RedirectResponse(f"/cong-no/{customer_id}", status_code=303)
 
 
