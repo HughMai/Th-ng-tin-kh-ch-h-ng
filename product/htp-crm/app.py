@@ -140,6 +140,33 @@ def _parse_vnd(s: str) -> int | None:
     return int(digits) if digits else None
 
 
+def _parse_dim(*vals: str) -> tuple:
+    """Parse door dimensions (mm) from the hạng-mục form. The client input is
+    inputmode=numeric but that's cosmetic — a non-numeric/blank value must yield
+    a clean 400, not an int() ValueError -> 500. Requires a positive integer so
+    a 0×0 (or negative) '0đ' junk line can't be created."""
+    out = []
+    for v in vals:
+        v = (v or "").strip()
+        if not v.isdigit() or int(v) <= 0:
+            raise HTTPException(status_code=400, detail="Kích thước phải là số mm lớn hơn 0")
+        out.append(int(v))
+    return tuple(out)
+
+
+def _reject_if_ordered(q: dict) -> None:
+    """A báo giá that's been chốt (linked to an đơn hàng) is READ-ONLY. Its line
+    items/deposit/value are snapshotted onto the order at chốt, and the đơn hàng
+    is the editable surface from then on. Without this guard, editing the quote
+    afterward silently desyncs the order (order keeps the stale snapshot + a
+    now-wrong công nợ). Keyed on order_id, so a won card dragged back to 'sent'
+    stays locked while its order lives, and unlocks once the order is deleted
+    (delete_order clears quotes.order_id)."""
+    if q and q.get("order_id"):
+        raise HTTPException(status_code=400,
+                            detail=f"Báo giá đã chốt — sửa trên đơn hàng #{q['order_id']}")
+
+
 def _safe_next(nxt: str, fallback: str) -> str:
     """Only allow same-app relative redirects."""
     return nxt if nxt.startswith("/") and not nxt.startswith("//") else fallback
@@ -525,6 +552,15 @@ def quote_status(request: Request, quote_id: int,
     if r := _guard(request):
         return r
     if trang_thai == "won":
+        # An empty báo giá (no hạng mục and no legacy lump value) would chốt into
+        # a 0đ zombie order sitting in Tiến độ — block it. quote_finish guards the
+        # "Xong" button the same way; this covers the kanban/Chốt path too.
+        q = store.get_quote(quote_id)
+        if not q:
+            raise HTTPException(status_code=404)
+        if not store.quote_items_for(quote_id) and not q.get("value_vnd"):
+            raise HTTPException(status_code=400,
+                                detail="Báo giá chưa có hạng mục — thêm hạng mục trước khi chốt")
         store.set_quote_status(quote_id, "won")
         # Chốt → tự tạo đơn sản xuất và chuyển thẳng vào Tiến độ (kèm nút sao chép
         # bộ cửa để dán vào nhóm Zalo). No more manual "tạo đơn hàng" step.
@@ -584,6 +620,8 @@ def quote_item_new_form(request: Request, quote_id: int):
     q = store.get_quote(quote_id)
     if not q:
         raise HTTPException(status_code=404)
+    if q.get("order_id"):  # locked (đã chốt) — bounce back to the read-only build page
+        return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
     return views.page("Thêm hạng mục", views.quote_item_form_page(q), active="/bao-gia")
 
 
@@ -613,7 +651,8 @@ def quote_item_new(request: Request, quote_id: int, loai_cua: str = Form(...),
     q = store.get_quote(quote_id)
     if not q:
         raise HTTPException(status_code=404)
-    ngang_mm, cao_mm = int(ngang), int(cao)
+    _reject_if_ordered(q)
+    ngang_mm, cao_mm = _parse_dim(ngang, cao)
     thanh_tien, is_manual = _price_quote_item(loai_cua, cong_nghe, mau, ngang_mm, cao_mm,
                                               q["customer_type"], gia_thu_cong)
     store.add_quote_item(quote_id, loai_cua, cong_nghe, mau, ngang_mm, cao_mm, thanh_tien, is_manual)
@@ -628,6 +667,8 @@ def quote_item_edit_form(request: Request, quote_id: int, item_id: int):
     item = store.get_quote_item(item_id)
     if not q or not item or item["quote_id"] != quote_id:
         raise HTTPException(status_code=404)
+    if q.get("order_id"):  # locked (đã chốt) — bounce back to the read-only build page
+        return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
     return views.page("Sửa hạng mục", views.quote_item_form_page(q, item), active="/bao-gia")
 
 
@@ -642,7 +683,8 @@ def quote_item_edit(request: Request, quote_id: int, item_id: int, loai_cua: str
     item = store.get_quote_item(item_id)
     if not q or not item or item["quote_id"] != quote_id:
         raise HTTPException(status_code=404)
-    ngang_mm, cao_mm = int(ngang), int(cao)
+    _reject_if_ordered(q)
+    ngang_mm, cao_mm = _parse_dim(ngang, cao)
     thanh_tien, is_manual = _price_quote_item(loai_cua, cong_nghe, mau, ngang_mm, cao_mm,
                                               q["customer_type"], gia_thu_cong)
     store.update_quote_item(item_id, loai_cua, cong_nghe, mau, ngang_mm, cao_mm, thanh_tien, is_manual)
@@ -653,6 +695,7 @@ def quote_item_edit(request: Request, quote_id: int, item_id: int, loai_cua: str
 def quote_item_delete(request: Request, quote_id: int, item_id: int):
     if r := _guard(request):
         return r
+    _reject_if_ordered(store.get_quote(quote_id))
     store.delete_quote_item(item_id)
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
 
@@ -670,8 +713,10 @@ def quote_finish(request: Request, quote_id: int):
 def quote_set_deposit(request: Request, quote_id: int, deposit: str = Form("")):
     if r := _guard(request):
         return r
-    if not store.get_quote(quote_id):
+    q = store.get_quote(quote_id)
+    if not q:
         raise HTTPException(status_code=404)
+    _reject_if_ordered(q)
     store.set_quote_deposit(quote_id, _parse_vnd(deposit))
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
 
@@ -680,8 +725,10 @@ def quote_set_deposit(request: Request, quote_id: int, deposit: str = Form("")):
 def quote_set_notes(request: Request, quote_id: int, install_date: str = Form(""), note: str = Form("")):
     if r := _guard(request):
         return r
-    if not store.get_quote(quote_id):
+    q = store.get_quote(quote_id)
+    if not q:
         raise HTTPException(status_code=404)
+    _reject_if_ordered(q)
     store.update_quote_notes(quote_id, install_date, note)
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
 
@@ -690,8 +737,10 @@ def quote_set_notes(request: Request, quote_id: int, install_date: str = Form(""
 async def quote_set_accessories(request: Request, quote_id: int):
     if r := _guard(request):
         return r
-    if not store.get_quote(quote_id):
+    q = store.get_quote(quote_id)
+    if not q:
         raise HTTPException(status_code=404)
+    _reject_if_ordered(q)
     form = await request.form()
     accessories = ", ".join(
         f"{label} x{form.get(f'{key}_qty') or 1}"

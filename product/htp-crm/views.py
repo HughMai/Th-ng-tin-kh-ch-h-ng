@@ -842,9 +842,12 @@ def _customer_quote_card(c: dict, q: dict) -> str:
     </form></details>
   <div class="row" style="margin-top:6px">{edit}</div>"""
     elif q["status"] == "won":
+        # Đã chốt: the đơn hàng is the editable surface; the báo giá is read-only
+        # (see quote_build_page `locked`), so link it as "Xem", not "Sửa".
         prog = (f'<a class="btn copy" href="/don-hang/{q["order_id"]}">🔨 Xem tiến độ</a>'
                 if q.get("order_id") else "")
-        actions = f'<div class="row" style="margin-top:6px">{prog}{edit}</div>'
+        view = f'<a class="btn done" href="/bao-gia/{q["id"]}">👁 Xem báo giá</a>'
+        actions = f'<div class="row" style="margin-top:6px">{prog}{view}</div>'
     else:  # lost
         reason = LOST_REASON_LABELS.get(q.get("lost_reason"), "") if q.get("lost_reason") else ""
         actions = (f'<div class="sub">Lý do: {esc(reason)}</div>' if reason else "") + \
@@ -1020,8 +1023,8 @@ def quotes_page(rows: list, archived: list, summary: dict) -> str:
    — gửi {fmt_date(q["sent_date"])} ({q["days_sent"]} ngày){lost}</div>
   {f'<div class="sub">📝 {esc(q["description"])}</div>' if q.get("description") else ""}
   <div class="row" style="flex-wrap:wrap">
-    <a class="btn done" href="/bao-gia/{q["id"]}">✎ Sửa thông tin</a>
-    <a class="btn done" href="/bao-gia/{q["id"]}/hang-muc/moi">＋ Hạng mục</a>
+    <a class="btn done" href="/bao-gia/{q["id"]}">{"👁 Xem báo giá" if q.get("order_id") else "✎ Sửa thông tin"}</a>
+    {'' if q.get("order_id") else f'<a class="btn done" href="/bao-gia/{q["id"]}/hang-muc/moi">＋ Hạng mục</a>'}
     {f'<a class="btn done" href="/bao-gia/{q["id"]}/xuat">⬇ Xuất báo giá</a>' if q.get("item_count") else ''}
   </div>
   {actions}
@@ -1072,8 +1075,8 @@ def _kanban_html(rows: list) -> str:
   <div class="n"><a href="/bao-gia/{q['id']}" draggable="false">{esc(q["customer_name"])}</a></div>
   <div>{esc(PRODUCT_LABELS.get(q["product"], "").capitalize())} — {fmt_vnd(q["value_vnd"])}</div>
   <div class="acts">
-    <a href="/bao-gia/{q['id']}" draggable="false">✎ Sửa thông tin</a>
-    <a href="/bao-gia/{q['id']}/hang-muc/moi" draggable="false">＋ Hạng mục</a>
+    <a href="/bao-gia/{q['id']}" draggable="false">{"👁 Xem" if q.get("order_id") else "✎ Sửa thông tin"}</a>
+    {'' if q.get("order_id") else f'<a href="/bao-gia/{q["id"]}/hang-muc/moi" draggable="false">＋ Hạng mục</a>'}
     {f'<a href="/bao-gia/{q["id"]}/xuat" draggable="false">⬇ Xuất</a>' if q.get("item_count") else ''}
   </div>
   <div draggable="false">{_quote_pipeline_controls(q, next_url="/bao-gia")}</div>
@@ -1220,19 +1223,34 @@ function toggleQty(cb, qtyId) {{
 
 
 def quote_build_page(quote: dict, items: list) -> str:
+    # Đã chốt (linked to an đơn hàng) => read-only. Editing here would desync the
+    # order's snapshotted lines/value, so the edit controls are hidden and the
+    # server rejects mutations too (app._reject_if_ordered). Unlocks if the
+    # order is deleted (that clears quotes.order_id).
+    locked = bool(quote.get("order_id"))
+    item_actions = "" if locked else """
+  <div class="row">
+    <a class="btn done" style="flex:1" href="/bao-gia/{qid}/hang-muc/{iid}/sua">✎ Sửa</a>
+    <form method="post" action="/bao-gia/{qid}/hang-muc/{iid}/xoa" style="flex:1;display:flex">
+      <button class="btn danger" style="width:100%">✖ Xóa</button>
+    </form>
+  </div>"""
     item_cards = "".join(f"""
 <div class="card">
   <div class="name">{esc(PRODUCT_LABELS.get(i["product"], "").capitalize())}</div>
   <div class="sub">{esc(i["cong_nghe"] or "")} {esc(i["mau"] or "")} — {i["ngang_mm"]}×{i["cao_mm"]}mm
    {"(nhập tay)" if i["is_manual_price"] else ""}</div>
   <div class="sub" style="font-weight:700">{fmt_vnd(i["thanh_tien"])}</div>
-  <div class="row">
-    <a class="btn done" style="flex:1" href="/bao-gia/{quote["id"]}/hang-muc/{i["id"]}/sua">✎ Sửa</a>
-    <form method="post" action="/bao-gia/{quote["id"]}/hang-muc/{i["id"]}/xoa" style="flex:1;display:flex">
-      <button class="btn danger" style="width:100%">✖ Xóa</button>
-    </form>
-  </div>
+  {item_actions.format(qid=quote["id"], iid=i["id"])}
 </div>""" for i in items)
+
+    locked_banner = (
+        f'<div class="card" style="border-left:4px solid #0f4c81">'
+        f'<div class="sub" style="font-weight:700">🔒 Đã chốt — báo giá đã khóa</div>'
+        f'<div class="sub">Mọi thay đổi (hạng mục, cọc, ghi chú) làm trên đơn hàng.</div>'
+        f'<a class="btn copy" style="display:flex;margin-top:6px" '
+        f'href="/don-hang/{quote["order_id"]}">🔨 Mở đơn hàng #{quote["order_id"]}</a></div>'
+    ) if locked else ""
 
     dep = quote.get("deposit_vnd") or 0
     dep_str = f"{dep:,}".replace(",", ".") if dep else ""
@@ -1245,7 +1263,7 @@ def quote_build_page(quote: dict, items: list) -> str:
     <button class="btn done" style="flex:1">Lưu cọc</button>
   </div>
   <div class="sub" style="margin-top:8px">Còn lại: <b>{fmt_vnd((quote.get("value_vnd") or 0) - dep)}</b></div>
-</form>""" if items else ""
+</form>""" if items and not locked else ""
 
     notes_card = f"""
 <form method="post" action="/bao-gia/{quote["id"]}/ghi-chu" class="card">
@@ -1254,7 +1272,7 @@ def quote_build_page(quote: dict, items: list) -> str:
   <label>📝 Ghi chú</label>
   <textarea name="note">{esc(quote.get("note") or "")}</textarea>
   <button class="btn done" style="margin-top:8px">Lưu ghi chú</button>
-</form>"""
+</form>""" if not locked else ""
 
     phukien_card = f"""
 <form method="post" action="/bao-gia/{quote["id"]}/phu-kien" class="card">
@@ -1268,7 +1286,7 @@ function toggleQty(cb, qtyId) {{
   qty.disabled = !cb.checked;
   if (cb.checked) qty.value = qty.value || 1;
 }}
-</script>"""
+</script>""" if not locked else ""
 
     if items:
         ctype = quote["customer_type"]
@@ -1299,7 +1317,7 @@ function toggleQty(cb, qtyId) {{
 </div>"""
         export_btn = (f'<a class="btn copy" style="display:flex;margin-top:8px" '
                       f'href="/bao-gia/{quote["id"]}/xuat">📄 Xuất Báo Giá (Excel)</a>')
-        finish = f"""
+        finish = "" if locked else f"""
 <form method="post" action="/bao-gia/{quote["id"]}/hoan-tat">
   <button class="btn big" style="margin-top:12px">✔ Xong, lưu báo giá</button>
 </form>"""
@@ -1319,7 +1337,7 @@ function toggleQty(cb, qtyId) {{
   {_quote_pipeline_controls(quote, next_url=f'/bao-gia/{quote["id"]}')}
 </div>"""
 
-    add_item_details = f"""
+    add_item_details = "" if locked else f"""
 <details class="card">
   <summary class="btn add" style="display:flex">➕ Thêm cửa</summary>
   <div style="margin-top:12px">{_quote_item_form_body(quote)}</div>
@@ -1329,6 +1347,7 @@ function toggleQty(cb, qtyId) {{
 <div class="card"><div class="name">{esc(quote["customer_name"])} {type_chip(quote["customer_type"])}</div>
 <div class="sub">{bao_gia_so(quote["id"], quote.get("sent_date"))} — gửi {fmt_date(quote["sent_date"])}</div></div>
 {pipeline_card}
+{locked_banner}
 {summary}
 {item_cards}
 {deposit_card}
