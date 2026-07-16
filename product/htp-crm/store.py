@@ -1139,6 +1139,7 @@ def set_order_urgent(order_id: int, urgent: bool) -> bool:
 
 _ORDER_SELECT = (
     "SELECT o.*, c.name AS customer_name, c.phone, c.zalo_phone, c.address, c.email, c.type AS customer_type, "
+    "date(o.created_at, '+7 hours') AS chot_date, "  # created_at is UTC; +7h = VN calendar day
     "CASE WHEN o.install_date IS NOT NULL "
     "     THEN date(o.install_date, '+' || o.warranty_months || ' months') END AS expiry_date, "
     "(SELECT COALESCE(SUM(amount_vnd), 0) FROM order_payments p WHERE p.order_id = o.id) AS paid_vnd, "

@@ -792,10 +792,13 @@ def quote_build(request: Request, quote_id: int):
 # Orders are only ever created by chốt-ing a báo giá (store.create_order_from_quote,
 # triggered from /bao-gia/{id}/trang-thai) — there is no manual "+ Đơn hàng" path.
 @app.get("/don-hang", response_class=HTMLResponse)
-def orders(request: Request):
+def orders(request: Request, loai: str = ""):
     if r := _guard(request):
         return r
-    body = views.orders_page(store.orders_active(), store.orders_completed(), store.today_vn())
+    if loai not in ("cua_cuon", "cua_keo", "nhom_kinh", "khac"):
+        loai = ""
+    body = views.orders_page(store.orders_active(), store.orders_completed(),
+                             store.today_vn(), loai=loai)
     return views.page("Đơn hàng", body, active="/don-hang")
 
 
