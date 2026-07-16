@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { Zalo, ThreadType } from "zca-js";
+import { Zalo, ThreadType, LoginQRCallbackEventType } from "zca-js";
 
 const DATA_DIR = process.env.DATA_DIR || "/app/data";
 const CREDS_PATH = path.join(DATA_DIR, "creds.json");
@@ -149,6 +149,31 @@ async function digestTick() {
     }
 }
 
+// zca-js only writes qr.png when the caller explicitly calls
+// event.actions.saveToFile() from the callback — passing a callback opts out
+// of the library's own auto-save. QRCodeExpired/QRCodeDeclined similarly need
+// an explicit actions.retry() or the underlying promise just hangs (declined)
+// or rejects the whole connect() attempt (expired), losing 60s to a full
+// reconnect instead of looping straight to a fresh code.
+function qrCallback(event) {
+    switch (event.type) {
+        case LoginQRCallbackEventType.QRCodeGenerated:
+            event.actions.saveToFile(QR_PATH).then(() => log("QR code generated at", QR_PATH));
+            break;
+        case LoginQRCallbackEventType.QRCodeExpired:
+            log("QR expired, generating a new one");
+            event.actions.retry();
+            break;
+        case LoginQRCallbackEventType.QRCodeScanned:
+            log("QR scanned, waiting for confirm on phone");
+            break;
+        case LoginQRCallbackEventType.QRCodeDeclined:
+            log("QR login declined, generating a new one");
+            event.actions.retry();
+            break;
+    }
+}
+
 async function connect() {
     const zalo = new Zalo();
     const credentials = loadCredentials();
@@ -161,15 +186,11 @@ async function connect() {
                 log("saved session rejected, falling back to QR:", e.message);
                 clearCredentials();
                 state.awaitingQR = true;
-                api = await zalo.loginQR({ qrPath: QR_PATH, userAgent: "" }, () =>
-                    log("QR code generated at", QR_PATH),
-                );
+                api = await zalo.loginQR({ qrPath: QR_PATH, userAgent: "" }, qrCallback);
             }
         } else {
             state.awaitingQR = true;
-            api = await zalo.loginQR({ qrPath: QR_PATH, userAgent: "" }, () =>
-                log("QR code generated at", QR_PATH),
-            );
+            api = await zalo.loginQR({ qrPath: QR_PATH, userAgent: "" }, qrCallback);
         }
     } catch (e) {
         log("login failed:", e.message);

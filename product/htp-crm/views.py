@@ -284,6 +284,28 @@ def production_message(order: dict, quote: dict, items: list) -> str:
     return "\n".join(L)
 
 
+def production_message_no_price(order: dict, items: list) -> str:
+    """Same bộ-cửa handoff as production_message() but strips every VND figure
+    — used for the Zalo group auto-ping on chốt (money never goes to the group,
+    see ZALO-BOT-PLAN.md)."""
+    L = []
+    if order.get("urgent"):
+        L.append("🔥 GẤP — ưu tiên làm trước")
+    L.append("🔨 ĐƠN SẢN XUẤT — Hưng Thành Phát")
+    L.append(f"Khách: {order.get('customer_name', '')}")
+    if order.get("phone"):
+        L.append(f"SĐT: {order['phone']}")
+    if order.get("address"):
+        L.append(f"Địa chỉ: {order['address']}")
+    if order.get("install_date"):
+        L.append(f"Ngày lắp: {fmt_date(order['install_date'])}")
+    L.append("— Bộ cửa —")
+    for idx, i in enumerate(items, 1):
+        extra = f" · {i['mau_sac']}" if i.get("mau_sac") else ""
+        L.append(f"{idx}. {_door_desc(i)} — {i['ngang_mm']}×{i['cao_mm']}mm{extra}")
+    return "\n".join(L)
+
+
 def copy_zalo_button(msg: str, label: str = "📋 Sao chép để dán vào nhóm Zalo") -> str:
     return (f'<button type="button" class="btn copy" style="width:100%" data-msg="{esc(msg)}" '
             f'onclick="copyMsg(this)">{esc(label)}</button>')

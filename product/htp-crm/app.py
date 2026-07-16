@@ -569,6 +569,8 @@ def quote_status(request: Request, quote_id: int,
         # Chốt → tự tạo đơn sản xuất và chuyển thẳng vào Tiến độ (kèm nút sao chép
         # bộ cửa để dán vào nhóm Zalo). No more manual "tạo đơn hàng" step.
         oid = store.create_order_from_quote(quote_id)
+        if oid:
+            _new_order_ping(oid)
         return RedirectResponse(f"/don-hang/{oid}?chot=1" if oid else "/bao-gia", status_code=303)
     if trang_thai == "lost":
         store.set_quote_status(quote_id, "lost", ly_do)
@@ -1243,11 +1245,28 @@ def _digest_text(today: str) -> str:
 
 
 def _stage_ping(order_id: int, stage: str) -> None:
+    # No "Hoàn thành" ping — the group is a to-do list, not a completion log.
+    # (xong <N> already skips this path entirely; this guards the CRM-side
+    # manual stage change too.)
+    if stage == "hoan_thanh":
+        return
     o = store.get_order(order_id)
     if not o:
         return
     label = views.STAGE_LABELS.get(stage, stage)
     _bot_send(f"🔔 {o['customer_name']} — {_job_desc(o)}: {label}")
+
+
+def _new_order_ping(order_id: int) -> None:
+    # Doors only, same filter as the order page's copy-to-Zalo handoff —
+    # phụ kiện/generic lines have no kích thước.
+    o = store.get_order(order_id)
+    if not o:
+        return
+    door_items = [i for i in store.order_items_for(order_id) if i.get("ngang_mm") and i.get("cao_mm")]
+    if not door_items:
+        return
+    _bot_send(views.production_message_no_price(o, door_items))
 
 
 def _install_ping(order_id: int, install_date: str) -> None:
