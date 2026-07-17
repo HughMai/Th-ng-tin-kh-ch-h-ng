@@ -190,15 +190,26 @@ def accessory_cost(item: str, customer_type: str) -> int:
     return (_ACCESSORY_COST_DL if customer_type == "DL" else _ACCESSORY_COST_KH).get(item, 0)
 
 
-def _parse_phukien(accessories_str: str) -> list[tuple[str, int]]:
-    """'Moto + rmoc x1, Khóa ngang (tole) x2' -> [('Moto + rmoc', 1), ...]."""
+def _parse_phukien(accessories_str: str) -> list[tuple[str, int, int | None]]:
+    """'Moto + rmoc x1, Lò xo x1 =300000' ->
+    [('Moto + rmoc', 1, None), ('Lò xo', 1, 300000)]. A trailing ' =<amount>'
+    marks a free-form 'chi phí khác' line carrying its own full-VND price (name
+    not in the catalog); catalog parts have price None and are table-looked-up."""
     out = []
     for part in (accessories_str or "").split(", "):
         part = part.strip()
-        m = re.match(r"^(.+) x(\d+)$", part)
+        m = re.match(r"^(.+?) x(\d+)(?: =(\d+))?$", part)
         if m:
-            out.append((m.group(1), int(m.group(2))))
+            out.append((m.group(1), int(m.group(2)), int(m.group(3)) if m.group(3) else None))
     return out
+
+
+def extras_of(accessories_str: str) -> list[tuple[str, int]]:
+    """Free-form 'chi phí khác' entries as (name, full-VND amount) — the parts
+    carrying an explicit '=<amount>' price, not catalog phụ kiện. Feeds the
+    editable textarea so extras survive a re-save."""
+    return [(name, price) for name, qty, price in _parse_phukien(accessories_str)
+            if price is not None]
 
 
 def calc_phukien(accessories_str: str, items: list, customer_type: str) -> int:
@@ -211,12 +222,17 @@ def calc_phukien(accessories_str: str, items: list, customer_type: str) -> int:
         if it["product"] != "cua_cuon":
             continue
         area = area_m2(it["ngang_mm"], it["cao_mm"])
-        for name, qty in parts:
+        for name, qty, price in parts:
+            if price is not None:  # free-form extra — not a motor
+                continue
             label = resolve_motor_label(name, area)
             if label:
                 motor_total += motor_cost(label, customer_type) * qty
     accessory_total = 0
-    for name, qty in parts:
+    for name, qty, price in parts:
+        if price is not None:  # free-form 'chi phí khác' — explicit full-VND price
+            accessory_total += price * qty
+            continue
         if resolve_motor_label(name, 0):  # motor part — already priced per bộ above
             continue
         accessory_total += accessory_cost(name, customer_type) * qty
@@ -233,7 +249,9 @@ def phukien_line_items(accessories_str: str, items: list, customer_type: str) ->
         if it["product"] != "cua_cuon":
             continue
         area = area_m2(it["ngang_mm"], it["cao_mm"])
-        for name, qty in parts:
+        for name, qty, price in parts:
+            if price is not None:  # free-form extra — not a motor
+                continue
             label = resolve_motor_label(name, area)
             if not label:
                 continue
@@ -242,7 +260,10 @@ def phukien_line_items(accessories_str: str, items: list, customer_type: str) ->
             tiers[label][0] += qty
     out = [{"name": lbl, "qty": qty, "unit_cost": uc, "total": uc * qty}
            for lbl, (qty, uc) in tiers.items()]
-    for name, qty in parts:
+    for name, qty, price in parts:
+        if price is not None:  # free-form 'chi phí khác' — its own full-VND price
+            out.append({"name": name, "qty": qty, "unit_cost": price, "total": price * qty})
+            continue
         if resolve_motor_label(name, 0):
             continue
         uc = accessory_cost(name, customer_type)

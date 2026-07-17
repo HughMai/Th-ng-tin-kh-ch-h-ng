@@ -247,50 +247,9 @@ def bo_cua_html(items: list) -> str:
     return "".join(rows)
 
 
-def production_message(order: dict, quote: dict, items: list) -> str:
-    """Plain-text bộ-cửa handoff to paste into the staff Zalo group when a deal
-    is chốt (or flagged gấp). Copied via the shared copyMsg() button."""
-    ctype = (quote or {}).get("customer_type") or order.get("customer_type") or "KH"
-    acc = (quote or {}).get("accessories") or ""
-    pk_lines = pricing.phukien_line_items(acc, items, ctype)
-    pk_total = pricing.calc_phukien(acc, items, ctype)
-    door_total = sum(i["thanh_tien"] for i in items)
-    tong_cong = (quote or {}).get("value_vnd") or (door_total + pk_total)
-    vat = round(tong_cong * 0.1)
-    tong_tien = tong_cong + vat
-    dep = (quote or {}).get("deposit_vnd") or 0
-    install = (quote or {}).get("install_date") or order.get("install_date") or ""
-
-    L = []
-    if order.get("urgent"):
-        L.append("🔥 GẤP — ưu tiên làm trước")
-    L.append("🔨 ĐƠN SẢN XUẤT — Hưng Thành Phát")
-    L.append(f"Khách: {order.get('customer_name', '')}")
-    if order.get("phone"):
-        L.append(f"SĐT: {order['phone']}")
-    if order.get("address"):
-        L.append(f"Địa chỉ: {order['address']}")
-    if install:
-        L.append(f"Ngày lắp: {fmt_date(install)}")
-    L.append("— Bộ cửa —")
-    for idx, i in enumerate(items, 1):
-        extra = f" · {i['mau_sac']}" if i.get("mau_sac") else ""
-        L.append(f"{idx}. {_door_desc(i)} — {i['ngang_mm']}×{i['cao_mm']}mm{extra} — {fmt_vnd(i['thanh_tien'])}")
-    if pk_lines:
-        L.append("— Phụ kiện —")
-        for p in pk_lines:
-            L.append(f"• {p['name']} ×{p['qty']} — {fmt_vnd(p['total'])}")
-    L.append(f"Tổng cộng: {fmt_vnd(tong_cong)} | VAT: {fmt_vnd(vat)} | Tổng tiền: {fmt_vnd(tong_tien)}")
-    if dep:
-        L.append(f"Đã cọc: {fmt_vnd(dep)} — Còn lại: {fmt_vnd(tong_tien - dep)}")
-    if (quote or {}).get("note"):
-        L.append(f"Ghi chú: {quote['note']}")
-    return "\n".join(L)
-
-
 def production_message_no_price(order: dict, items: list) -> str:
-    """Same bộ-cửa handoff as production_message() but strips every VND figure
-    — used for the Zalo group auto-ping on chốt (money never goes to the group,
+    """Plain-text bộ-cửa work-order stripped of every VND figure — used for the
+    Zalo group auto-ping on chốt (money never goes to the group,
     see ZALO-BOT-PLAN.md)."""
     L = []
     if order.get("urgent"):
@@ -308,11 +267,6 @@ def production_message_no_price(order: dict, items: list) -> str:
         extra = f" · {i['mau_sac']}" if i.get("mau_sac") else ""
         L.append(f"{idx}. {_door_desc(i)} — {i['ngang_mm']}×{i['cao_mm']}mm{extra}")
     return "\n".join(L)
-
-
-def copy_zalo_button(msg: str, label: str = "Sao chép để dán vào nhóm Zalo") -> str:
-    return (f'<button type="button" class="btn copy w-full" data-msg="{esc(msg)}" '
-            f'onclick="copyMsg(this)">{esc(label)}</button>')
 
 
 def stage_badge(stage: str) -> str:
@@ -1027,23 +981,27 @@ VD:<br>Anh Hùng Trần Phú, 0901234567, KH, 12 Trần Phú<br>Đại lý Minh 
 
 # ---------------------------------------------------------------- quotes
 
-def _quote_pipeline_controls(q: dict, next_url: str = "/bao-gia") -> str:
+def _quote_pipeline_controls(q: dict, next_url: str = "/bao-gia", ajax: bool = False) -> str:
     """Đã gửi / Chốt / Mất controls shared by the báo giá list card and the
     quote detail page, so the two never drift. Chốt posts won → the server
-    creates the đơn hàng and promotes the customer to khách chính. next_url
-    only steers the 'Đã gửi' redirect; chốt/mất redirects are server-owned."""
+    creates the đơn hàng, promotes the customer, and (303) returns to /bao-gia —
+    the card moves Đã gửi → Chốt without leaving the pipeline. next_url only
+    steers the 'Đã gửi' redirect; chốt/mất redirects are server-owned.
+    ajax=True (mobile báo-giá list) removes the card in place on Chốt/Mất instead
+    of a full reload; the kanban and detail page keep the plain POST + redirect."""
     if q["status"] in ("sent", "chasing"):
+        aj = ' data-ajax="remove"' if ajax else ""
         lost_opts = "".join(f'<option value="{v}">{label}</option>'
                             for v, label in LOST_REASON_LABELS.items())
         return f"""
   <div class="row">
     {_post_btn(f'/bao-gia/{q["id"]}/da-nhan', "Đã gửi", next_url=next_url)}
-    <form method="post" action="/bao-gia/{q["id"]}/trang-thai" class="flex grow">
+    <form method="post" action="/bao-gia/{q["id"]}/trang-thai" class="flex grow"{aj}>
       <input type="hidden" name="trang_thai" value="won">
       <button class="btn call w-full">Chốt</button></form>
   </div>
   <details class="mt-2"><summary class="btn danger w-full">Mất</summary>
-    <form method="post" action="/bao-gia/{q["id"]}/trang-thai" class="mt-2">
+    <form method="post" action="/bao-gia/{q["id"]}/trang-thai" class="mt-2"{aj}>
       <input type="hidden" name="trang_thai" value="lost">
       <select name="ly_do">{lost_opts}</select>
       <button class="btn danger w-full mt-2">Xác nhận mất</button>
@@ -1059,7 +1017,7 @@ def quotes_page(rows: list, archived: list, summary: dict) -> str:
               f'{fmt_vnd_short(summary["total"])}</div>')
     cards = []
     for q in rows:
-        actions = _quote_pipeline_controls(q, next_url="/bao-gia")
+        actions = _quote_pipeline_controls(q, next_url="/bao-gia", ajax=True)
         lost = f' — {LOST_REASON_LABELS.get(q["lost_reason"], "")}' if q["status"] == "lost" and q["lost_reason"] else ""
         cards.append(f"""
 <div class="card">
@@ -1241,6 +1199,16 @@ def _parse_accessories_to_keys(accessories: str) -> dict:
     return out
 
 
+def _extras_text(accessories: str) -> str:
+    """Free-form 'chi phí khác' entries as 'Tên - 300.000' lines to pre-fill the
+    editable textarea; round-trips through app._encode_extras on save."""
+    return "\n".join(f"{esc(name)} - {price:,}".replace(",", ".")
+                     for name, price in pricing.extras_of(accessories or ""))
+
+
+_EXTRAS_HINT = "Chi phí khác (mỗi dòng: tên - số tiền, VD: Lò xo - 300000)"
+
+
 def quote_header_form_page(customer: dict, today: str) -> str:
     rows = _phukien_rows()
     return f"""
@@ -1250,6 +1218,8 @@ def quote_header_form_page(customer: dict, today: str) -> str:
   <input type="hidden" name="customer_id" value="{customer["id"]}">
   <label>Phụ kiện</label>
   {rows}
+  <label>{_EXTRAS_HINT}</label>
+  <textarea name="extras" placeholder="Lò xo - 300000"></textarea>
   <label>Đã đặt cọc (VND)</label>
   <input name="deposit" inputmode="numeric" oninput="fmtMoney(this)" placeholder="VD: 2.000.000">
   <label>Ngày lắp đặt dự kiến</label>
@@ -1323,6 +1293,8 @@ def quote_build_page(quote: dict, items: list) -> str:
 <form method="post" action="/bao-gia/{quote["id"]}/phu-kien" class="card">
   <label class="mt-0">Phụ kiện — sửa lúc nào cũng được</label>
   {_phukien_rows(_parse_accessories_to_keys(quote.get("accessories") or ""))}
+  <label>{_EXTRAS_HINT}</label>
+  <textarea name="extras" placeholder="Lò xo - 300000">{_extras_text(quote.get("accessories") or "")}</textarea>
   <button class="btn done mt-2">Lưu phụ kiện</button>
 </form>
 <script>
@@ -1698,24 +1670,11 @@ def _order_day_header(day: str, today: str) -> str:
 
 
 def order_detail_page(o: dict, calls: list, today: str,
-                      quote: dict = None, items: list = None, just_won: bool = False,
-                      payments: list = None) -> str:
+                      items: list = None, payments: list = None) -> str:
     label = PRODUCT_LABELS.get(o["product"], "sản phẩm")
     items = items or []
     payments = payments or []
     stage_now = o.get("stage") or "cho_san_xuat"
-
-    # ── Production handoff: copy bộ cửa → dán vào nhóm Zalo ────────────────
-    # Doors only — phụ kiện/generic invoice lines have no kích thước and the
-    # message derives phụ kiện from the quote's accessories itself.
-    door_items = [i for i in items if i.get("ngang_mm") and i.get("cao_mm")]
-    handoff = ""
-    if door_items:
-        zalo_msg = production_message(o, quote, door_items)
-        banner = ('<div class="card" style="background:var(--ok-bg);border-left:3px solid var(--ok-text)">'
-                  '<b>Đã chốt!</b> Sao chép bộ cửa rồi dán vào nhóm Zalo để xưởng bắt đầu làm.</div>'
-                  if just_won else "")
-        handoff = f'{banner}<div class="card">{copy_zalo_button(zalo_msg)}</div>'
 
     # ── Hạng mục hóa đơn: display + inline edit + printable invoice ────────
     # Quote items only show as a read-only fallback (orders predating the
@@ -1868,7 +1827,6 @@ def order_detail_page(o: dict, calls: list, today: str,
     <button class="btn danger w-full">Xóa đơn hàng #{o["id"]}</button>
   </form>
 </details>
-{handoff}
 {bo_cua_block}
 {payment_block}
 {tien_do}
@@ -1886,7 +1844,7 @@ def order_detail_page(o: dict, calls: list, today: str,
 
 def invoice_page(o: dict, items: list, company: dict, today: str) -> str:
     """Printable hóa đơn for an order: company header, customer block, line-item
-    table, Tổng cộng / VAT 10% / Tổng tiền (same math as production_message and
+    table, Tổng cộng / VAT 10% / Tổng tiền (same math as the báo giá summary and
     the báo giá xlsx). Internal document — real VAT e-invoices (hoá đơn đỏ) come
     from the government e-invoice provider."""
     rows = []

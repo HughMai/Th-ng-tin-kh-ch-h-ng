@@ -566,12 +566,13 @@ def quote_status(request: Request, quote_id: int,
             raise HTTPException(status_code=400,
                                 detail="Báo giá chưa có hạng mục — thêm hạng mục trước khi chốt")
         store.set_quote_status(quote_id, "won")
-        # Chốt → tự tạo đơn sản xuất và chuyển thẳng vào Tiến độ (kèm nút sao chép
-        # bộ cửa để dán vào nhóm Zalo). No more manual "tạo đơn hàng" step.
+        # Chốt → tự tạo đơn sản xuất (vào tab Đơn hàng) và báo nhóm Zalo tự động
+        # qua bot. Ở lại danh sách báo giá — thẻ tự chuyển Đã gửi → Chốt, không
+        # nhảy vào chi tiết đơn.
         oid = store.create_order_from_quote(quote_id)
         if oid:
             _new_order_ping(oid)
-        return RedirectResponse(f"/don-hang/{oid}?chot=1" if oid else "/bao-gia", status_code=303)
+        return RedirectResponse("/bao-gia", status_code=303)
     if trang_thai == "lost":
         store.set_quote_status(quote_id, "lost", ly_do)
         return RedirectResponse("/bao-gia", status_code=303)
@@ -587,6 +588,33 @@ def quote_status(request: Request, quote_id: int,
 # Phụ kiện vocabulary is the priced set shared with the intake wizard and the
 # price math — see pricing.PHUKIEN_CATALOG.
 _ACCESSORY_LABELS = dict(pricing.PHUKIEN_CATALOG)
+
+
+def _encode_extras(raw: str) -> list[str]:
+    """Free-form 'chi phí khác' textarea → accessories segments. Each non-empty
+    line is 'Tên - <số tiền>' (dots/spaces in the amount are ignored) and is
+    encoded as '<tên> x1 =<amount>' so pricing prices it and it survives a
+    re-save. The name is stripped of the ', ' / ' x<digit>' / ' =' delimiters
+    the accessories string relies on."""
+    out = []
+    for line in (raw or "").splitlines():
+        m = re.match(r"^\s*(.+?)[\s:–-]+([\d.,]+)\s*$", line)
+        if not m:
+            continue
+        name = re.sub(r",|\sx(?=\d)|\s=", " ", m.group(1)).strip()
+        amount = int(re.sub(r"\D", "", m.group(2)) or 0)
+        if name and amount:
+            out.append(f"{name} x1 ={amount}")
+    return out
+
+
+def _accessories_from_form(form) -> str:
+    """quotes.accessories from a phụ-kiện form: catalog checkboxes ('<label>
+    x<qty>') plus free-form 'chi phí khác' lines ('<name> x1 =<amount>')."""
+    parts = [f"{label} x{form.get(f'{key}_qty') or 1}"
+             for key, label in pricing.PHUKIEN_CATALOG if form.get(f"{key}_chk") == "1"]
+    parts += _encode_extras(form.get("extras", ""))
+    return ", ".join(parts)
 
 
 @app.get("/bao-gia/nhieu-hang-muc", response_class=HTMLResponse)
@@ -611,10 +639,7 @@ async def quote_multi_new(request: Request, customer_id: int = Form(...),
     if r := _guard(request):
         return r
     form = await request.form()
-    accessories = ", ".join(
-        f"{label} x{form.get(f'{key}_qty') or 1}"
-        for key, label in pricing.PHUKIEN_CATALOG if form.get(f"{key}_chk") == "1"
-    )
+    accessories = _accessories_from_form(form)
     quote_id = store.create_quote_header(customer_id, accessories, _parse_vnd(deposit), install_date, note)
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
 
@@ -748,11 +773,7 @@ async def quote_set_accessories(request: Request, quote_id: int):
         raise HTTPException(status_code=404)
     _reject_if_ordered(q)
     form = await request.form()
-    accessories = ", ".join(
-        f"{label} x{form.get(f'{key}_qty') or 1}"
-        for key, label in pricing.PHUKIEN_CATALOG if form.get(f"{key}_chk") == "1"
-    )
-    store.update_quote_accessories(quote_id, accessories)
+    store.update_quote_accessories(quote_id, _accessories_from_form(form))
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
 
 
@@ -815,21 +836,19 @@ def order_delete(request: Request, order_id: int):
 
 
 @app.get("/don-hang/{order_id}", response_class=HTMLResponse)
-def order_detail(request: Request, order_id: int, chot: int = 0):
+def order_detail(request: Request, order_id: int):
     if r := _guard(request):
         return r
     o = store.get_order(order_id)
     if not o:
         raise HTTPException(status_code=404)
-    quote = store.get_quote(o["quote_id"]) if o.get("quote_id") else None
     # Hạng mục live on the order itself (snapshotted from the báo giá on chốt);
     # quote items are only a fallback for orders that predate the backfill.
     items = store.order_items_for(order_id)
     if not items and o.get("quote_id"):
         items = store.quote_items_for(o["quote_id"])
     body = views.order_detail_page(o, store.service_calls_for_order(order_id), store.today_vn(),
-                                   quote=quote, items=items, just_won=bool(chot),
-                                   payments=store.order_payments_for(order_id))
+                                   items=items, payments=store.order_payments_for(order_id))
     return views.page(f"Đơn hàng #{order_id}", body, active="/don-hang")
 
 
