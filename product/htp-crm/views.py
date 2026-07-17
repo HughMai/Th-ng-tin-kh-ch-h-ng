@@ -1894,6 +1894,27 @@ def invoice_page(o: dict, items: list, company: dict, today: str) -> str:
 
 # ---------------------------------------------------------------- công nợ
 
+def _settle_form(action: str, next_url: str) -> str:
+    """The Nợ-tab 'Đã thanh toán' control: a disclosure that opens a small form
+    for hình thức (tiền mặt / chuyển khoản) + ghi chú before recording the
+    full-balance payment. Posts to the same settle endpoint as the old button."""
+    return f"""
+<details class="mt-2">
+  <summary class="btn done w-full">Đã thanh toán</summary>
+  <form method="post" action="{action}" class="mt-2">
+    <input type="hidden" name="next" value="{esc(next_url)}">
+    <label class="mt-0">Hình thức thanh toán</label>
+    <div class="seg">
+      <label><input type="radio" name="method" value="Tiền mặt" checked><span>Tiền mặt</span></label>
+      <label><input type="radio" name="method" value="Chuyển khoản"><span>Chuyển khoản</span></label>
+    </div>
+    <label>Ghi chú</label>
+    <input name="note" placeholder="Tùy chọn — VD: thu đủ tại xưởng">
+    <button class="btn call w-full mt-3">Xác nhận đã thu đủ</button>
+  </form>
+</details>"""
+
+
 def debts_page(dealer_rows: list, customer_rows: list, loc: str, today: str) -> str:
     """Công nợ tab. ``loc`` filters the view: 'tat-ca' (both), 'kh' (retail
     khách lẻ — orders still owing, from order_payments) or 'dl' (đại lý ledger).
@@ -1919,11 +1940,7 @@ def debts_page(dealer_rows: list, customer_rows: list, loc: str, today: str) -> 
     <div class="name">{esc(d["name"])} <span class="chip warn">{fmt_vnd(d["balance"])}</span> {type_chip("DL")}</div>
     <div class="sub">{last} ({days} ngày)</div>
   </a>
-  <form method="post" action="/cong-no/{d["id"]}/thanh-toan-du" class="mt-2"
-    onsubmit="return confirm('Đại lý {esc(d["name"])} đã trả đủ {fmt_vnd(d["balance"])}?')">
-    <input type="hidden" name="next" value="/cong-no?loc={esc(loc)}">
-    <button class="btn done w-full">Đã thanh toán</button>
-  </form>
+  {_settle_form(f'/cong-no/{d["id"]}/thanh-toan-du', f'/cong-no?loc={loc}')}
 </div>""")
         out.append("".join(cards) or '<div class="empty">Không có đại lý nào đang nợ.</div>')
 
@@ -1939,11 +1956,7 @@ def debts_page(dealer_rows: list, customer_rows: list, loc: str, today: str) -> 
     <div class="name">{esc(o["customer_name"])} <span class="chip warn">{fmt_vnd(o["balance_vnd"])}</span> {type_chip("KH")}</div>
     <div class="sub">Đơn #{o["id"]} · {when}</div>
   </a>
-  <form method="post" action="/don-hang/{o["id"]}/thu-du" class="mt-2"
-    onsubmit="return confirm('Đánh dấu đã thu đủ đơn #{o["id"]}? Đơn sẽ rời khỏi danh sách nợ.')">
-    <input type="hidden" name="next" value="/cong-no?loc={esc(loc)}">
-    <button class="btn done w-full">Đã thanh toán</button>
-  </form>
+  {_settle_form(f'/don-hang/{o["id"]}/thu-du', f'/cong-no?loc={loc}')}
 </div>""")
         out.append("".join(cards) or '<div class="empty">Không có khách lẻ nào còn nợ.</div>')
 
@@ -2011,7 +2024,81 @@ def debt_entry_form_page(c: dict, loai: str, today: str, order_id: str = "", tie
 
 # ---------------------------------------------------------------- báo cáo
 
+def _report_toggle(active: str) -> str:
+    """Ngày / Tháng switch shared by both báo cáo modes."""
+    return '<div class="row mb-3">' + "".join(
+        f'<a class="btn {"call" if active == key else "done"}" href="/bao-cao?che_do={key}">{lbl}</a>'
+        for key, lbl in (("ngay", "Theo ngày"), ("thang", "Theo tháng"))
+    ) + "</div>"
+
+
 def reports_page(r: dict) -> str:
+    """Daily by default (end-of-day reconciliation); monthly when the toggle is
+    set to Theo tháng."""
+    return _daily_report_page(r) if r.get("mode") == "day" else _monthly_report_page(r)
+
+
+def _daily_report_page(r: dict) -> str:
+    day = r["day"]
+    ty_le = f"{round(r['ty_le_chot'] * 100)}%" if r["ty_le_chot"] is not None else "—"
+
+    thu_cards = "".join(
+        f'<div class="stat-card"><div class="n">{fmt_vnd_short(x["total"])}</div>'
+        f'<div class="lbl">{esc(x["method"])}</div></div>'
+        for x in r["thu_theo_hinh_thuc"]
+    ) or '<div class="empty">Chưa thu khoản nào trong ngày.</div>'
+
+    kind_lbl = {"coc": "Cọc", "thanh_toan": "Thanh toán"}
+    pay_rows = "".join(
+        f'<tr><td>{esc(p["name"])}</td>'
+        f'<td>{esc((p["method"] or "").strip() or "—")}</td>'
+        f'<td>{kind_lbl.get(p["kind"], p["kind"])}</td>'
+        f'<td class="run">{fmt_vnd(p["amount_vnd"])}</td></tr>'
+        for p in r["thu_list"]
+    )
+    pay_block = (
+        '<div class="card scroll-x"><table class="ledger">'
+        '<tr><th>Khách</th><th>Hình thức</th><th>Loại</th><th style="text-align:right">Số tiền</th></tr>'
+        f'{pay_rows}</table></div>'
+        if r["thu_list"] else ""
+    )
+
+    stat_row = f"""
+<div class="stat-row">
+  <div class="stat-card"><div class="n">{r["gui"]}</div><div class="lbl">Báo giá đã gửi</div></div>
+  <div class="stat-card"><div class="n">{r["chot"]}</div><div class="lbl">Đã chốt</div></div>
+  <div class="stat-card"><div class="n">{r["mat"]}</div><div class="lbl">Đã mất</div></div>
+  <div class="stat-card"><div class="n">{ty_le}</div><div class="lbl">Tỷ lệ chốt</div></div>
+</div>
+<div class="total">Giá trị chốt trong ngày: {fmt_vnd(r["gia_tri_chot"])}</div>"""
+
+    sp_rows = "".join(
+        f'<tr><td>{esc(PRODUCT_LABELS.get(x["product"], x["product"]))}</td><td>{fmt_vnd(x["total"])}</td></tr>'
+        for x in r["doanh_thu_theo_sp"]
+    )
+    sp_block = (
+        f'<h2>Doanh thu theo sản phẩm</h2><div class="card scroll-x">'
+        f'<table class="ledger"><tr><th>Sản phẩm</th><th>Doanh thu</th></tr>{sp_rows}</table></div>'
+        if r["doanh_thu_theo_sp"] else ""
+    )
+
+    return f"""
+{_report_toggle("ngay")}
+<form method="get" action="/bao-cao" class="row mb-3">
+  <input type="hidden" name="che_do" value="ngay">
+  <input type="date" name="ngay" value="{esc(day)}" class="grow-2">
+  <button class="btn done">Xem</button>
+</form>
+<div class="card"><div class="name">Báo cáo ngày {fmt_date(day)}</div></div>
+<h2>Tiền thu trong ngày — {fmt_vnd(r["thu_total"])}</h2>
+<div class="stat-row">{thu_cards}</div>
+{pay_block}
+<h2>Hoạt động trong ngày</h2>
+{stat_row}
+{sp_block}"""
+
+
+def _monthly_report_page(r: dict) -> str:
     month = r["month"]
     display_month = f"{month[5:7]}/{month[:4]}" if len(month) == 7 else esc(month)
     ty_le = f"{round(r['ty_le_chot'] * 100)}%" if r["ty_le_chot"] is not None else "—"
@@ -2067,7 +2154,9 @@ def reports_page(r: dict) -> str:
     )
 
     return f"""
+{_report_toggle("thang")}
 <form method="get" action="/bao-cao" class="row mb-3">
+  <input type="hidden" name="che_do" value="thang">
   <input type="month" name="thang" value="{esc(month)}" class="grow-2">
   <button class="btn done">Xem</button>
 </form>

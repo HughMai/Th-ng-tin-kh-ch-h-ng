@@ -180,6 +180,11 @@ def _valid_month(s: str) -> bool:
     return len(s) == 7 and s[4] == "-" and s[:4].isdigit() and s[5:].isdigit()
 
 
+def _valid_day(s: str) -> bool:
+    """'2026-07-17' shaped date string, as produced by <input type=date>."""
+    return len(s) == 10 and s[4] == "-" and s[7] == "-" and _valid_month(s[:7]) and s[8:].isdigit()
+
+
 # ---- login / logout -----------------------------------------------------------
 @app.get("/login", response_class=HTMLResponse)
 def login_form(error: str = ""):
@@ -914,10 +919,11 @@ def order_add_payment(request: Request, order_id: int, amount_vnd: str = Form(..
 
 
 @app.post("/don-hang/{order_id}/thu-du")
-def order_settle_full(request: Request, order_id: int, next: str = Form("")):
+def order_settle_full(request: Request, order_id: int, next: str = Form(""),
+                      method: str = Form(""), note: str = Form("")):
     """Mark a KH order Đã thanh toán — record a payment for the full remaining
     balance (computed server-side to avoid stale amounts). Powers the 'Đã thanh
-    toán' button in the Công nợ / Nợ tab."""
+    toán' button in the Công nợ / Nợ tab, now carrying hình thức + ghi chú."""
     if r := _guard(request):
         return r
     o = store.get_order(order_id)
@@ -925,7 +931,7 @@ def order_settle_full(request: Request, order_id: int, next: str = Form("")):
         raise HTTPException(status_code=404)
     bal = o.get("balance_vnd", 0)
     if bal > 0:
-        store.add_order_payment(order_id, "thanh_toan", bal)
+        store.add_order_payment(order_id, "thanh_toan", bal, method=method, note=note)
     return RedirectResponse(_safe_next(next, "/cong-no"), status_code=303)
 
 
@@ -1064,15 +1070,17 @@ def debt_entry_add(request: Request, customer_id: int, entry_type: str = Form(..
 
 
 @app.post("/cong-no/{customer_id}/thanh-toan-du")
-def debt_settle_full(request: Request, customer_id: int, next: str = Form("")):
+def debt_settle_full(request: Request, customer_id: int, next: str = Form(""),
+                     method: str = Form(""), note: str = Form("")):
     """One-click 'Đã thanh toán' for a đại lý — records a payment for the full
-    outstanding balance (server-computed), mirroring the KH order_settle_full."""
+    outstanding balance (server-computed), mirroring the KH order_settle_full.
+    Captures hình thức (tiền mặt / chuyển khoản) + ghi chú from the Nợ-tab form."""
     if r := _guard(request):
         return r
     c = store.get_customer(customer_id)
     if not c or c["type"] != "DL":
         raise HTTPException(status_code=404)
-    store.settle_dealer(customer_id)
+    store.settle_dealer(customer_id, method, note)
     return RedirectResponse(_safe_next(next, f"/cong-no/{customer_id}"), status_code=303)
 
 
@@ -1091,11 +1099,17 @@ def debt_entry_delete(request: Request, customer_id: int, entry_id: int):
 
 # ---- báo cáo ------------------------------------------------------------------------
 @app.get("/bao-cao", response_class=HTMLResponse)
-def reports(request: Request, thang: str = ""):
+def reports(request: Request, che_do: str = "ngay", ngay: str = "", thang: str = ""):
+    """Daily by default (end-of-day reconciliation — quan sát mỗi ngày); the
+    Theo tháng toggle keeps the monthly rollup."""
     if r := _guard(request):
         return r
-    month = thang if _valid_month(thang) else store.today_vn()[:7]
-    report = store.monthly_report(month)
+    if che_do == "thang":
+        month = thang if _valid_month(thang) else store.today_vn()[:7]
+        report = store.monthly_report(month)
+    else:
+        day = ngay if _valid_day(ngay) else store.today_vn()
+        report = store.daily_report(day)
     return views.page("Báo cáo", views.reports_page(report), active="/bao-cao")
 
 

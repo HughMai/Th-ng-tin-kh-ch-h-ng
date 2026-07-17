@@ -253,6 +253,7 @@ def configure(db_path: str) -> None:
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_debt_customer ON debt_entries(customer_id, entry_date)"
         )
+        _migrate_debt_entries_columns(db)
         # Raw Zalo OA webhook events (follows, inbound messages). Kept even after
         # a customer is linked — it's the audit trail for figuring out who's who.
         db.execute(
@@ -415,6 +416,15 @@ def _migrate_quote_items_columns(db: sqlite3.Connection) -> None:
     existing = {row["name"] for row in db.execute("PRAGMA table_info(quote_items)")}
     if "mau_sac" not in existing:
         db.execute("ALTER TABLE quote_items ADD COLUMN mau_sac TEXT")
+
+
+def _migrate_debt_entries_columns(db: sqlite3.Connection) -> None:
+    """Additive: hình thức thanh toán (tiền mặt / chuyển khoản) on a ĐL payment,
+    mirroring order_payments.method so the daily báo cáo can total both KH and ĐL
+    money by method. Charges leave it NULL."""
+    existing = {row["name"] for row in db.execute("PRAGMA table_info(debt_entries)")}
+    if "method" not in existing:
+        db.execute("ALTER TABLE debt_entries ADD COLUMN method TEXT")
 
 
 @contextmanager
@@ -1424,25 +1434,28 @@ def reminders_for_customer(customer_id: int) -> list:
 # ---------------------------------------------------------------- dealer debts (công nợ)
 
 def add_debt_entry(customer_id: int, entry_type: str, amount_vnd: int,
-                   entry_date: str = "", note: str = "", order_id: Optional[int] = None) -> int:
+                   entry_date: str = "", note: str = "", order_id: Optional[int] = None,
+                   method: str = "") -> int:
     """Append-only ledger. Corrections are offsetting entries, like a paper sổ nợ."""
     with _connect() as db:
         cur = db.execute(
-            "INSERT INTO debt_entries (customer_id, entry_type, amount_vnd, entry_date, note, order_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO debt_entries (customer_id, entry_type, amount_vnd, entry_date, note, order_id, method) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (customer_id, entry_type, amount_vnd, entry_date or today_vn(),
-             note.strip() or None, order_id),
+             note.strip() or None, order_id, (method or "").strip() or None),
         )
         return cur.lastrowid
 
 
-def settle_dealer(customer_id: int) -> int:
+def settle_dealer(customer_id: int, method: str = "", note: str = "") -> int:
     """One-click "Đã thanh toán" for a đại lý: record a payment for the full
     outstanding balance so công nợ clears to 0 (server-computed, mirrors the KH
-    order_settle_full). Returns the amount settled (0 if nothing was owed)."""
+    order_settle_full). ``method`` (tiền mặt / chuyển khoản) + ``note`` are
+    captured from the Nợ-tab form. Returns the amount settled (0 if nothing owed)."""
     bal = dealer_balance(customer_id)
     if bal > 0:
-        add_debt_entry(customer_id, "payment", bal, note="Thanh toán đủ")
+        add_debt_entry(customer_id, "payment", bal,
+                       note=note.strip() or "Thanh toán đủ", method=method)
     return bal if bal > 0 else 0
 
 
@@ -1579,6 +1592,7 @@ def monthly_report(month: str = "") -> dict:
     close_rate = (won_n / (won_n + lost)) if (won_n + lost) else None
     debt_total = sum(d["balance"] for d in dealer_balances())
     return {
+        "mode": "month",
         "month": month,
         "gui": gui, "chot": won_n, "mat": lost,
         "ty_le_chot": close_rate, "gia_tri_chot": won_total,
@@ -1587,6 +1601,70 @@ def monthly_report(month: str = "") -> dict:
         "doanh_thu_theo_sp": [dict(r) for r in by_product],
         "cong_no_total": debt_total, "cong_no_qua_han": len(debts_overdue()),
         "cham_soc": [dict(r) for r in touch_counts],
+    }
+
+
+def daily_report(day: str = "") -> dict:
+    """Read-time metrics for a single VN calendar day — the end-of-day
+    reconciliation view for /bao-cao. Tiền thu (money in) is dated by
+    pay_date/entry_date, which are already VN dates, so the money side is exact
+    and split by hình thức (tiền mặt / chuyển khoản). The gửi/chốt/mất activity
+    reuses the same updated_at stand-in as monthly_report (see its note), shifted
+    +7h so a chốt lands on the right VN day."""
+    day = day or today_vn()
+    with _connect() as db:
+        # money collected today — KH order payments (cọc + thanh toán) …
+        kh_pays = db.execute(
+            "SELECT c.name, p.kind, p.method, p.amount_vnd "
+            "FROM order_payments p JOIN orders o ON o.id = p.order_id "
+            "JOIN customers c ON c.id = o.customer_id "
+            "WHERE p.pay_date = ? ORDER BY p.amount_vnd DESC", (day,),
+        ).fetchall()
+        # … plus ĐL công nợ settlements the same day
+        dl_pays = db.execute(
+            "SELECT c.name, 'thanh_toan' AS kind, e.method, e.amount_vnd "
+            "FROM debt_entries e JOIN customers c ON c.id = e.customer_id "
+            "WHERE e.entry_type = 'payment' AND e.entry_date = ? "
+            "ORDER BY e.amount_vnd DESC", (day,),
+        ).fetchall()
+        gui = db.execute(
+            "SELECT COUNT(*) AS n FROM quotes WHERE date(sent_date) = ?", (day,)
+        ).fetchone()["n"]
+        won = db.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(value_vnd), 0) AS total FROM quotes "
+            "WHERE status = 'won' AND date(updated_at, '+7 hours') = ?", (day,)
+        ).fetchone()
+        lost = db.execute(
+            "SELECT COUNT(*) AS n FROM quotes "
+            "WHERE status = 'lost' AND date(updated_at, '+7 hours') = ?", (day,)
+        ).fetchone()["n"]
+        by_product = db.execute(
+            "SELECT product, COALESCE(SUM(value_vnd), 0) AS total FROM quotes "
+            "WHERE status = 'won' AND date(updated_at, '+7 hours') = ? "
+            "GROUP BY product ORDER BY total DESC", (day,),
+        ).fetchall()
+    pays = [dict(r) for r in kh_pays] + [dict(r) for r in dl_pays]
+    pays.sort(key=lambda p: p["amount_vnd"], reverse=True)
+    thu_total = sum(p["amount_vnd"] for p in pays)
+    by_method: dict = {}
+    for p in pays:
+        m = (p["method"] or "").strip() or "Khác"
+        by_method[m] = by_method.get(m, 0) + p["amount_vnd"]
+    thu_theo_hinh_thuc = [
+        {"method": m, "total": t}
+        for m, t in sorted(by_method.items(), key=lambda kv: kv[1], reverse=True)
+    ]
+    won_n = won["n"]
+    close_rate = (won_n / (won_n + lost)) if (won_n + lost) else None
+    return {
+        "mode": "day",
+        "day": day,
+        "thu_total": thu_total,
+        "thu_theo_hinh_thuc": thu_theo_hinh_thuc,
+        "thu_list": pays,
+        "gui": gui, "chot": won_n, "mat": lost,
+        "ty_le_chot": close_rate, "gia_tri_chot": won["total"],
+        "doanh_thu_theo_sp": [dict(r) for r in by_product],
     }
 
 
