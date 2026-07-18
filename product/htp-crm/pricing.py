@@ -1,5 +1,10 @@
 """Báo giá price calculator — ported from the original standalone tool
-(customer_form/index.html, recovered via `git show HEAD:customer_form/index.html`).
+(customer_form/index.html). Refreshed 2026-07-17 against a corrected copy of
+that tool (Hughie's Downloads/index.html) — the previous port had several
+fabricated Cửa Cuốn Đức mẫu with no real-world price and a placeholder Cửa
+Nhôm Kính config; both are now replaced with the real mẫu list + full price
+tables, and the fabricated standalone "Nhôm Xingfa" door type (never part of
+the source tool) has been removed.
 
 Single source of truth for both (1) rendering the cascading <select> options
 in the multi-item quote form, and (2) authoritatively computing price on
@@ -24,9 +29,8 @@ DOOR_CONFIG = {
                          "Cửa cuốn công nghệ Đài Loan", "Inox"]},
             {"key": "mau", "label": "Chọn loại", "type": "select-dynamic", "depends_on": "cong_nghe",
              "option_map": {
-                 "Cửa cuốn công nghệ Đức": ["", "KV 412", "KV 380", "KV 422 R", "KV 432 R",
-                                            "KV 468 R", "OT 70", "LQ 71", "CT 5122",
-                                            "MT 500 R", "CT 5222", "CT 5222 R"],
+                 "Cửa cuốn công nghệ Đức": ["", "KV 380", "KV 422 R", "KV 432 R",
+                                            "KV 468 R", "CT 5222 R", "MT 5222 R"],
                  "Inox": ["", "6zem", "8zem"],
                  "Cửa cuốn công nghệ Đài Loan": ["", "6zem", "8zem", "1ly"],
                  "Cửa cuốn công nghệ Úc": ["", "Tole màu 5.2 zem", "Tole màu 5.2 zem blusc"],
@@ -44,42 +48,55 @@ DOOR_CONFIG = {
     "nhom_kinh": {
         "label": "Cửa Nhôm Kính",
         "fields": [
-            {"key": "cong_nghe", "label": "Phân loại", "type": "select", "options": ["", "Nhôm Việt", "Nhôm Nhập"]},
+            {"key": "cong_nghe", "label": "Phân loại", "type": "select",
+             "options": ["", "Nhôm Việt", "Nhôm Nhập", "Nhôm Maxpro",
+                         "Cửa kính bản lề sàn", "Lan can cầu thang"]},
             {"key": "mau", "label": "Chọn mẫu", "type": "select-dynamic", "depends_on": "cong_nghe",
              "option_map": {
-                 "Nhôm Việt": ["", "Hàng 1.4 ly ( Cửa đi)", "Hàng 2.0 ly", "Cửa số"],
-                 "Nhôm Nhập": ["", "Cửa đi", "Cửa số", "Nhập 1.4 ly"],
+                 "Nhôm Việt": ["", "Cửa đi 1.2ly", "Cửa đi 1.4ly", "Cửa đi 2.0ly",
+                               "Cửa sổ 1.2ly", "Cửa sổ 1.4ly", "Vách kính 1.2ly", "Vách kính 1.4ly"],
+                 "Nhôm Nhập": ["", "Cửa đi 1.4ly", "Cửa đi 2.0ly", "Cửa sổ 1.4ly", "Vách kính 1.4ly"],
+                 "Nhôm Maxpro": ["", "Hệ 55", "Hệ 65", "Hệ 83"],
+                 "Cửa kính bản lề sàn": ["", "10 ly", "12 ly"],
+                 "Lan can cầu thang": ["", "Tay gỗ", "Tay nhôm 3D 2*2", "Tay nhôm 3D 3*3",
+                                       "Tay nhôm 3D 4*4", "Máng cover"],
              }},
-        ],
-    },
-    "xingfa": {
-        "label": "Nhôm Xingfa",
-        "fields": [
-            {"key": "mau", "label": "Chọn mẫu", "type": "select",
-             "options": ["", "Series 55 - 1.2mm", "Series 65 - 1.4mm",
-                         "Series 70 - 1.6mm", "Series 90 - 2.0mm"]},
         ],
     },
 }
 
-# Ported verbatim from the original JS PRICES table, including its own gaps:
-# DOOR_CONFIG lists 'MT 500 R' as a selectable Đức option but only 'MT 5222 R'
-# has a price entry here. That mismatch is in the SOURCE tool, not introduced
-# here — 'MT 500 R' falls to the manual-price path like any unmapped combo.
-# Cửa Nhôm Kính and Nhôm Xingfa have NO entries at all (same source gap) —
-# both always fall to manual price until real numbers are supplied.
+# Ported verbatim from the reference calculator (customer_form's index.html,
+# refreshed 2026-07-17 against a corrected copy of the source tool). Every
+# mẫu listed in DOOR_CONFIG now has a matching price entry below for both
+# tiers — no more manual-price gaps for cua_cuon/cua_keo/nhom_kinh.
 _PRICES_KH = {
     "Cửa Kéo|Có lá - 6zem": 640, "Cửa Kéo|Có lá - 8zem": 700, "Cửa Kéo|Có lá - 1ly": 760,
     "Cửa Kéo|Có lá - 1.2ly": 820, "Cửa Kéo|Có lá - 1.4ly": 900,
     "Cửa Kéo|Không lá - 6zem": 540, "Cửa Kéo|Không lá - 8zem": 600, "Cửa Kéo|Không lá - 1ly": 660,
     "Cửa Kéo|Không lá - 1.2ly": 720, "Cửa Kéo|Không lá - 1.4ly": 800,
     "Cửa cuốn công nghệ Đức|KV 380": 1450, "Cửa cuốn công nghệ Đức|KV 422 R": 1750,
+    "Cửa cuốn công nghệ Đức|KV 432 R": 1950,
     "Cửa cuốn công nghệ Đức|KV 468 R": 2150, "Cửa cuốn công nghệ Đức|CT 5222 R": 2200,
     "Cửa cuốn công nghệ Đức|MT 5222 R": 2300,
     "Inox|6zem": 1700, "Inox|8zem": 1900,
     "Cửa cuốn công nghệ Đài Loan|6zem": 500, "Cửa cuốn công nghệ Đài Loan|8zem": 560,
     "Cửa cuốn công nghệ Đài Loan|1ly": 780,
     "Cửa cuốn công nghệ Úc|Tole màu 5.2 zem": 700, "Cửa cuốn công nghệ Úc|Tole màu 5.2 zem blusc": 900,
+    # Nhôm Việt
+    "Nhôm Việt|Cửa đi 1.2ly": 2200, "Nhôm Việt|Cửa đi 1.4ly": 2400, "Nhôm Việt|Cửa đi 2.0ly": 2600,
+    "Nhôm Việt|Cửa sổ 1.2ly": 2100, "Nhôm Việt|Cửa sổ 1.4ly": 2300,
+    "Nhôm Việt|Vách kính 1.2ly": 1400, "Nhôm Việt|Vách kính 1.4ly": 1500,
+    # Nhôm Nhập
+    "Nhôm Nhập|Cửa đi 1.4ly": 2600, "Nhôm Nhập|Cửa đi 2.0ly": 2800,
+    "Nhôm Nhập|Cửa sổ 1.4ly": 2500, "Nhôm Nhập|Vách kính 1.4ly": 1700,
+    # Nhôm Maxpro
+    "Nhôm Maxpro|Hệ 55": 4000, "Nhôm Maxpro|Hệ 65": 4600, "Nhôm Maxpro|Hệ 83": 5800,
+    # Cửa kính bản lề sàn
+    "Cửa kính bản lề sàn|10 ly": 1500, "Cửa kính bản lề sàn|12 ly": 1650,
+    # Lan can cầu thang
+    "Lan can cầu thang|Tay gỗ": 1950, "Lan can cầu thang|Tay nhôm 3D 2*2": 2050,
+    "Lan can cầu thang|Tay nhôm 3D 3*3": 2300, "Lan can cầu thang|Tay nhôm 3D 4*4": 2600,
+    "Lan can cầu thang|Máng cover": 5800,
 }
 _PRICES_DL = {
     "Cửa Kéo|Có lá - 6zem": 560, "Cửa Kéo|Có lá - 8zem": 620, "Cửa Kéo|Có lá - 1ly": 680,
@@ -93,6 +110,21 @@ _PRICES_DL = {
     "Cửa cuốn công nghệ Đài Loan|6zem": 400, "Cửa cuốn công nghệ Đài Loan|8zem": 460,
     "Cửa cuốn công nghệ Đài Loan|1ly": 700,
     "Cửa cuốn công nghệ Úc|Tole màu 5.2 zem": 550,
+    # Nhôm Việt
+    "Nhôm Việt|Cửa đi 1.2ly": 2000, "Nhôm Việt|Cửa đi 1.4ly": 2200, "Nhôm Việt|Cửa đi 2.0ly": 2400,
+    "Nhôm Việt|Cửa sổ 1.2ly": 1900, "Nhôm Việt|Cửa sổ 1.4ly": 2100,
+    "Nhôm Việt|Vách kính 1.2ly": 1200, "Nhôm Việt|Vách kính 1.4ly": 1300,
+    # Nhôm Nhập
+    "Nhôm Nhập|Cửa đi 1.4ly": 2400, "Nhôm Nhập|Cửa đi 2.0ly": 2600,
+    "Nhôm Nhập|Cửa sổ 1.4ly": 2300, "Nhôm Nhập|Vách kính 1.4ly": 1500,
+    # Nhôm Maxpro
+    "Nhôm Maxpro|Hệ 55": 3800, "Nhôm Maxpro|Hệ 65": 4400, "Nhôm Maxpro|Hệ 83": 5600,
+    # Cửa kính bản lề sàn
+    "Cửa kính bản lề sàn|10 ly": 1300, "Cửa kính bản lề sàn|12 ly": 1450,
+    # Lan can cầu thang
+    "Lan can cầu thang|Tay gỗ": 1750, "Lan can cầu thang|Tay nhôm 3D 2*2": 1850,
+    "Lan can cầu thang|Tay nhôm 3D 3*3": 2100, "Lan can cầu thang|Tay nhôm 3D 4*4": 2400,
+    "Lan can cầu thang|Máng cover": 5600,
 }
 
 
