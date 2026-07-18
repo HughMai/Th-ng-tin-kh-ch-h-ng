@@ -595,19 +595,20 @@ _ACCESSORY_LABELS = dict(pricing.PHUKIEN_CATALOG)
 
 def _encode_extras(raw: str) -> list[str]:
     """Free-form 'chi phí khác' textarea → accessories segments. Each non-empty
-    line is 'Tên - <số tiền>' (dots/spaces in the amount are ignored) and is
-    encoded as '<tên> x1 =<amount>' so pricing prices it and it survives a
-    re-save. The name is stripped of the ', ' / ' x<digit>' / ' =' delimiters
-    the accessories string relies on."""
+    line is 'Tên - <số tiền>' or 'Tên x<qty> - <số tiền>' (dots/spaces in the
+    amount are ignored) and is encoded as '<tên> x<qty> =<amount>' so pricing
+    prices it and it survives a re-save. The name is stripped of the ', ' /
+    ' x<digit>' / ' =' delimiters the accessories string relies on."""
     out = []
     for line in (raw or "").splitlines():
-        m = re.match(r"^\s*(.+?)[\s:–-]+([\d.,]+)\s*$", line)
+        m = re.match(r"^\s*(.+?)(?:\s+x(\d+))?[\s:–-]+([\d.,]+)\s*$", line)
         if not m:
             continue
         name = re.sub(r",|\sx(?=\d)|\s=", " ", m.group(1)).strip()
-        amount = int(re.sub(r"\D", "", m.group(2)) or 0)
+        qty = int(m.group(2)) if m.group(2) else 1
+        amount = int(re.sub(r"\D", "", m.group(3)) or 0)
         if name and amount:
-            out.append(f"{name} x1 ={amount}")
+            out.append(f"{name} x{qty} ={amount}")
     return out
 
 

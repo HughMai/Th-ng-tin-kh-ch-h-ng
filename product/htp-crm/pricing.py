@@ -204,11 +204,11 @@ def _parse_phukien(accessories_str: str) -> list[tuple[str, int, int | None]]:
     return out
 
 
-def extras_of(accessories_str: str) -> list[tuple[str, int]]:
-    """Free-form 'chi phí khác' entries as (name, full-VND amount) — the parts
-    carrying an explicit '=<amount>' price, not catalog phụ kiện. Feeds the
-    editable textarea so extras survive a re-save."""
-    return [(name, price) for name, qty, price in _parse_phukien(accessories_str)
+def extras_of(accessories_str: str) -> list[tuple[str, int, int]]:
+    """Free-form 'chi phí khác' entries as (name, qty, per-unit full-VND amount)
+    — the parts carrying an explicit '=<amount>' price, not catalog phụ kiện.
+    Feeds the editable textarea so extras (including quantity) survive a re-save."""
+    return [(name, qty, price) for name, qty, price in _parse_phukien(accessories_str)
             if price is not None]
 
 

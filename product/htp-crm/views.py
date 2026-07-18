@@ -752,6 +752,23 @@ function removeUnit(b){
     if(e.target.classList.contains('ux')){ removeUnit(e.target.closest('.unit-block')); }
   });
 })();
+function addExtraAccRow(){
+  var cont=document.getElementById('extra-acc-container');
+  var div=document.createElement('div');
+  div.className='acc-row-custom';
+  div.innerHTML =
+    '<input type="text" class="ax-name" placeholder="Tên phụ kiện">'
+    + '<input type="number" class="ax-qty" min="1" value="1" inputmode="numeric">'
+    + '<input type="text" class="ax-price" inputmode="numeric" placeholder="Giá (VND)" oninput="fmtMoney(this)">'
+    + '<button type="button" class="ux">&times;</button>';
+  cont.appendChild(div);
+}
+(function(){
+  var cont=document.getElementById('extra-acc-container');
+  cont.addEventListener('click', function(e){
+    if(e.target.classList.contains('ux')){ e.target.closest('.acc-row-custom').remove(); }
+  });
+})();
 function unitColorText(b){
   var type=b.dataset.type;
   var spec=colorSpec(type);
@@ -788,6 +805,12 @@ function serializeWizard(){
   document.querySelectorAll('.acc-chk:checked').forEach(function(chk){
     var qty=parseInt(chk.closest('.acc-row').querySelector('.acc-qty').value)||1;
     accs.push(chk.dataset.label+' x'+qty);
+  });
+  document.querySelectorAll('.acc-row-custom').forEach(function(row){
+    var name=row.querySelector('.ax-name').value.trim().replace(/,/g,' ').replace(/\sx(?=\d)/g,' ').replace(/\s=/g,' ').trim();
+    var qty=parseInt(row.querySelector('.ax-qty').value)||1;
+    var price=parseInt(row.querySelector('.ax-price').value.replace(/[^0-9]/g,''))||0;
+    if(name && price) accs.push(name+' x'+qty+' ='+price);
   });
   document.getElementById('accessories').value=accs.join(', ');
 }
@@ -882,7 +905,9 @@ def intake_wizard_page(today: str) -> str:
       <div class="card-title">Phụ kiện & đặt cọc</div>
       <label>Phụ kiện</label>
       {acc_rows}
-      <div class="field-grid">
+      <div id="extra-acc-container"></div>
+      <button type="button" class="btn done" onclick="addExtraAccRow()">+ Thêm phụ kiện khác</button>
+      <div class="field-grid mt-3">
         <div class="fld"><label>Đã đặt cọc (VND)</label>
           <input id="deposit" name="deposit" inputmode="numeric" oninput="fmtMoney(this)" placeholder="VD: 2.000.000"></div>
         <div class="fld"><label>Ngày lắp đặt dự kiến</label>
@@ -1299,13 +1324,17 @@ def _parse_accessories_to_keys(accessories: str) -> dict:
 
 
 def _extras_text(accessories: str) -> str:
-    """Free-form 'chi phí khác' entries as 'Tên - 300.000' lines to pre-fill the
-    editable textarea; round-trips through app._encode_extras on save."""
-    return "\n".join(f"{esc(name)} - {price:,}".replace(",", ".")
-                     for name, price in pricing.extras_of(accessories or ""))
+    """Free-form 'chi phí khác' entries as 'Tên - 300.000' lines (or
+    'Tên x2 - 300.000' when qty>1) to pre-fill the editable textarea;
+    round-trips through app._encode_extras on save."""
+    lines = []
+    for name, qty, price in pricing.extras_of(accessories or ""):
+        qty_part = f" x{qty}" if qty != 1 else ""
+        lines.append(f"{esc(name)}{qty_part} - {price:,}".replace(",", "."))
+    return "\n".join(lines)
 
 
-_EXTRAS_HINT = "Chi phí khác (mỗi dòng: tên - số tiền, VD: Lò xo - 300000)"
+_EXTRAS_HINT = "Chi phí khác (mỗi dòng: tên - số tiền, VD: Lò xo - 300000 hoặc Lò xo x2 - 300000)"
 
 
 def quote_header_form_page(customer: dict, today: str) -> str:
