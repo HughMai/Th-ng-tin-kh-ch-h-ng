@@ -18,6 +18,8 @@ from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.page import PageMargins
+from openpyxl.worksheet.properties import PageSetupProperties
 
 import pricing
 from store import bao_gia_so
@@ -42,7 +44,14 @@ _HEADERS = ["STT", "Nội dung", "Kích thước (m)", "SL", "Diện tích (m²)
 _HIEU_LUC = "15 ngày"  # quote validity shown in the customer block
 
 _DIGITS = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
-_SCALE = ["", "nghìn", "triệu", "tỷ"]
+_SCALE = ["", "nghìn", "triệu"]  # within one 'tỷ' block (10^0 / 10^3 / 10^6)
+
+
+def _scale_word(i: int) -> str:
+    """Scale name for the i-th group of thousands. Repeats 'tỷ' every 10^9 so a
+    fat-fingered total (an extra zero pushing a quote past 999 tỷ) still spells
+    out instead of crashing the export. i=3 -> 'tỷ', 4 -> 'nghìn tỷ', 6 -> 'tỷ tỷ'."""
+    return (_SCALE[i % 3] + " tỷ" * (i // 3)).strip()
 
 
 def _ascii_upper(s: str) -> str:
@@ -103,7 +112,7 @@ def doc_so_tien(n: int) -> str:
             continue
         words = _read_group(g, emitted)
         if i > 0:
-            words.append(_SCALE[i])
+            words.append(_scale_word(i))
         chunks.append(" ".join(words))
         emitted = True
     s = ", ".join(chunks)
@@ -138,8 +147,9 @@ def _door_line(item: dict, customer_type: str) -> dict:
     else:
         thanh_tien = item["thanh_tien"]
         don_gia = round(thanh_tien / area) if area else thanh_tien
+    ghi_chu = " · ".join(x for x in (item.get("mau_sac"), item.get("ghi_chu")) if x)
     return {"desc": _describe(item), "ngang_m": ngang_m, "cao_m": cao_m, "area": area,
-            "don_gia": don_gia, "thanh_tien": thanh_tien, "ghi_chu": item.get("mau_sac") or ""}
+            "don_gia": don_gia, "thanh_tien": thanh_tien, "ghi_chu": ghi_chu}
 
 
 def _dim(m: float) -> str:
@@ -328,6 +338,19 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         "- Lắp đặt: Có mặt khảo sát trong ngày. Lắp xong, chạy thử, nghiệm thu hài lòng mới thanh toán.",
     ):
         band(row, line, size=10, color=_INK); row += 1
+
+    # ── Print setup: one A4 page ─────────────────────────────────────────
+    # Without this, Excel prints with its default page setup and the 8 columns
+    # spill onto a 2nd/3rd sheet. Scale-to-fit (1 page wide × 1 tall) keeps the
+    # whole báo giá on a single page whatever the door count.
+    ws.print_area = f"A1:H{row - 1}"
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.paperSize = 9  # A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_margins = PageMargins(left=0.3, right=0.3, top=0.4, bottom=0.4,
+                                  header=0.2, footer=0.2)
 
     buf = io.BytesIO()
     wb.save(buf)

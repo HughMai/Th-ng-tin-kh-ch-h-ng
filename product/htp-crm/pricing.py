@@ -173,6 +173,13 @@ def line_total(price_per_unit: int, ngang_mm: int, cao_mm: int,
     return base + surcharge + flat_vnd
 
 
+def manual_line_total(dongia_per_m2: int, ngang_mm: int, cao_mm: int) -> int:
+    """Special hand-entered price: đơn giá in FULL đ/m² × door area, no catalog
+    surcharges (it's a negotiated all-in rate). đơn giá here is NOT the ×1000
+    scaled table value — it's full VND per m², e.g. 1_300_000."""
+    return (dongia_per_m2 or 0) * (ngang_mm or 0) * (cao_mm or 0) // 1_000_000
+
+
 # ── Phụ kiện (accessories) — priced, ported from the Apps Script calculator ──
 # Catalog shared by the quote forms (views.py) and the price math below. Keys are
 # form-field-safe; labels are the exact strings stored in ``quotes.accessories``

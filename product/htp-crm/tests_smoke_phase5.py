@@ -89,12 +89,28 @@ inbound_text = r_inbound.json()["reply"]
 assert "₫" not in inbound_text, "viec reply must not contain VND"
 print("6. /bot/digest + no VND leakage OK")
 
-# ---- 7. BOT_TOKEN unset -> /bot/inbound 403; rest of the app still works -------
+# ---- 7. "cua"/"cửa" -> production queue reply (chờ/đang sản xuất only) --------
+r = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "cua"}, headers=HDR)
+assert r.status_code == 200, r.text
+cua_reply = r.json()["reply"]
+assert "Cô Lan" in cua_reply and "Chờ sản xuất" in cua_reply, f"production list missing order: {cua_reply}"
+assert "₫" not in cua_reply, "cua reply must not contain VND"
+r = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "cửa"}, headers=HDR)
+assert r.json()["reply"] == cua_reply, "cua/cửa should be equivalent"
+print("7. cua/cua-accented command OK")
+
+# ---- 8. /bot/digest combines production queue + lắp đặt work list -------------
+r = client.get("/bot/digest", headers=HDR)
+combined = r.json()["text"]
+assert "ĐANG SẢN XUẤT" in combined and "CÔNG VIỆC" in combined, f"digest missing a section: {combined}"
+print("8. /bot/digest combines production + job list OK")
+
+# ---- 9. BOT_TOKEN unset -> /bot/inbound 403; rest of the app still works -------
 app.BOT_TOKEN = ""
 r = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "viec"}, headers=HDR)
 assert r.status_code == 403, f"unset BOT_TOKEN should still 403: {r.status_code}"
 r = client.get("/login")
 assert r.status_code == 200, f"app broken with BOT_TOKEN unset: {r.status_code}"
-print("7. bot fully optional (BOT_TOKEN unset) OK")
+print("9. bot fully optional (BOT_TOKEN unset) OK")
 
 print("ALL PHASE 5 SMOKE TESTS PASSED")

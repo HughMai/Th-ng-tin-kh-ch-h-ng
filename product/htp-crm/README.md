@@ -42,14 +42,16 @@ and set the real `GOOGLE_REVIEW_LINK` before the parents use it.**
 "+ Nhiều hạng mục" on the Báo giá tab starts the real price calculator, ported
 from the original `customer_form/index.html` tool: pick a customer → capture
 accessories/deposit/install date → add door-unit line items (Cửa Cuốn / Cửa
-Kéo / Cửa Nhôm Kính / Nhôm Xingfa) with cascading công nghệ/mẫu dropdowns and
-ngang×cao dimensions. The server (`pricing.py`) authoritatively computes the
-price from the same KH/ĐL dual-tier table the original tool used — the
-in-browser preview is UX only, never trusted. **Cửa Nhôm Kính and Nhôm Xingfa
-have no price-table data yet** (gap in the original tool) — those items fall
-back to a required manual VND field. Line items sum into the quote's total
-automatically. The old single-item "+ Thêm báo giá" (hand-typed price) still
-works unchanged for quick verbal quotes to repeat customers.
+Kéo / Cửa Nhôm Kính) with cascading công nghệ/mẫu dropdowns and ngang×cao
+dimensions. The server (`pricing.py`) authoritatively computes the price from
+the same KH/ĐL dual-tier table the original tool used — the in-browser
+preview is UX only, never trusted. Every mẫu in the dropdowns has a matching
+table price; the manual VND fallback only kicks in for a combo the table
+truly has no entry for. Line items sum into the quote's total automatically.
+The old single-item "+ Thêm báo giá" (hand-typed price) still works unchanged
+for quick verbal quotes to repeat customers. Full pricing logic (in
+Vietnamese, for the family to reference/edit) lives in
+`BAOGIA-PRICING-LOGIC.md`.
 
 ## Desktop shell (GHL-style)
 

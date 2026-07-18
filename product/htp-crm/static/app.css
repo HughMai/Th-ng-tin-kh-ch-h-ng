@@ -202,6 +202,9 @@ details.card>summary{font-weight:600;min-height:32px;display:flex;align-items:ce
 .unit-price{font-size:var(--fs-sm);font-weight:600;color:var(--brand);margin-top:6px;
  font-variant-numeric:tabular-nums}
 .unit-price.manual{color:var(--warn-text)}
+.u-manual-toggle{display:flex;align-items:center;gap:var(--sp-2);margin-top:8px;
+ font-size:var(--fs-sm);font-weight:500;color:var(--ink);cursor:pointer}
+.u-manual-toggle input{width:auto;margin:0}
 .acc-row{display:flex;gap:var(--sp-2);align-items:center;margin-bottom:var(--sp-2)}
 .acc-row label{flex:2;margin:0;display:flex;align-items:center;gap:var(--sp-2);
  font-weight:500;color:var(--ink);font-size:15px}

@@ -85,8 +85,21 @@ function showToast(t){
   setTimeout(function(){ el.classList.remove('show'); }, 1600);
 }
 function fmtMoney(inp){
-  var v = inp.value.replace(/\\D/g, '');
-  inp.value = v.replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.');
+  // Keep the field as plain digits WHILE typing — do NOT re-insert grouping dots
+  // on every keystroke. Rewriting .value mid-keystroke makes phone keyboards
+  // (GBoard) re-commit the digit just typed, which multiplied "3000000" into
+  // "3333000000" on both the đặt-cọc and phụ-kiện price fields. Grouping into
+  // 3.000.000 is applied once on blur instead — when the keyboard is dismissing,
+  // so there is nothing left to re-commit.
+  var d = inp.value.replace(/\\D/g, '');
+  if (d !== inp.value) inp.value = d;
+  if (!inp._grp){
+    inp._grp = true;
+    inp.addEventListener('blur', function(){
+      var v = inp.value.replace(/\\D/g, '');
+      inp.value = v ? v.replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.') : '';
+    });
+  }
 }
 function logGoi(id){ if(navigator.sendBeacon) navigator.sendBeacon('/khach/'+id+'/goi'); }
 """
@@ -659,7 +672,8 @@ function buildUnit(type){
     +   '<div class="fld"><label>Cao (mm)</label><input class="u-cao" inputmode="numeric" maxlength="4" placeholder="VD: 2200"></div>'
     + '</div>'
     + '<div class="unit-price">Chọn đầy đủ để xem giá</div>'
-    + '<div class="u-manual-wrap" style="display:none"><label>Giá nhập tay (VND)</label><input class="u-manual" inputmode="numeric" placeholder="VD: 12.000.000"></div>'
+    + '<label class="u-manual-toggle"><input type="checkbox" class="u-manual-on"> Giá đặc biệt (nhập tay)</label>'
+    + '<div class="u-manual-wrap" style="display:none"><label>Đơn giá tay (đ/m²)</label><input class="u-manual" inputmode="numeric" placeholder="VD: 1.300.000"></div>'
     + '<div class="fld"><label>Ghi chú</label><textarea data-key="ghi_chu" rows="2" placeholder="VD: khách yêu cầu ray nhôm, lắp mặt trong..."></textarea></div>';
   return div;
 }
@@ -700,27 +714,29 @@ function priceUnit(b){
   var price=table[key];
   var priceEl=b.querySelector('.unit-price');
   var manualWrap=b.querySelector('.u-manual-wrap');
-  if(price && ngang && cao){
+  var manualOn=b.querySelector('.u-manual-on').checked;
+  var manualActive=manualOn || (!price && (cn||m));
+  if(manualActive){
+    manualWrap.style.display='block'; priceEl.classList.add('manual');
+    var dg=parseInt(b.querySelector('.u-manual').value.replace(/[^0-9]/g,''))||0;
+    var mtotal=(dg && ngang && cao)?Math.floor(dg*ngang*cao/1000000):0;
+    b.dataset.match='0'; b.dataset.manual='1'; b.dataset.total=mtotal;
+    if(mtotal) priceEl.textContent='Thành tiền: '+mtotal.toLocaleString('vi-VN')+'đ (giá đặc biệt)';
+    else if(manualOn) priceEl.textContent='Nhập đơn giá tay (đ/m²)';
+    else priceEl.textContent='Không có bảng giá — nhập đơn giá tay (đ/m²)';
+  } else if(price && ngang && cao){
     var total=Math.floor(price*ngang*cao/1000);
     priceEl.textContent='Thành tiền: '+total.toLocaleString('vi-VN')+'đ (theo bảng giá)';
     priceEl.classList.remove('manual'); manualWrap.style.display='none';
-    b.dataset.match='1'; b.dataset.total=total;
+    b.dataset.match='1'; b.dataset.manual='0'; b.dataset.total=total;
   } else {
-    b.dataset.match='0'; b.dataset.total=0;
-    if(cn||m){
-      priceEl.textContent='Không có bảng giá — nhập giá tay bên dưới';
-      priceEl.classList.add('manual'); manualWrap.style.display='block';
-    } else {
-      priceEl.textContent='Chọn đầy đủ để xem giá';
-      priceEl.classList.remove('manual'); manualWrap.style.display='none';
-    }
+    b.dataset.match='0'; b.dataset.manual='0'; b.dataset.total=0;
+    priceEl.textContent='Chọn đầy đủ để xem giá';
+    priceEl.classList.remove('manual'); manualWrap.style.display='none';
   }
   updateTotal();
 }
-function unitTotal(b){
-  if(b.dataset.match==='1') return parseInt(b.dataset.total)||0;
-  return parseInt(b.querySelector('.u-manual').value.replace(/[^0-9]/g,''))||0;
-}
+function unitTotal(b){ return parseInt(b.dataset.total)||0; }
 function updateTotal(){
   var sum=0; var blocks=document.querySelectorAll('.unit-block');
   blocks.forEach(function(b){ sum+=unitTotal(b); });
@@ -741,12 +757,13 @@ function removeUnit(b){
   cont.addEventListener('change', function(e){
     var b=e.target.closest('.unit-block'); if(!b) return;
     if(e.target.dataset.key){ onUnitField(b, e.target.dataset.key); }
+    else if(e.target.classList.contains('u-manual-on')){ priceUnit(b); }
   });
   cont.addEventListener('input', function(e){
     var b=e.target.closest('.unit-block'); if(!b) return;
     if(e.target.classList.contains('u-ngang') || e.target.classList.contains('u-cao')){
       e.target.value=e.target.value.replace(/[^0-9]/g,'').slice(0,4); priceUnit(b);
-    } else if(e.target.classList.contains('u-manual')){ fmtMoney(e.target); updateTotal(); }
+    } else if(e.target.classList.contains('u-manual')){ fmtMoney(e.target); priceUnit(b); }
   });
   cont.addEventListener('click', function(e){
     if(e.target.classList.contains('ux')){ removeUnit(e.target.closest('.unit-block')); }
@@ -797,6 +814,7 @@ function serializeWizard(){
       ghi_chu:unitField(b,'ghi_chu').value.trim(),
       ngang:parseInt(b.querySelector('.u-ngang').value)||0,
       cao:parseInt(b.querySelector('.u-cao').value)||0,
+      manual:b.querySelector('.u-manual-on').checked?'1':'',
       gia_manual:b.querySelector('.u-manual').value.replace(/[^0-9]/g,'')
     });
   });
@@ -1583,15 +1601,21 @@ function updatePreview() {{
   var preview = document.getElementById('price_preview');
   var manualWrap = document.getElementById('manual_price_wrap');
   var manualInput = document.getElementById('gia_thu_cong');
-  if (price && ngang && cao) {{
+  var manualOn = document.getElementById('manual_on').checked;
+  var manualActive = manualOn || !(price && ngang && cao);
+  if (manualActive) {{
+    manualWrap.style.display = 'block';
+    manualInput.required = true;
+    var dg = parseInt(manualInput.value.replace(/[^0-9]/g, '')) || 0;
+    var mtotal = (dg && ngang && cao) ? Math.floor(dg * ngang * cao / 1000000) : 0;
+    if (mtotal) preview.textContent = 'Ước tính: ' + mtotal.toLocaleString('vi-VN') + 'đ (giá đặc biệt)';
+    else if (manualOn) preview.textContent = 'Nhập đơn giá tay (đ/m²)';
+    else preview.textContent = 'Không có bảng giá cho lựa chọn này — nhập đơn giá tay (đ/m²)';
+  }} else {{
     var total = Math.floor(price * ngang * cao / 1000);
     preview.textContent = 'Ước tính: ' + total.toLocaleString('vi-VN') + 'đ (theo bảng giá)';
     manualWrap.style.display = 'none';
     manualInput.required = false;
-  }} else {{
-    preview.textContent = 'Không có bảng giá cho lựa chọn này — nhập giá tay bên dưới';
-    manualWrap.style.display = 'block';
-    manualInput.required = true;
   }}
 }}
 function prefillEdit(product, values) {{
@@ -1610,20 +1634,25 @@ function prefillEdit(product, values) {{
   }});
   document.getElementById('ngang').value = values.ngang || '';
   document.getElementById('cao').value = values.cao || '';
-  if (values.gia_thu_cong) document.getElementById('gia_thu_cong').value = values.gia_thu_cong;
+  if (values.is_manual) {{
+    document.getElementById('manual_on').checked = true;
+    if (values.dongia) document.getElementById('gia_thu_cong').value = values.dongia.toLocaleString('vi-VN');
+  }}
   updatePreview();
 }}
 document.addEventListener('DOMContentLoaded', updatePreview);
 </script>"""
 
     if item:
+        _area = (item["ngang_mm"] or 0) * (item["cao_mm"] or 0)
+        _dongia = round(item["thanh_tien"] * 1_000_000 / _area) if (item["is_manual_price"] and _area) else 0
         prefill = f"""
 <script>document.addEventListener('DOMContentLoaded', function() {{
   prefillEdit({json.dumps(item["product"], ensure_ascii=False)}, {{
     cong_nghe: {json.dumps(item["cong_nghe"] or "", ensure_ascii=False)},
     mau: {json.dumps(item["mau"] or "", ensure_ascii=False)},
     ngang: {item["ngang_mm"]}, cao: {item["cao_mm"]},
-    gia_thu_cong: {item["thanh_tien"] if item["is_manual_price"] else 0}
+    is_manual: {1 if item["is_manual_price"] else 0}, dongia: {_dongia}
   }});
 }});</script>"""
         form_action = f'/bao-gia/{quote["id"]}/hang-muc/{item["id"]}/sua'
@@ -1651,9 +1680,10 @@ document.addEventListener('DOMContentLoaded', updatePreview);
     </div>
   </div>
   <div class="total" id="price_preview">Chọn đầy đủ để xem giá</div>
+  <label class="u-manual-toggle"><input type="checkbox" id="manual_on" name="manual" value="1" onchange="updatePreview()"> Giá đặc biệt (nhập tay)</label>
   <div id="manual_price_wrap" style="display:none">
-    <label>Giá nhập tay (VND)</label>
-    <input id="gia_thu_cong" name="gia_thu_cong" inputmode="numeric" oninput="fmtMoney(this)" placeholder="VD: 12.000.000">
+    <label>Đơn giá tay (đ/m²)</label>
+    <input id="gia_thu_cong" name="gia_thu_cong" inputmode="numeric" oninput="fmtMoney(this);updatePreview()" placeholder="VD: 1.300.000">
   </div>
   <label>Ghi chú</label>
   <textarea name="ghi_chu" placeholder="VD: khách yêu cầu ray nhôm, lắp mặt trong...">{esc(item["ghi_chu"] or "") if item else ""}</textarea>

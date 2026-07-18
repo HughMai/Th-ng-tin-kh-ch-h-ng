@@ -9,8 +9,8 @@ it with data that lights up every Hôm nay section on first load:
   - KH order installed 3 days ago              -> "Xin đánh giá"
   - dealer: 2 charges + 1 payment 45 days ago  -> "Công nợ cần thu"
   - manual reminder due today                  -> "Nhắc hôm nay"
-  - multi-item báo giá: auto-priced cửa cuốn (Đức KV380) + manual-priced
-    nhôm kính + xingfa line item -> exercises the calculator flow end-to-end
+  - multi-item báo giá: auto-priced cửa cuốn (Đức KV380) + auto-priced
+    nhôm kính (Nhôm Việt) line item -> exercises the calculator flow end-to-end
 
 NEVER run against the production database.
 """
@@ -99,7 +99,7 @@ def main() -> None:
     # --- manual reminder due today -------------------------------------------
     store.create_reminder(kh_tuan, iso(today), "Khách hẹn gọi lại bàn thêm về màu cửa")
 
-    # --- multi-item báo giá (calculator flow): auto-priced + manual + xingfa ---
+    # --- multi-item báo giá (calculator flow): two auto-priced door types ---
     multi_quote = store.create_quote_header(
         kh_hung, accessories="Motor x1, Remote x2", deposit_vnd=3_000_000,
         install_date=iso(today + timedelta(days=14)), note="Khách muốn màu ghi",
@@ -107,10 +107,9 @@ def main() -> None:
     price = pricing.get_price("cua_cuon", "Cửa cuốn công nghệ Đức", "KV 380", "KH")
     store.add_quote_item(multi_quote, "cua_cuon", "Cửa cuốn công nghệ Đức", "KV 380",
                         3000, 2200, pricing.line_total(price, 3000, 2200), is_manual_price=False)
-    store.add_quote_item(multi_quote, "nhom_kinh", "Nhôm Việt", "Cửa số",
-                        1200, 2000, 3_500_000, is_manual_price=True)  # no table entry -> manual
-    store.add_quote_item(multi_quote, "xingfa", None, "Series 55 - 1.2mm",
-                        1000, 2000, 1_200_000, is_manual_price=True)  # xingfa has no price table at all
+    nk_price = pricing.get_price("nhom_kinh", "Nhôm Việt", "Cửa sổ 1.2ly", "KH")
+    store.add_quote_item(multi_quote, "nhom_kinh", "Nhôm Việt", "Cửa sổ 1.2ly",
+                        1200, 2000, pricing.line_total(nk_price, 1200, 2000), is_manual_price=False)
 
     print(f"Seeded demo data into {DB_PATH} (today = {today})")
 

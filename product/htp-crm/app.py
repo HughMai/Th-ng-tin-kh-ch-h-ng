@@ -341,12 +341,14 @@ def intake_submit(request: Request, name: str = Form(...), phone: str = Form(...
         product = u["product"]
         cong_nghe = (u.get("cong_nghe") or "").strip()
         mau = (u.get("mau") or "").strip()
+        manual_on = bool(u.get("manual"))
         table_price = pricing.get_price(product, cong_nghe, mau, type)
-        if table_price is not None:
+        if table_price is not None and not manual_on:
             per_sqm, flat = pricing.get_surcharges(product, cong_nghe, pricing.area_m2(ngang, cao))
             thanh_tien, is_manual = pricing.line_total(table_price, ngang, cao, per_sqm, flat), False
         else:
-            thanh_tien, is_manual = _parse_vnd(u.get("gia_manual", "")) or 0, True
+            dongia = _parse_vnd(u.get("gia_manual", "")) or 0
+            thanh_tien, is_manual = pricing.manual_line_total(dongia, ngang, cao), True
         if not thanh_tien:
             continue  # no table match and no manual price — skip junk
         priced.append((product, cong_nghe, mau, (u.get("mau_sac") or "").strip(),
@@ -661,16 +663,17 @@ def quote_item_new_form(request: Request, quote_id: int):
 
 
 def _price_quote_item(loai_cua: str, cong_nghe: str, mau: str, ngang_mm: int, cao_mm: int,
-                      customer_type: str, gia_thu_cong: str) -> tuple:
-    """Table price if one matches, else the submitted manual price. Server
-    always owns the price when the table has an authoritative answer — same
-    principle as product/qr-menu/app.py's api_order re-pricing. Shared by
-    add and edit so both paths price identically."""
+                      customer_type: str, gia_thu_cong: str, manual_override: bool = False) -> tuple:
+    """Table price if one matches, else the submitted manual đơn giá (đ/m² × area).
+    Server always owns the price when the table has an authoritative answer — same
+    principle as product/qr-menu/app.py's api_order re-pricing. ``manual_override``
+    forces the manual đơn giá even when the catalog has a price (giá đặc biệt for
+    old customers). Shared by add and edit so both paths price identically."""
     price = pricing.get_price(loai_cua, cong_nghe, mau, customer_type)
-    if price is not None:
+    if price is not None and not manual_override:
         per_sqm, flat = pricing.get_surcharges(loai_cua, cong_nghe, pricing.area_m2(ngang_mm, cao_mm))
         return pricing.line_total(price, ngang_mm, cao_mm, per_sqm, flat), False
-    thanh_tien = _parse_vnd(gia_thu_cong) or 0
+    thanh_tien = pricing.manual_line_total(_parse_vnd(gia_thu_cong) or 0, ngang_mm, cao_mm)
     if not thanh_tien:
         raise HTTPException(status_code=400, detail="Không có bảng giá cho lựa chọn này — cần nhập giá tay")
     return thanh_tien, True
@@ -680,7 +683,8 @@ def _price_quote_item(loai_cua: str, cong_nghe: str, mau: str, ngang_mm: int, ca
 def quote_item_new(request: Request, quote_id: int, loai_cua: str = Form(...),
                    cong_nghe: str = Form(""), mau: str = Form(""),
                    ngang: str = Form(...), cao: str = Form(...),
-                   gia_thu_cong: str = Form(""), ghi_chu: str = Form("")):
+                   gia_thu_cong: str = Form(""), ghi_chu: str = Form(""),
+                   manual: str = Form("")):
     if r := _guard(request):
         return r
     q = store.get_quote(quote_id)
@@ -689,7 +693,7 @@ def quote_item_new(request: Request, quote_id: int, loai_cua: str = Form(...),
     _reject_if_ordered(q)
     ngang_mm, cao_mm = _parse_dim(ngang, cao)
     thanh_tien, is_manual = _price_quote_item(loai_cua, cong_nghe, mau, ngang_mm, cao_mm,
-                                              q["customer_type"], gia_thu_cong)
+                                              q["customer_type"], gia_thu_cong, bool(manual))
     store.add_quote_item(quote_id, loai_cua, cong_nghe, mau, ngang_mm, cao_mm, thanh_tien, is_manual,
                          ghi_chu=ghi_chu)
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
@@ -712,7 +716,8 @@ def quote_item_edit_form(request: Request, quote_id: int, item_id: int):
 def quote_item_edit(request: Request, quote_id: int, item_id: int, loai_cua: str = Form(...),
                     cong_nghe: str = Form(""), mau: str = Form(""),
                     ngang: str = Form(...), cao: str = Form(...),
-                    gia_thu_cong: str = Form(""), ghi_chu: str = Form("")):
+                    gia_thu_cong: str = Form(""), ghi_chu: str = Form(""),
+                    manual: str = Form("")):
     if r := _guard(request):
         return r
     q = store.get_quote(quote_id)
@@ -722,7 +727,7 @@ def quote_item_edit(request: Request, quote_id: int, item_id: int, loai_cua: str
     _reject_if_ordered(q)
     ngang_mm, cao_mm = _parse_dim(ngang, cao)
     thanh_tien, is_manual = _price_quote_item(loai_cua, cong_nghe, mau, ngang_mm, cao_mm,
-                                              q["customer_type"], gia_thu_cong)
+                                              q["customer_type"], gia_thu_cong, bool(manual))
     store.update_quote_item(item_id, loai_cua, cong_nghe, mau, ngang_mm, cao_mm, thanh_tien, is_manual,
                             ghi_chu=ghi_chu)
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
@@ -879,7 +884,6 @@ def order_set_stage(request: Request, order_id: int, stage: str = Form(...)):
         store.set_order_stage(order_id, stage)
     except ValueError:
         raise HTTPException(status_code=400, detail="Giai đoạn không hợp lệ")
-    _stage_ping(order_id, stage)
     return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
 
 
@@ -888,8 +892,6 @@ def order_set_install(request: Request, order_id: int, install_date: str = Form(
     if r := _guard(request):
         return r
     store.set_order_install(order_id, install_date)
-    if install_date:
-        _install_ping(order_id, install_date)
     return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
 
 
@@ -1429,19 +1431,6 @@ def _care_replies(today: str) -> list:
     return replies
 
 
-def _stage_ping(order_id: int, stage: str) -> None:
-    # No "Hoàn thành" ping — the group is a to-do list, not a completion log.
-    # (xong <N> already skips this path entirely; this guards the CRM-side
-    # manual stage change too.)
-    if stage == "hoan_thanh":
-        return
-    o = store.get_order(order_id)
-    if not o:
-        return
-    label = views.STAGE_LABELS.get(stage, stage)
-    _bot_send(f"🔔 {o['customer_name']} — {_job_desc(o)}: {label}")
-
-
 def _new_order_ping(order_id: int) -> None:
     # Doors only, same filter as the order page's copy-to-Zalo handoff —
     # phụ kiện/generic lines have no kích thước.
@@ -1452,13 +1441,6 @@ def _new_order_ping(order_id: int) -> None:
     if not door_items:
         return
     _bot_send(views.production_message_no_price(o, door_items))
-
-
-def _install_ping(order_id: int, install_date: str) -> None:
-    o = store.get_order(order_id)
-    if not o:
-        return
-    _bot_send(f"🔔 {o['customer_name']} — {_job_desc(o)}: lắp {views.fmt_date(install_date)}")
 
 
 def _check_bot_token(request: Request) -> None:
