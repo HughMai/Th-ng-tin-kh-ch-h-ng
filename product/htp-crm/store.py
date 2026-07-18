@@ -133,6 +133,7 @@ def configure(db_path: str) -> None:
                 ngang_mm        INTEGER NOT NULL,
                 cao_mm          INTEGER NOT NULL,
                 mau_sac         TEXT,
+                ghi_chu         TEXT,
                 thanh_tien      INTEGER NOT NULL,
                 is_manual_price INTEGER NOT NULL DEFAULT 0,
                 sort_order      INTEGER NOT NULL DEFAULT 0
@@ -181,6 +182,7 @@ def configure(db_path: str) -> None:
                 ngang_mm        INTEGER,
                 cao_mm          INTEGER,
                 mau_sac         TEXT,
+                ghi_chu         TEXT,
                 description     TEXT,
                 so_luong        INTEGER NOT NULL DEFAULT 1,
                 don_gia         INTEGER,
@@ -192,6 +194,7 @@ def configure(db_path: str) -> None:
             """
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)")
+        _migrate_order_items_columns(db)
         # Payments against an order (cọc + thanh toán). Balance is derived at
         # READ time (orders.value_vnd - SUM(amount_vnd)) — same no-cron pattern
         # as debt_entries. This covers KH (retail) jobs; dealers (ĐL) keep using
@@ -405,6 +408,7 @@ def _migrate_orders_columns(db: sqlite3.Connection) -> None:
         ("stage", "TEXT NOT NULL DEFAULT 'cho_san_xuat'"),  # cho_san_xuat|dang_san_xuat|dang_lap|hoan_thanh
         ("urgent", "INTEGER NOT NULL DEFAULT 0"),
         ("urgent_at", "TEXT"),  # when it was flagged gấp (for the notify message)
+        ("note", "TEXT"),  # ghi chú sản xuất/lắp đặt — carried from the báo giá on chốt, editable after
     ):
         if col not in existing:
             db.execute(f"ALTER TABLE orders ADD COLUMN {col} {coltype}")
@@ -412,10 +416,21 @@ def _migrate_orders_columns(db: sqlite3.Connection) -> None:
 
 def _migrate_quote_items_columns(db: sqlite3.Connection) -> None:
     """Additive: mau_sac (door colour) — captured by the intake wizard. Distinct
-    from the overloaded ``mau`` column, which holds the priced model, not colour."""
+    from the overloaded ``mau`` column, which holds the priced model, not colour.
+    ghi_chu (free-text note per door) — carried onto order_items on chốt."""
     existing = {row["name"] for row in db.execute("PRAGMA table_info(quote_items)")}
     if "mau_sac" not in existing:
         db.execute("ALTER TABLE quote_items ADD COLUMN mau_sac TEXT")
+    if "ghi_chu" not in existing:
+        db.execute("ALTER TABLE quote_items ADD COLUMN ghi_chu TEXT")
+
+
+def _migrate_order_items_columns(db: sqlite3.Connection) -> None:
+    """Additive: ghi_chu (free-text note per door), snapshotted from the quote
+    item on chốt — same field as quote_items.ghi_chu."""
+    existing = {row["name"] for row in db.execute("PRAGMA table_info(order_items)")}
+    if "ghi_chu" not in existing:
+        db.execute("ALTER TABLE order_items ADD COLUMN ghi_chu TEXT")
 
 
 def _migrate_debt_entries_columns(db: sqlite3.Connection) -> None:
@@ -482,25 +497,29 @@ def update_customer(customer_id: int, name: str, phone: str, type_: str, source:
         return cur.rowcount > 0
 
 
-_DELETE_BLOCKER_LABELS = (("quotes", "báo giá"), ("orders", "đơn hàng"),
-                          ("debt_entries", "công nợ"), ("reminders", "nhắc hẹn"))
-
-
-def delete_customer(customer_id: int) -> Optional[list]:
-    """Deletes only if the customer has zero quotes/orders/debt/reminders —
-    real business + warranty records that must never silently disappear on a
-    misclick. Returns None on success, or a list of blocking record
-    descriptions (e.g. ["1 đơn hàng"]) if deletion was refused."""
+def delete_customer(customer_id: int) -> None:
+    """Deletes the customer AND every related record — quote_items/quotes,
+    order_items/order_payments/service_calls/orders, debt_entries, reminders,
+    touches. Irreversible; the UI gates this behind a double confirm() on the
+    "Xóa khách hàng" button (customers_page) since it wipes real order/warranty/
+    debt history, not just the lead card."""
     with _connect() as db:
-        blockers = []
-        for table, label in _DELETE_BLOCKER_LABELS:
-            n = db.execute(f"SELECT COUNT(*) FROM {table} WHERE customer_id=?", (customer_id,)).fetchone()[0]
-            if n:
-                blockers.append(f"{n} {label}")
-        if blockers:
-            return blockers
+        order_ids = [r["id"] for r in
+                     db.execute("SELECT id FROM orders WHERE customer_id=?", (customer_id,)).fetchall()]
+        quote_ids = [r["id"] for r in
+                     db.execute("SELECT id FROM quotes WHERE customer_id=?", (customer_id,)).fetchall()]
+        for oid in order_ids:
+            db.execute("DELETE FROM order_items WHERE order_id=?", (oid,))
+            db.execute("DELETE FROM order_payments WHERE order_id=?", (oid,))
+            db.execute("DELETE FROM service_calls WHERE order_id=?", (oid,))
+        for qid in quote_ids:
+            db.execute("DELETE FROM quote_items WHERE quote_id=?", (qid,))
+        db.execute("DELETE FROM orders WHERE customer_id=?", (customer_id,))
+        db.execute("DELETE FROM quotes WHERE customer_id=?", (customer_id,))
+        db.execute("DELETE FROM debt_entries WHERE customer_id=?", (customer_id,))
+        db.execute("DELETE FROM reminders WHERE customer_id=?", (customer_id,))
+        db.execute("DELETE FROM touches WHERE customer_id=?", (customer_id,))
         db.execute("DELETE FROM customers WHERE id=?", (customer_id,))
-    return None
 
 
 def get_customer(customer_id: int) -> Optional[dict]:
@@ -718,7 +737,7 @@ def create_quote_header(customer_id: int, accessories: str = "", deposit_vnd: Op
 
 def add_quote_item(quote_id: int, product: str, cong_nghe: str, mau: str,
                    ngang_mm: int, cao_mm: int, thanh_tien: int, is_manual_price: bool,
-                   mau_sac: str = "") -> int:
+                   mau_sac: str = "", ghi_chu: str = "") -> int:
     with _connect() as db:
         next_sort = db.execute(
             "SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM quote_items WHERE quote_id = ?",
@@ -726,9 +745,10 @@ def add_quote_item(quote_id: int, product: str, cong_nghe: str, mau: str,
         ).fetchone()["n"]
         cur = db.execute(
             "INSERT INTO quote_items (quote_id, product, cong_nghe, mau, ngang_mm, cao_mm, "
-            "mau_sac, thanh_tien, is_manual_price, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "mau_sac, ghi_chu, thanh_tien, is_manual_price, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (quote_id, product, cong_nghe or None, mau or None, ngang_mm, cao_mm,
-             (mau_sac or None), thanh_tien, 1 if is_manual_price else 0, next_sort),
+             (mau_sac or None), (ghi_chu or "").strip() or None, thanh_tien,
+             1 if is_manual_price else 0, next_sort),
         )
         item_id = cur.lastrowid
     recompute_quote_derived_fields(quote_id)
@@ -742,7 +762,8 @@ def get_quote_item(item_id: int) -> Optional[dict]:
 
 
 def update_quote_item(item_id: int, product: str, cong_nghe: str, mau: str,
-                      ngang_mm: int, cao_mm: int, thanh_tien: int, is_manual_price: bool) -> None:
+                      ngang_mm: int, cao_mm: int, thanh_tien: int, is_manual_price: bool,
+                      ghi_chu: str = "") -> None:
     """Edit an already-added bộ cửa (wrong kích thước, đổi màu…). Leaves
     mau_sac untouched — this form doesn't collect it, same as add_quote_item's
     caller in quote_item_new."""
@@ -753,9 +774,9 @@ def update_quote_item(item_id: int, product: str, cong_nghe: str, mau: str,
         quote_id = r["quote_id"]
         db.execute(
             "UPDATE quote_items SET product=?, cong_nghe=?, mau=?, ngang_mm=?, cao_mm=?, "
-            "thanh_tien=?, is_manual_price=? WHERE id=?",
+            "thanh_tien=?, is_manual_price=?, ghi_chu=? WHERE id=?",
             (product, cong_nghe or None, mau or None, ngang_mm, cao_mm, thanh_tien,
-             1 if is_manual_price else 0, item_id),
+             1 if is_manual_price else 0, (ghi_chu or "").strip() or None, item_id),
         )
     recompute_quote_derived_fields(quote_id)
 
@@ -910,13 +931,14 @@ def quotes_to_chase(today: str = "") -> list:
 
 def create_order(customer_id: int, product: str, description: str = "",
                  value_vnd: Optional[int] = None, install_date: str = "",
-                 warranty_months: int = 24, quote_id: Optional[int] = None) -> int:
+                 warranty_months: int = 24, quote_id: Optional[int] = None,
+                 note: str = "") -> int:
     with _connect() as db:
         cur = db.execute(
             "INSERT INTO orders (customer_id, quote_id, product, description, value_vnd, "
-            "install_date, warranty_months) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "install_date, warranty_months, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (customer_id, quote_id, product, description.strip() or None, value_vnd,
-             install_date or None, warranty_months),
+             install_date or None, warranty_months, (note or "").strip() or None),
         )
         order_id = cur.lastrowid
     if value_vnd:
@@ -932,7 +954,11 @@ def create_order(customer_id: int, product: str, description: str = "",
 def create_order_from_quote(quote_id: int) -> Optional[int]:
     """Turn a won quote into a production job (đơn hàng) and link them. Carries
     the quote's product/value/desired install date; stage starts 'cho_san_xuat'.
-    Idempotent-ish: if the quote already has an order, returns that order id."""
+    Idempotent-ish: if the quote already has an order, returns that order id.
+    Đại lý customers also get their sổ nợ charged here — chốt is the moment a
+    dealer owes for the job, so the debt_entries ledger gets a 'charge' for the
+    order's VAT-inclusive value (+ an offsetting 'payment' if a cọc was already
+    recorded), same append-only-ledger contract as add_debt_entry."""
     q = get_quote(quote_id)
     if not q:
         return None
@@ -940,11 +966,20 @@ def create_order_from_quote(quote_id: int) -> Optional[int]:
         return q["order_id"]
     product = q["product"] if q["product"] in ("nhom_kinh", "cua_cuon", "cua_keo") else "khac"
     oid = create_order(q["customer_id"], product, q.get("description") or "",
-                       q.get("value_vnd"), q.get("install_date") or "", 24, quote_id)
+                       q.get("value_vnd"), q.get("install_date") or "", 24, quote_id,
+                       note=q.get("note") or "")
     link_quote_order(quote_id, oid)
     snapshot_order_items_from_quote(oid, quote_id)
     if q.get("deposit_vnd"):  # carry the báo giá's đặt cọc as the order's first payment
         add_order_payment(oid, "coc", q["deposit_vnd"], note="Cọc từ báo giá")
+    if q.get("customer_type") == "DL":
+        order_value = get_order(oid)["value_vnd"]
+        if order_value:
+            add_debt_entry(q["customer_id"], "charge", order_value,
+                           note=f"Đơn hàng #{oid}", order_id=oid)
+            if q.get("deposit_vnd"):
+                add_debt_entry(q["customer_id"], "payment", q["deposit_vnd"],
+                               note="Cọc từ báo giá", order_id=oid)
     return oid
 
 
@@ -961,7 +996,7 @@ def order_items_for(order_id: int) -> list:
 def add_order_item(order_id: int, description: str = "", thanh_tien: int = 0, so_luong: int = 1,
                    don_gia: Optional[int] = None, product: str = "khac", cong_nghe: str = "",
                    mau: str = "", ngang_mm: Optional[int] = None, cao_mm: Optional[int] = None,
-                   mau_sac: str = "", is_manual_price: bool = True) -> int:
+                   mau_sac: str = "", is_manual_price: bool = True, ghi_chu: str = "") -> int:
     with _connect() as db:
         next_sort = db.execute(
             "SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM order_items WHERE order_id = ?",
@@ -969,11 +1004,11 @@ def add_order_item(order_id: int, description: str = "", thanh_tien: int = 0, so
         ).fetchone()["n"]
         cur = db.execute(
             "INSERT INTO order_items (order_id, product, cong_nghe, mau, ngang_mm, cao_mm, "
-            "mau_sac, description, so_luong, don_gia, thanh_tien, is_manual_price, sort_order) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "mau_sac, ghi_chu, description, so_luong, don_gia, thanh_tien, is_manual_price, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (order_id, product, cong_nghe or None, mau or None, ngang_mm, cao_mm,
-             mau_sac or None, (description or "").strip() or None, so_luong, don_gia,
-             thanh_tien, 1 if is_manual_price else 0, next_sort),
+             mau_sac or None, (ghi_chu or "").strip() or None, (description or "").strip() or None,
+             so_luong, don_gia, thanh_tien, 1 if is_manual_price else 0, next_sort),
         )
         item_id = cur.lastrowid
     recompute_order_value(order_id)
@@ -1051,10 +1086,10 @@ def snapshot_order_items_from_quote(order_id: int, quote_id: int) -> None:
         for it in items:
             db.execute(
                 "INSERT INTO order_items (order_id, product, cong_nghe, mau, ngang_mm, cao_mm, "
-                "mau_sac, so_luong, don_gia, thanh_tien, is_manual_price, sort_order) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                "mau_sac, ghi_chu, so_luong, don_gia, thanh_tien, is_manual_price, sort_order) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
                 (order_id, it["product"], it["cong_nghe"], it["mau"], it["ngang_mm"],
-                 it["cao_mm"], it["mau_sac"], it["thanh_tien"], it["thanh_tien"],
+                 it["cao_mm"], it["mau_sac"], it["ghi_chu"], it["thanh_tien"], it["thanh_tien"],
                  it["is_manual_price"], sort),
             )
             sort += 1
@@ -1193,11 +1228,25 @@ def delete_order(order_id: int) -> bool:
 
 def orders_active() -> list:
     """Tiến độ (production) — orders not yet hoàn thành. Urgent (gấp) pinned to
-    the top, then oldest chốt first (FIFO)."""
+    the top, then oldest chốt first (FIFO). The /don-hang view regroups these by
+    ngày chốt and relies on this created_at-ASC order for within-day sequencing —
+    the make-by-deadline ordering lives in orders_in_production() instead."""
     with _connect() as db:
         rows = db.execute(
             _ORDER_SELECT + " WHERE o.stage != 'hoan_thanh' "
             "ORDER BY o.urgent DESC, o.created_at ASC, o.id ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def orders_in_production() -> list:
+    """Cửa đang ở xưởng — chờ sản xuất or đang sản xuất. Same ordering
+    convention as orders_active(): urgent (gấp) pinned to the top, then soonest
+    ngày lắp first (undated last) so the make queue follows the deadline."""
+    with _connect() as db:
+        rows = db.execute(
+            _ORDER_SELECT + " WHERE o.stage IN ('cho_san_xuat', 'dang_san_xuat') "
+            "ORDER BY o.urgent DESC, o.install_date IS NULL, o.install_date ASC, o.id ASC"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1225,6 +1274,18 @@ def set_order_install(order_id: int, install_date: str) -> bool:
         cur = db.execute(
             "UPDATE orders SET install_date = ?, updated_at = datetime('now') WHERE id = ?",
             (install_date or None, order_id),
+        )
+        return cur.rowcount > 0
+
+
+def set_order_note(order_id: int, note: str) -> bool:
+    """Ghi chú sản xuất/lắp đặt — free-text, editable any time (đ/c hẻm, gọi
+    trước, yêu cầu riêng). Carried from the báo giá on chốt; shown on the đơn
+    hàng page and in the Zalo group 'cua' list."""
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE orders SET note = ?, updated_at = datetime('now') WHERE id = ?",
+            ((note or "").strip() or None, order_id),
         )
         return cur.rowcount > 0
 
@@ -1506,6 +1567,37 @@ def customer_debts() -> list:
             """
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def settlements(day: str = "") -> list:
+    """Đã thu — the record side of Công nợ. Every KH đơn hàng đã thu đủ (dated by
+    its last payment) plus every ĐL công nợ payment (dated by entry_date), newest
+    first. Pass a VN date to keep only what was settled that day (the same day
+    lens as daily_report). Small shop → fetch all and filter in Python."""
+    with _connect() as db:
+        kh = db.execute(
+            "SELECT o.id AS ref, c.name, 'KH' AS kind, o.value_vnd AS amount_vnd, "
+            "(SELECT p.pay_date FROM order_payments p WHERE p.order_id = o.id "
+            " ORDER BY p.pay_date DESC, p.id DESC LIMIT 1) AS pay_date, "
+            "(SELECT p.method FROM order_payments p WHERE p.order_id = o.id "
+            " ORDER BY p.pay_date DESC, p.id DESC LIMIT 1) AS method, "
+            "NULL AS note "
+            "FROM orders o JOIN customers c ON c.id = o.customer_id "
+            "WHERE c.type = 'KH' AND COALESCE(o.value_vnd, 0) > 0 "
+            "  AND COALESCE(o.value_vnd, 0) - (SELECT COALESCE(SUM(amount_vnd), 0) "
+            "        FROM order_payments p WHERE p.order_id = o.id) <= 0"
+        ).fetchall()
+        dl = db.execute(
+            "SELECT e.customer_id AS ref, c.name, 'DL' AS kind, e.amount_vnd, "
+            "e.entry_date AS pay_date, e.method, e.note "
+            "FROM debt_entries e JOIN customers c ON c.id = e.customer_id "
+            "WHERE e.entry_type = 'payment'"
+        ).fetchall()
+    rows = [dict(r) for r in kh] + [dict(r) for r in dl]
+    if day:
+        rows = [r for r in rows if (r["pay_date"] or "") == day]
+    rows.sort(key=lambda r: ((r["pay_date"] or ""), r["kind"]), reverse=True)
+    return rows
 
 
 def debts_overdue(today: str = "") -> list:

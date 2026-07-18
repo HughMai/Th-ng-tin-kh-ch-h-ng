@@ -349,12 +349,12 @@ def intake_submit(request: Request, name: str = Form(...), phone: str = Form(...
         if not thanh_tien:
             continue  # no table match and no manual price — skip junk
         priced.append((product, cong_nghe, mau, (u.get("mau_sac") or "").strip(),
-                       ngang, cao, thanh_tien, is_manual))
+                       (u.get("ghi_chu") or "").strip(), ngang, cao, thanh_tien, is_manual))
     if priced:
         qid = store.create_quote_header(cid, accessories, _parse_vnd(deposit), install_date, quote_note)
-        for product, cong_nghe, mau, mau_sac, ngang, cao, thanh_tien, is_manual in priced:
+        for product, cong_nghe, mau, mau_sac, ghi_chu, ngang, cao, thanh_tien, is_manual in priced:
             store.add_quote_item(qid, product, cong_nghe, mau, ngang, cao,
-                                 thanh_tien, is_manual, mau_sac)
+                                 thanh_tien, is_manual, mau_sac, ghi_chu)
         return RedirectResponse(f"/bao-gia/{qid}", status_code=303)
     return RedirectResponse(f"/khach/{cid}", status_code=303)
 
@@ -409,10 +409,7 @@ def customer_delete(request: Request, customer_id: int):
         return r
     if not store.get_customer(customer_id):
         raise HTTPException(status_code=404)
-    blockers = store.delete_customer(customer_id)
-    if blockers:
-        raise HTTPException(status_code=400,
-                            detail=f"Không thể xóa — khách này có {', '.join(blockers)}.")
+    store.delete_customer(customer_id)
     return RedirectResponse("/khach", status_code=303)
 
 
@@ -681,7 +678,7 @@ def _price_quote_item(loai_cua: str, cong_nghe: str, mau: str, ngang_mm: int, ca
 def quote_item_new(request: Request, quote_id: int, loai_cua: str = Form(...),
                    cong_nghe: str = Form(""), mau: str = Form(""),
                    ngang: str = Form(...), cao: str = Form(...),
-                   gia_thu_cong: str = Form("")):
+                   gia_thu_cong: str = Form(""), ghi_chu: str = Form("")):
     if r := _guard(request):
         return r
     q = store.get_quote(quote_id)
@@ -691,7 +688,8 @@ def quote_item_new(request: Request, quote_id: int, loai_cua: str = Form(...),
     ngang_mm, cao_mm = _parse_dim(ngang, cao)
     thanh_tien, is_manual = _price_quote_item(loai_cua, cong_nghe, mau, ngang_mm, cao_mm,
                                               q["customer_type"], gia_thu_cong)
-    store.add_quote_item(quote_id, loai_cua, cong_nghe, mau, ngang_mm, cao_mm, thanh_tien, is_manual)
+    store.add_quote_item(quote_id, loai_cua, cong_nghe, mau, ngang_mm, cao_mm, thanh_tien, is_manual,
+                         ghi_chu=ghi_chu)
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
 
 
@@ -712,7 +710,7 @@ def quote_item_edit_form(request: Request, quote_id: int, item_id: int):
 def quote_item_edit(request: Request, quote_id: int, item_id: int, loai_cua: str = Form(...),
                     cong_nghe: str = Form(""), mau: str = Form(""),
                     ngang: str = Form(...), cao: str = Form(...),
-                    gia_thu_cong: str = Form("")):
+                    gia_thu_cong: str = Form(""), ghi_chu: str = Form("")):
     if r := _guard(request):
         return r
     q = store.get_quote(quote_id)
@@ -723,7 +721,8 @@ def quote_item_edit(request: Request, quote_id: int, item_id: int, loai_cua: str
     ngang_mm, cao_mm = _parse_dim(ngang, cao)
     thanh_tien, is_manual = _price_quote_item(loai_cua, cong_nghe, mau, ngang_mm, cao_mm,
                                               q["customer_type"], gia_thu_cong)
-    store.update_quote_item(item_id, loai_cua, cong_nghe, mau, ngang_mm, cao_mm, thanh_tien, is_manual)
+    store.update_quote_item(item_id, loai_cua, cong_nghe, mau, ngang_mm, cao_mm, thanh_tien, is_manual,
+                            ghi_chu=ghi_chu)
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
 
 
@@ -818,13 +817,14 @@ def quote_build(request: Request, quote_id: int):
 # Orders are only ever created by chốt-ing a báo giá (store.create_order_from_quote,
 # triggered from /bao-gia/{id}/trang-thai) — there is no manual "+ Đơn hàng" path.
 @app.get("/don-hang", response_class=HTMLResponse)
-def orders(request: Request, loai: str = ""):
+def orders(request: Request, loai: str = "", ngay: str = ""):
     if r := _guard(request):
         return r
     if loai not in ("cua_cuon", "cua_keo", "nhom_kinh", "khac"):
         loai = ""
+    day = ngay if _valid_day(ngay) else ""
     body = views.orders_page(store.orders_active(), store.orders_completed(),
-                             store.today_vn(), loai=loai)
+                             store.today_vn(), loai=loai, ngay=day)
     return views.page("Đơn hàng", body, active="/don-hang")
 
 
@@ -888,6 +888,16 @@ def order_set_install(request: Request, order_id: int, install_date: str = Form(
     store.set_order_install(order_id, install_date)
     if install_date:
         _install_ping(order_id, install_date)
+    return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
+
+
+@app.post("/don-hang/{order_id}/ghi-chu")
+def order_set_note(request: Request, order_id: int, note: str = Form("")):
+    if r := _guard(request):
+        return r
+    if not store.get_order(order_id):
+        raise HTTPException(status_code=404)
+    store.set_order_note(order_id, note)
     return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
 
 
@@ -1020,12 +1030,17 @@ def order_review_requested(request: Request, order_id: int, next: str = Form("")
 
 # ---- công nợ ------------------------------------------------------------------------
 @app.get("/cong-no", response_class=HTMLResponse)
-def debts(request: Request, loc: str = "tat-ca"):
+def debts(request: Request, loc: str = "tat-ca", ngay: str = ""):
     if r := _guard(request):
         return r
-    if loc not in ("tat-ca", "kh", "dl"):
+    if loc not in ("tat-ca", "kh", "dl", "da-thu"):
         loc = "tat-ca"
-    body = views.debts_page(store.dealer_balances(), store.customer_debts(), loc, store.today_vn())
+    today = store.today_vn()
+    if loc == "da-thu":
+        day = ngay if _valid_day(ngay) else ""
+        body = views.debts_page([], [], loc, today, settlements=store.settlements(day), day=day)
+    else:
+        body = views.debts_page(store.dealer_balances(), store.customer_debts(), loc, today)
     return views.page("Công nợ", body, active="/cong-no")
 
 
@@ -1254,6 +1269,31 @@ def _job_desc(o: dict) -> str:
     return o.get("description") or views.PRODUCT_LABELS.get(o["product"], "")
 
 
+def _production_text() -> str:
+    """Cửa đang ở xưởng — chờ sản xuất or đang sản xuất, ordered by soonest ngày
+    lắp. Each job lists its doors (kích thước + màu) and any ghi chú so the xưởng
+    sees exactly what to make. Not numbered/saved to bot_digest — "xong <N>" only
+    ever resolves against the lắp đặt work list from _digest_text."""
+    rows = store.orders_in_production()
+    if not rows:
+        return ""
+    lines = ["🧵 ĐANG SẢN XUẤT"]
+    for o in rows:
+        label = views.STAGE_LABELS.get(o["stage"], o["stage"])
+        phone = f" — {o['phone']}" if o.get("phone") else ""
+        inst = f" — lắp {views.fmt_date(o['install_date'])}" if o.get("install_date") else ""
+        lines.append(f"• {o['customer_name']} — {_job_desc(o)} — {label}{inst}{phone}")
+        for i in store.order_items_for(o["id"]):
+            if i.get("ngang_mm") and i.get("cao_mm"):
+                mau = f" · {i['mau_sac']}" if i.get("mau_sac") else ""
+                lines.append(f"   ‣ {views._door_desc(i)} {i['ngang_mm']}×{i['cao_mm']}mm{mau}")
+                if i.get("ghi_chu"):
+                    lines.append(f"     Ghi chú: {i['ghi_chu']}")
+        if o.get("note"):
+            lines.append(f"   Ghi chú: {o['note']}")
+    return "\n".join(lines)
+
+
 def _digest_text(today: str) -> str:
     """Numbered work list for the Zalo group — overdue/today/tomorrow/urgent
     jobs. Every call re-saves the numbering (store.save_digest) so "xong <N>"
@@ -1342,6 +1382,9 @@ async def bot_inbound(request: Request):
         who = f" ({name} báo)" if name else ""
         return {"reply": f"✅ {o['customer_name']} — {_job_desc(o)}: LẮP XONG{who}"}
 
+    if text.lower() in ("cua", "cửa"):
+        return {"reply": _production_text() or "Không có cửa nào đang sản xuất 🎉"}
+
     if text.lower() in ("viec", "việc"):
         return {"reply": _digest_text(today) or "Hôm nay không có việc 🎉"}
 
@@ -1353,8 +1396,13 @@ async def bot_inbound(request: Request):
 
 @app.get("/bot/digest")
 def bot_digest_pull(request: Request):
+    """Pulled once a day by the bot sidecar's morning schedule (DIGEST_HOUR/
+    DIGEST_MINUTE) — combines the xưởng production queue with the lắp đặt
+    work list."""
     _check_bot_token(request)
-    return {"text": _digest_text(store.today_vn())}
+    today = store.today_vn()
+    parts = [t for t in (_production_text(), _digest_text(today)) if t]
+    return {"text": "\n\n".join(parts)}
 
 
 @app.get("/zalo/bot/qr")

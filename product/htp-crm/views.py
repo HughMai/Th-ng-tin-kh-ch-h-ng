@@ -239,10 +239,13 @@ def bo_cua_html(items: list) -> str:
         kich = (f' — {i["ngang_mm"]}×{i["cao_mm"]}mm'
                 if i.get("ngang_mm") and i.get("cao_mm") else "")
         qty = f' ×{i["so_luong"]}' if i.get("so_luong", 1) > 1 else ""
+        note = (f'<div class="sub" style="opacity:.7">Ghi chú: {esc(i["ghi_chu"])}</div>'
+                if i.get("ghi_chu") else "")
         rows.append(
             f'<div class="sub between">'
             f'<span>{esc(_door_desc(i))}{kich}{mau_sac}{qty}</span>'
             f'<b class="amt">{fmt_vnd(i["thanh_tien"])}</b></div>'
+            f'{note}'
         )
     return "".join(rows)
 
@@ -266,6 +269,10 @@ def production_message_no_price(order: dict, items: list) -> str:
     for idx, i in enumerate(items, 1):
         extra = f" · {i['mau_sac']}" if i.get("mau_sac") else ""
         L.append(f"{idx}. {_door_desc(i)} — {i['ngang_mm']}×{i['cao_mm']}mm{extra}")
+        if i.get("ghi_chu"):
+            L.append(f"   Ghi chú: {i['ghi_chu']}")
+    if order.get("note"):
+        L.append(f"Ghi chú: {order['note']}")
     return "\n".join(L)
 
 
@@ -446,7 +453,7 @@ def customers_page(rows: list, q: str = "", loai: str = "", stage: str = "custom
     <a href="/khach/{c["id"]}/sua">Sửa thông tin</a>
     {f'<a href="tel:{esc(c["phone"])}">Gọi điện</a>' if c["phone"] else ""}
     <form method="post" action="/khach/{c["id"]}/xoa"
-      onsubmit="return confirm('Xóa khách {esc(c["name"])}? Không thể hoàn tác.')">
+      onsubmit="return confirm('Xóa khách {esc(c["name"])}? Toàn bộ báo giá, đơn hàng, công nợ và nhắc hẹn của khách này sẽ bị xóa theo — không thể hoàn tác.') && confirm('Chắc chắn chứ? Bấm OK để xóa vĩnh viễn khách {esc(c["name"])} và toàn bộ dữ liệu liên quan.')">
       <button type="submit" class="danger">Xóa khách hàng</button>
     </form>
   </div>
@@ -512,14 +519,35 @@ def customer_form_page(c: dict = None, next_to: str = "") -> str:
 
 
 # ---------------------------------------------------------------- intake wizard
-# Colour options per door type, flattened from the reference intake prototype
-# (hughmai.github.io/Th-ng-tin-kh-ch-h-ng). Not priced — captured into
-# quote_items.mau_sac. Kept here (presentation data), not in pricing.py.
+# Colour options per door type. Not priced — captured into quote_items.mau_sac,
+# kept here (presentation data), not in pricing.py. Three shapes:
+#   {"options": [...]}                  -> one fixed palette (nhôm kính)
+#   {"depends_on": <field>, "map": {}}  -> palette varies by another selector (cửa cuốn)
+#   {"components": [...]}               -> several colour PARTS, all shown at once
+#                                           (cửa kéo) — not alternatives to pick between
+# Cửa cuốn màu follows Công nghệ (Đức/Úc each have their own; Đài Loan/Inox keep
+# the generic list). Cửa kéo carries two colour parts on every unit — khung U and
+# nhíp, always shown — plus a third (lá) that only exists when Loại ("cong_nghe")
+# is "Có lá"; each part has its own palette. Lá is gated by the existing Có
+# lá/Không lá field, not a separate selector.
+_CUON_GENERIC = ["ghi sần", "kem", "xanh"]
 _WIZARD_COLORS = {
-    "cua_cuon": ["ghi sần", "kem", "xanh"],
-    "cua_keo": ["xanh", "kem", "ghi sần", "xám xingfa"],
-    "nhom_kinh": ["xám xingfa", "trắng", "giả gỗ"],
-    "xingfa": ["xám xingfa", "trắng", "giả gỗ"],
+    "cua_cuon": {"depends_on": "cong_nghe", "map": {
+        "Cửa cuốn công nghệ Đức": ["trắng", "ghi", "kem"],
+        "Cửa cuốn công nghệ Úc": ["xanh", "trắng", "ghi", "kem"],
+        "Cửa cuốn công nghệ Đài Loan": _CUON_GENERIC,
+        "Inox": _CUON_GENERIC,
+    }},
+    "cua_keo": {"components": [
+        {"key": "u", "tag": "U", "label": "Màu khung U",
+         "options": ["xanh", "xám kem", "ghi", "xám xingfa"]},
+        {"key": "nhip", "tag": "Nhíp", "label": "Màu nhíp",
+         "options": ["trắng", "ghi", "kem", "xám xingfa"]},
+        {"key": "la", "tag": "Lá", "label": "Màu lá",
+         "options": ["xanh", "kem", "xám xingfa", "ghi"],
+         "show_if": {"field": "cong_nghe", "equals": "Có lá"}},
+    ]},
+    "nhom_kinh": {"options": ["xám xingfa", "trắng", "giả gỗ"]},
 }
 # Accessory labels for the wizard — the priced set shared with the header form
 # and the price math (single source of truth in pricing.PHUKIEN_CATALOG).
@@ -571,6 +599,26 @@ function renumber(){
     b.querySelector('.uhead .lbl').textContent = DOOR_CONFIG[t].label + ' #' + counts[t];
   });
 }
+function colorSpec(type){ return COLORS[type]||{}; }
+function colorOptionsFor(type, driverVal){
+  var spec=colorSpec(type);
+  if(spec.options) return spec.options;          // fixed palette (nhôm kính)
+  if(spec.map) return spec.map[driverVal]||[];   // varies by cong_nghe (cửa cuốn)
+  return [];
+}
+function buildColorFields(type){
+  var spec=colorSpec(type);
+  if(spec.components){  // cửa kéo: several always-on colour PARTS (one may be gated)
+    return spec.components.map(function(c){
+      var hidden = c.show_if ? ' style="display:none"' : '';
+      return '<div class="fld color-comp" data-comp="'+c.key+'"'+hidden+'>'
+           + '<label>'+c.label+'</label>'
+           + '<select data-key="mau_'+c.key+'"><option value="">— Chọn màu —</option>'+optionHtml(c.options)+'</select></div>';
+    }).join('');
+  }
+  var initColors=spec.options||[];  // fixed palette shows now; dynamic (cửa cuốn) waits for its driver
+  return '<div class="fld"><label>Màu</label><select data-key="mau_sac"><option value="">— Chọn màu —</option>'+optionHtml(initColors)+'</select></div>';
+}
 function buildUnit(type){
   var cfg=DOOR_CONFIG[type];
   var div=document.createElement('div');
@@ -580,8 +628,7 @@ function buildUnit(type){
     var opts = (f.type==='select-dynamic') ? '<option value="">— Chọn —</option>' : optionHtml(f.options);
     fields += '<div class="fld"><label>'+f.label+'</label><select data-key="'+f.key+'">'+opts+'</select></div>';
   });
-  var colors=COLORS[type]||[];
-  fields += '<div class="fld"><label>Màu</label><select data-key="mau_sac"><option value="">— Chọn màu —</option>'+optionHtml(colors)+'</select></div>';
+  fields += buildColorFields(type);
   div.innerHTML =
     '<div class="uhead"><span class="lbl">'+cfg.label+'</span><button type="button" class="ux">&times;</button></div>'
     + '<div class="field-grid">'+fields+'</div>'
@@ -590,12 +637,14 @@ function buildUnit(type){
     +   '<div class="fld"><label>Cao (mm)</label><input class="u-cao" inputmode="numeric" maxlength="4" placeholder="VD: 2200"></div>'
     + '</div>'
     + '<div class="unit-price">Chọn đầy đủ để xem giá</div>'
-    + '<div class="u-manual-wrap" style="display:none"><label>Giá nhập tay (VND)</label><input class="u-manual" inputmode="numeric" placeholder="VD: 12.000.000"></div>';
+    + '<div class="u-manual-wrap" style="display:none"><label>Giá nhập tay (VND)</label><input class="u-manual" inputmode="numeric" placeholder="VD: 12.000.000"></div>'
+    + '<div class="fld"><label>Ghi chú</label><textarea data-key="ghi_chu" rows="2" placeholder="VD: khách yêu cầu ray nhôm, lắp mặt trong..."></textarea></div>';
   return div;
 }
 function unitField(b,key){ return b.querySelector('[data-key="'+key+'"]'); }
 function onUnitField(b,key){
-  var cfg=DOOR_CONFIG[b.dataset.type];
+  var type=b.dataset.type;
+  var cfg=DOOR_CONFIG[type];
   cfg.fields.forEach(function(f){
     if(f.type==='select-dynamic' && f.depends_on===key){
       var val=unitField(b,key).value;
@@ -603,6 +652,19 @@ function onUnitField(b,key){
       unitField(b,f.key).innerHTML=optionHtml(opts);
     }
   });
+  var spec=colorSpec(type);
+  if(spec.depends_on===key){  // cong_nghe (cửa cuốn) changed -> refresh Màu
+    var scEl=unitField(b,'mau_sac');
+    if(scEl) scEl.innerHTML='<option value="">— Chọn màu —</option>'+optionHtml(colorOptionsFor(type, unitField(b,key).value));
+  }
+  if(spec.components){  // cửa kéo: Loại changed -> show/hide the gated Lá colour part
+    spec.components.forEach(function(c){
+      if(c.show_if && c.show_if.field===key){
+        var wrap=b.querySelector('.color-comp[data-comp="'+c.key+'"]');
+        if(wrap) wrap.style.display = (unitField(b,key).value===c.show_if.equals) ? '' : 'none';
+      }
+    });
+  }
   priceUnit(b);
 }
 function priceUnit(b){
@@ -668,15 +730,32 @@ function removeUnit(b){
     if(e.target.classList.contains('ux')){ removeUnit(e.target.closest('.unit-block')); }
   });
 })();
+function unitColorText(b){
+  var type=b.dataset.type;
+  var spec=colorSpec(type);
+  if(spec.components){  // cửa kéo: join the visible parts, e.g. "U: xanh · Nhíp: trắng"
+    var parts=[];
+    spec.components.forEach(function(c){
+      var wrap=b.querySelector('.color-comp[data-comp="'+c.key+'"]');
+      if(wrap && wrap.style.display==='none') return;  // gated part not active (Không lá) -> skip
+      var el=unitField(b,'mau_'+c.key);
+      if(el && el.value) parts.push(c.tag+': '+el.value);
+    });
+    return parts.join(' · ');
+  }
+  var scEl=unitField(b,'mau_sac');
+  return scEl?scEl.value:'';
+}
 function serializeWizard(){
   var units=[];
   document.querySelectorAll('.unit-block').forEach(function(b){
-    var cnEl=unitField(b,'cong_nghe'); var mEl=unitField(b,'mau'); var scEl=unitField(b,'mau_sac');
+    var cnEl=unitField(b,'cong_nghe'); var mEl=unitField(b,'mau');
     units.push({
       product:b.dataset.type,
       cong_nghe:cnEl?cnEl.value:'',
       mau:mEl?mEl.value:'',
-      mau_sac:scEl?scEl.value:'',
+      mau_sac:unitColorText(b),
+      ghi_chu:unitField(b,'ghi_chu').value.trim(),
       ngang:parseInt(b.querySelector('.u-ngang').value)||0,
       cao:parseInt(b.querySelector('.u-cao').value)||0,
       gia_manual:b.querySelector('.u-manual').value.replace(/[^0-9]/g,'')
@@ -1139,12 +1218,10 @@ def pick_customer_page(rows: list, q: str, target: str, title: str, mode: str = 
 
 
 def quote_form_page(customer: dict, today: str) -> str:
-    # quotes.product CHECK doesn't allow 'xingfa' (only multi-item quote_items
-    # do) — exclude it here alongside the existing 'khac' exclusion.
     prods = "".join(
         f'<label><input type="radio" name="product" value="{v}" {"checked" if v == "cua_cuon" else ""}>'
         f'<span>{label.capitalize()}</span></label>'
-        for v, label in PRODUCT_LABELS.items() if v not in ("khac", "xingfa")
+        for v, label in PRODUCT_LABELS.items() if v != "khac"
     )
     return f"""
 <div class="card"><div class="name">{esc(customer["name"])} {type_chip(customer["type"])}</div>
@@ -1255,6 +1332,7 @@ def quote_build_page(quote: dict, items: list) -> str:
   <div class="name">{esc(PRODUCT_LABELS.get(i["product"], "").capitalize())}</div>
   <div class="sub">{esc(i["cong_nghe"] or "")} {esc(i["mau"] or "")} — {i["ngang_mm"]}×{i["cao_mm"]}mm
    {"(nhập tay)" if i["is_manual_price"] else ""}</div>
+  {f'<div class="sub" style="opacity:.7">Ghi chú: {esc(i["ghi_chu"])}</div>' if i.get("ghi_chu") else ""}
   <div class="sub amt">{fmt_vnd(i["thanh_tien"])}</div>
   {item_actions.format(qid=quote["id"], iid=i["id"])}
 </div>""" for i in items)
@@ -1526,6 +1604,8 @@ document.addEventListener('DOMContentLoaded', updatePreview);
     <label>Giá nhập tay (VND)</label>
     <input id="gia_thu_cong" name="gia_thu_cong" inputmode="numeric" oninput="fmtMoney(this)" placeholder="VD: 12.000.000">
   </div>
+  <label>Ghi chú</label>
+  <textarea name="ghi_chu" placeholder="VD: khách yêu cầu ray nhôm, lắp mặt trong...">{esc(item["ghi_chu"] or "") if item else ""}</textarea>
   <button class="btn big mt-4">{submit_label}</button>
 </form>
 {script}{prefill}"""
@@ -1548,13 +1628,23 @@ _ORDER_FILTERS = (("", "Tất cả"), ("cua_cuon", "Cửa cuốn"),
                   ("khac", "Khác"))
 
 
-def orders_page(active: list, completed: list, today: str, loai: str = "") -> str:
+def orders_page(active: list, completed: list, today: str, loai: str = "",
+                ngay: str = "") -> str:
     """Sổ đơn hàng — mirrors the paper order book: category chips (?loai=),
     Gấp pinned on top, then đang-làm orders grouped by ngày chốt (newest
-    day first), đã hoàn thành archived below (collapsed). Đơn hàng only ever
-    come from a báo giá đã chốt (store.create_order_from_quote); there's no
-    manual "+ Đơn hàng" entry point."""
-    next_url = f"/don-hang?loai={loai}" if loai else "/don-hang"
+    day first), đã hoàn thành archived below (collapsed). ``ngay`` (blank = mọi
+    ngày) narrows to a single ngày-chốt, báo-cáo style. Đơn hàng only ever come
+    from a báo giá đã chốt (store.create_order_from_quote); there's no manual
+    "+ Đơn hàng" entry point."""
+    if ngay:
+        active = [o for o in active if (o.get("chot_date") or "") == ngay]
+        completed = [o for o in completed if (o.get("chot_date") or "") == ngay]
+
+    def _href(key: str) -> str:
+        p = ([f"loai={key}"] if key else []) + ([f"ngay={ngay}"] if ngay else [])
+        return "/don-hang" + ("?" + "&".join(p) if p else "")
+
+    next_url = _href(loai)
 
     def _card(o: dict, dim: bool = False) -> str:
         badges = ""
@@ -1617,11 +1707,19 @@ def orders_page(active: list, completed: list, today: str, loai: str = "") -> st
     normal.sort(key=lambda o: o.get("chot_date") or "", reverse=True)
 
     chips = "".join(
-        f'<a class="{"on" if loai == key else ""}" '
-        f'href="{f"/don-hang?loai={key}" if key else "/don-hang"}">'
+        f'<a class="{"on" if loai == key else ""}" href="{_href(key)}">'
         f'{lbl} ({counts.get(key, 0) if key else n_all})</a>'
         for key, lbl in _ORDER_FILTERS if key != "khac" or has_khac)
-    out = [f'<div class="filters">{chips}</div>']
+    clear = f'<a class="btn done" href="{f"/don-hang?loai={loai}" if loai else "/don-hang"}">Mọi ngày</a>' if ngay else ""
+    picker = f"""
+<div class="filters">{chips}</div>
+<form method="get" action="/don-hang" class="row mb-3">
+  {f'<input type="hidden" name="loai" value="{esc(loai)}">' if loai else ""}
+  <input type="date" name="ngay" value="{esc(ngay)}" class="grow-2">
+  <button class="btn done">Xem</button>
+  {clear}
+</form>"""
+    out = [picker]
 
     if urgent:
         out.append(f'<div class="day-h">Gấp ({len(urgent)})</div>'
@@ -1633,8 +1731,11 @@ def orders_page(active: list, completed: list, today: str, loai: str = "") -> st
                        f'<div class="cards-grid">{cards}</div>')
     elif not urgent:
         label = PRODUCT_LABELS.get(loai, "")
-        out.append(f'<div class="empty">Chưa có đơn {esc(label)} nào đang làm.</div>' if loai
-                   else '<div class="empty">Chưa có đơn hàng nào đang làm.</div>')
+        if ngay:
+            out.append(f'<div class="empty">Không có đơn nào chốt {fmt_date(ngay)}.</div>')
+        else:
+            out.append(f'<div class="empty">Chưa có đơn {esc(label)} nào đang làm.</div>' if loai
+                       else '<div class="empty">Chưa có đơn hàng nào đang làm.</div>')
 
     if completed:
         out.append(f"""
@@ -1816,10 +1917,15 @@ def order_detail_page(o: dict, calls: list, today: str,
   <div class="sub">{"Lắp " + fmt_date(o["install_date"]) if o["install_date"] else "Chưa lắp"}
    · BH {o["warranty_months"]} tháng{f" · hết BH {fmt_date(o['expiry_date'])}" if o["expiry_date"] else ""}</div>
   {f'<div class="sub">Đ/c: {esc(o["address"])}</div>' if o.get("address") else ""}
-  {f'<div class="sub">Ghi chú: {esc(o["description"])}</div>' if o.get("description") else ""}
+  {f'<div class="sub">Ghi chú: {esc(o["note"])}</div>' if o.get("note") else ""}
   {contact_buttons(o["phone"], o["zalo_phone"])}
   <div class="row"><a class="btn done" href="/khach/{o["customer_id"]}">Xem khách</a>{debt_link}</div>
 </div>
+<details class="card"><summary>Sửa ghi chú</summary>
+<form method="post" action="/don-hang/{o["id"]}/ghi-chu" class="mt-2">
+  <textarea name="note" placeholder="VD: nhà trong hẻm, gọi trước khi tới, khách cần lắp buổi sáng">{esc(o.get("note") or "")}</textarea>
+  <button class="btn big mt-2">Lưu ghi chú</button>
+</form></details>
 <details class="card"><summary class="text-danger">Xóa đơn hàng</summary>
   <div class="sub mt-2">Xóa hạng mục, thanh toán, sửa chữa của đơn này. Báo giá gốc quay lại "Đã gửi" để chốt lại nếu cần. Lịch sử chăm sóc của khách không bị mất.</div>
   <form method="post" action="/don-hang/{o["id"]}/xoa" class="mt-2"
@@ -1852,10 +1958,12 @@ def invoice_page(o: dict, items: list, company: dict, today: str) -> str:
         kich = (f' — {i["ngang_mm"]}×{i["cao_mm"]}mm'
                 if i.get("ngang_mm") and i.get("cao_mm") else "")
         mau_sac = f' · {esc(i["mau_sac"])}' if i.get("mau_sac") else ""
+        note = (f'<br><span style="opacity:.7;font-size:.9em">Ghi chú: {esc(i["ghi_chu"])}</span>'
+                if i.get("ghi_chu") else "")
         sl = i.get("so_luong", 1) or 1
         don_gia = i.get("don_gia") if i.get("don_gia") is not None else i["thanh_tien"] // sl
         rows.append(
-            f'<tr><td>{idx}</td><td>{esc(_door_desc(i))}{kich}{mau_sac}</td>'
+            f'<tr><td>{idx}</td><td>{esc(_door_desc(i))}{kich}{mau_sac}{note}</td>'
             f'<td class="num">{sl}</td><td class="num">{fmt_vnd(don_gia)}</td>'
             f'<td class="num">{fmt_vnd(i["thanh_tien"])}</td></tr>'
         )
@@ -1915,16 +2023,23 @@ def _settle_form(action: str, next_url: str) -> str:
 </details>"""
 
 
-def debts_page(dealer_rows: list, customer_rows: list, loc: str, today: str) -> str:
+def debts_page(dealer_rows: list, customer_rows: list, loc: str, today: str,
+               settlements: list = None, day: str = "") -> str:
     """Công nợ tab. ``loc`` filters the view: 'tat-ca' (both), 'kh' (retail
-    khách lẻ — orders still owing, from order_payments) or 'dl' (đại lý ledger).
-    Dealers link to their sổ nợ; each unpaid KH order gets a Đã thanh toán
-    button that settles the full remaining balance."""
+    khách lẻ — orders still owing, from order_payments), 'dl' (đại lý ledger) or
+    'da-thu' (Đã thu — the record of settled money, grouped by day). Dealers link
+    to their sổ nợ; each unpaid KH order gets a Đã thanh toán button that settles
+    the full remaining balance."""
     seg = "".join(
         f'<a class="btn {"call" if loc == key else "done"}" href="/cong-no?loc={key}">{lbl}</a>'
-        for key, lbl in (("tat-ca", "Tất cả"), ("kh", "Khách hàng"), ("dl", "Đại lý"))
+        for key, lbl in (("tat-ca", "Tất cả"), ("kh", "Khách hàng"),
+                         ("dl", "Đại lý"), ("da-thu", "Đã thu"))
     )
     out = [f'<div class="row mb-3">{seg}</div>']
+
+    if loc == "da-thu":
+        out.append(_settlements_block(settlements or [], day, today))
+        return "".join(out)
 
     if loc in ("tat-ca", "dl"):
         if loc == "tat-ca":
@@ -1961,6 +2076,53 @@ def debts_page(dealer_rows: list, customer_rows: list, loc: str, today: str) -> 
         out.append("".join(cards) or '<div class="empty">Không có khách lẻ nào còn nợ.</div>')
 
     return "".join(out)
+
+
+def _settlement_card(r: dict) -> str:
+    """One Đã-thu row: a fully-paid KH đơn (links to the order) or a ĐL công nợ
+    payment (links to that dealer's sổ nợ)."""
+    if r["kind"] == "KH":
+        link = f'/don-hang/{r["ref"]}'
+        meth = f' · {esc(r["method"])}' if (r.get("method") or "").strip() else ""
+        sub = f'Đơn #{r["ref"]} · đã thu đủ{meth}'
+        chip = type_chip("KH")
+    else:
+        link = f'/cong-no/{r["ref"]}'
+        meth = f' · {esc(r["method"])}' if (r.get("method") or "").strip() else ""
+        note = f' · {esc(r["note"])}' if (r.get("note") or "").strip() else ""
+        sub = f'Thanh toán{meth}{note}'
+        chip = type_chip("DL")
+    return f"""
+<div class="card">
+  <a href="{link}">
+    <div class="name">{esc(r["name"])} <span class="chip won">{fmt_vnd(r["amount_vnd"])}</span> {chip}</div>
+    <div class="sub">{sub}</div>
+  </a>
+</div>"""
+
+
+def _settlements_block(rows: list, day: str, today: str) -> str:
+    """Đã thu tab: a date picker (blank = mọi ngày) over the settled-money record,
+    grouped by ngày thu (newest first) with a per-day subtotal — mirrors how Đơn
+    hàng groups by ngày chốt and how báo cáo totals tiền thu trong ngày."""
+    picker = f"""
+<form method="get" action="/cong-no" class="row mb-3">
+  <input type="hidden" name="loc" value="da-thu">
+  <input type="date" name="ngay" value="{esc(day)}" class="grow-2">
+  <button class="btn done">Xem</button>
+  {'<a class="btn done" href="/cong-no?loc=da-thu">Mọi ngày</a>' if day else ''}
+</form>"""
+    if not rows:
+        empty = ('<div class="empty">Chưa thu khoản nào ngày này.</div>' if day
+                 else '<div class="empty">Chưa có khoản đã thu nào.</div>')
+        return picker + empty
+    parts = [picker]
+    for d, grp in groupby(rows, key=lambda r: r.get("pay_date") or ""):
+        grp = list(grp)
+        total = sum(r["amount_vnd"] for r in grp)
+        parts.append(f'<div class="day-h">{_order_day_header(d, today)} — {fmt_vnd(total)}</div>'
+                     f'<div class="cards-grid">{"".join(_settlement_card(r) for r in grp)}</div>')
+    return "".join(parts)
 
 
 def _days_since(d: str, today: str) -> int:
