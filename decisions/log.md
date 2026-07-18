@@ -845,6 +845,20 @@ Both distilled from `context/about-me.md`, `context/about-business.md`, `context
 
 ---
 
+## 2026-07-03 — Price corrected to $99/mo (supersedes 2026-06-26 $300)
+
+**Decision:** The monthly price is **$99/mo**, not $300. Everything else from the 2026-06-26 entry stands: **free pilot first** to prove work + conversion, then convert to $99/mo; **performance-based deferred** until conversion is proven. $99 is the number already quoted by the live product ("LeadResponder, from $99/month, no lock-in" in the demo-call bot), so this also reconciles the code and the plan to one figure.
+
+**Why:** As a no-name solo founder with zero case studies, price is a barrier to client #1, not a profit lever yet. $99 undercuts the AU field (Leva $199, Lana/Sophiie ~$300) and removes "too expensive / unproven" as an objection entirely — the goal this quarter is a signed client + a testimonial, not margin. It's also what the demo bot already says, so a prospect who takes the 20-second demo call and then talks to Hughie hears one consistent number. Raise later once there's a proven recovered-$ result (the price-raise is the reward for proof).
+
+**What would change my mind:** once the free pilot produces a hard recovered-$/mo figure, revisit — raise the floor or move to performance-based (per recovered booking). A multi-van / higher-ticket firm is still a separate, higher tier.
+
+**Affects:** demo pitch in `product/speed-to-lead-demo/voice_server.py` (`_demo_prompt`, already says $99) — now the canonical price. Supersedes the $300 figure in the 2026-06-26 entry.
+
+**Owner:** Hughie
+
+---
+
 ## 2026-06-26 — Front door: SMS text-back → instant AI voice callback (modifies 2026-05-22 channel)
 
 **Decision:** Flip the speed-to-lead first touch from **SMS missed-call-text-back** to an **instant AI voice callback**. On a missed call the system rings the caller straight back with a live AI voice agent; **SMS text-back becomes the fallback** when the callback isn't answered or hits voicemail. Voice is **ElevenLabs**; built **fully in-house** — Twilio Media Streams → Deepgram (streaming STT) → the existing Claude brain → ElevenLabs (streaming TTS). Modifies (does not supersede) the channel element of the 2026-05-22 electrician pivot: missed-call-text-back is now the safety net, not the headline. Everything else from that decision stands (trades/electricians, build-before-sell, named-human persona with honest AI disclosure, fail-open, single VPS).
@@ -1092,3 +1106,349 @@ Both distilled from `context/about-me.md`, `context/about-business.md`, `context
 - *Text live + voice for demos* → keep voice on a flag/number for prospect demos. Deferred — add it if a sales demo needs the wow-factor.
 
 **Owner:** Hughie
+
+---
+
+## 2026-06-29 — Voice revived for crown-st-auto; shadow FSM tier-1 deployed live (reverses 2026-06-28 dormant pivot)
+
+**Decision:** crown-st-auto answers by voice again — `tenants/crown-st-auto.json` is `voice_answer:true`, `voice_textback_only:false`. The Tier-1 shadow FSM (observe + log only, never steers) is live in the production image.
+
+**Why:** The 2026-06-28 "dormant" flip was never actually deployed — the live container already had `voice_answer:true`. Voice is the front door that converts John (first non-electrician vertical). The shadow FSM (`call_state.py` + the `report_state` path + `store.log_gate` voice/gate tables) is the moat per the 2026-06-28 stack decision: it flags divergence between the LLM's claim and its own observed state — the eval corpus for later gating. Tier 1 is log-only, so it can't regress call quality while it earns trust.
+
+**Note:** Records what shipped across the 06-28→29 sessions; the reversal was left un-logged until now. Made durable this session (see next entry).
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-29 — Voice latency: cut the report_state per-turn round-trip + add an EOT-inclusive timer; image rebuilt durable
+
+**Decision:** Removed `report_state` from the live Deepgram tool menu (and the "call it EVERY turn" prompt instruction), trimmed the tool schemas (`book_job` lost `job_type`/`address`, `end_call` lost `reason`), and added a second per-turn timer `turn_eot_ms` (armed on `UserStoppedSpeaking`) alongside the existing `turn_resp_ms`. Rebuilt the `speed-to-lead-app` image so all of it survives container recreates.
+
+**Why:** Per-turn latency was ~3s on the one instrumented call (n=2). Root cause: the prompt forced a `report_state` call every turn, and Deepgram's managed flow is function-first — it blocks the spoken reply on our `FunctionCallResponse` — so every turn paid a serialized round-trip for a Tier-1 *log-only* signal that never steers. Dropping it from menu + prompt kills that round-trip for zero functional loss: the shadow FSM still observes every transcript and tool call via `_fsm_observe` / `note_tool_call`; only the LLM's self-reported claim is gone.
+
+`turn_eot_ms` fixes a measurement blind spot. `turn_resp_ms` arms on `ConversationText role=user` (finalized transcript), which fires *after* Deepgram's EOT detection — so it never captured EOT dwell. `turn_eot_ms` arms on `UserStoppedSpeaking` (VAD), so the diff between the two timers IS the hidden dwell — the headroom for the `eot_threshold` / `eot_timeout_ms` lever. Without it, EOT tuning couldn't be validated either way.
+
+**Durability:** Previous deploys were `docker cp` into the running layer (lost on recreate). Confirmed `/app` code is NOT bind-mounted (only `/app/data` is). So I synced the 4 drifted files (`voice_server.py`, `voice_engine.py`, `call_state.py`, `store.py`) from the running container into the `/opt/speed-to-lead` build context, ran `docker compose build app`, then `docker compose up -d app`. Verified post-recreate from the image alone: tool menu = `[alert_owner, check_service_area, book_job, end_call]` (no report_state), EOT timer present, 73 unit tests pass, Uvicorn clean.
+
+**Alternatives considered:**
+- *Tune `DEEPGRAM_EOT_TIMEOUT_MS` 1500→900* → rejected: `turn_resp_ms` couldn't see EOT dwell (the blind spot), and 900ms risks interrupting AU callers who pause to check a calendar. Deepgram's guidance for pausing callers is the opposite (eot_threshold ~0.8, timeout 7–8s). Defer until `turn_eot_ms` data lands.
+- *Migrate the Deepgram leg to the AU endpoint* → weak: the 3s is LLM + tool latency, not RTT, and "jumpy" can't be established at n=1. The real ocean hop is the LLM (Anthropic has no Sydney region) — a later Gemini-Flash-Sydney lever, not the Deepgram leg.
+- *Keep report_state non-blocking* → Deepgram's managed function-first flow can't fire-and-forget a tool; the only non-blocking home is deriving FSM state server-side from the transcript (future work, restores the telemetry).
+
+**Watch next:** after 3–4 multi-turn calls, read `turn_resp_avg_ms` (expect a drop vs the 3032ms baseline) and the new `turn_eot_avg_ms` (the EOT-dwell signal). Flat+high on the EOT timer → relax EOT toward 0.8; if turns are still slow, next levers are the remaining tool-call path and the prompt trim (VOICE_MODE override ~19.3k → ~9k).
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-29 — Voice platform pivot: build on Retell AI going forward (reverses the 2026-06-28 LOCKED "stay on Deepgram managed")
+
+**Decision:** Retell AI is the go-forward voice platform. New voice work targets Retell's managed orchestration + telephony instead of the Deepgram Voice Agent stack. Interpreted as **go-forward**: the live in-house Deepgram stack on +61468089224 (crown-st-auto) keeps running until a Retell path is validated and migrated — **not** ripped out today. This reverses the 2026-06-28 LOCKED "stay managed on Deepgram + Twilio" decision and supersedes the same-day Deepgram latency-tuning direction (report_state round-trip cut, EOT timer).
+
+**Why:** Solo, pre-first-paying-client, with decision paralysis as the top pain. The last several sessions were consumed tuning the Deepgram media loop (preconnect, EOT thresholds, report_state round-trip, durable image rebuilds). Offloading telephony + turn-taking orchestration to Retell removes that maintenance + tuning surface so effort goes to converting John / landing client #1, not the media loop. Hughie's call after a live latency benchmark this session.
+
+**Benchmark that informed it (this session):**
+- Retell e2e turn latency over real PSTN (wired our live AU line via a Twilio elastic SIP trunk, 9 turns): **p50 1.08s, p90 2.19s, p99 2.67s**. LLM leg p50 508ms (Retell's *built-in* model), TTS leg p50 199ms (ElevenLabs under the hood). Line reverted to the in-house webhook after the test.
+- TTS TTFB, warm, from AU: ElevenLabs Flash ~220ms ≈ Cartesia Sonic-2 tier ≈ Retell's 199ms; Deepgram Aura-2 ~500ms (REST — the real Voice Agent websocket path is likely faster, never confirmed); ElevenLabs Multilingual ~1.0s (disqualified for live).
+- Architecture clarification logged for future-me: ElevenLabs/Cartesia/Aura are TTS **components** (the "mouth"); Retell/Vapi/ElevenLabs-Agents are managed **orchestration platforms** (the "socket"). Retell uses ElevenLabs as its TTS — they sit at different layers, so "ElevenLabs vs Retell" was never the real choice; the choice is managed-orchestration vs in-house-orchestration.
+- Scripts left in `product/speed-to-lead-demo/`: `retell_latency.py` (web-call), `retell_wire_twilio.py` (wire/status/revert via Twilio SIP trunk), `eleven_latency.py`.
+
+**What would change your mind (the caveat — this rests on an incomplete comparison):**
+- Retell's 1.08s/2.2s used its **built-in LLM**, not our Claude brain. The likely real shape of "build on Retell" is Retell telephony + **our Claude as a custom LLM** (websocket) — which adds the Claude leg back, so a true apples-to-apples e2e was never measured and could land *above* the in-house stack.
+- In-house e2e was **never measured after today's report_state round-trip fix** — the ~3s baseline that motivated leaving was n=2 and pre-fix. If the fixed in-house stack lands ≲1.5s e2e at zero per-minute margin, the cost/control/FSM-corpus case argues for staying.
+- Retell adds a per-minute platform margin and the **shadow-FSM eval moat** (the 2026-06-28 LOCKED rationale) must be re-homed: it lives at Deepgram's `_run_function` seam today; on Retell it would have to move to the custom-LLM websocket. Portable, but it's migration work, not free.
+
+**Alternatives considered:**
+- *Stay on Deepgram managed, finish the latency tuning* → rejected for now; maintenance + decision-load too high for a solo pre-client operator, even though cost/control is strong and today's fix is unmeasured.
+- *Hybrid: Retell telephony + our Claude custom-LLM + port the shadow FSM* → the concrete shape to validate first; preserves brain + moat, offloads orchestration. Measure its real PSTN e2e (with Claude) before committing migration effort.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-29 — Retell transition path locked: built-in LLM, build on live 224, post-call-webhook for side-effects
+
+**Decision:** Execute the Retell transition with **Retell's built-in LLM** (not a custom-Claude bridge), building on the **live 224 line** (crown-st-auto). Side-effect parity (owner alert + calendar booking) is achieved via Retell's **`call_analyzed` post-call webhook**, not mid-call function calls — Retell extracts the booking/lead fields, POSTs to a new `/retell/call-webhook` endpoint, and we reuse the in-house `voice_server._flush_post_call_actions` / `_create_booking` path verbatim. Consciously **drops the Claude brain and the shadow-FSM moat from the live voice path** (the 2026-06-28 LOCKED moat thesis) in exchange for far less build + maintenance — the right trade for a solo operator whose binding constraint is landing client #1, not voice fidelity.
+
+**Why post-call webhook (not live function webhooks):** the in-house design already queues alerts+booking and flushes them at call-end (`_flush_post_call_actions` runs in `_end_call`/finally) — even emergencies are post-call today. So a single post-call extraction endpoint gives full behavioural parity with the current stack, at lower latency and far more testably than live per-tool webhooks.
+
+**Built this session (artifacts, not yet deployed):**
+- `retell_webhook.py` — FastAPI router, `POST /retell/call-webhook`: maps `to_number`→tenant via `tenants.find_by_number`, builds `actions` from Retell's `custom_analysis_data`, calls `_flush_post_call_actions` (owner SMS + Telegram + gcal booking). Reuses in-house code; no logic re-implemented.
+- `retell_configure_agent.py` — flips the live Retell agent from the demo prompt to a production prompt (no tools; side-effects are post-call), adds Retell-native `end_call`, sets the agent `webhook_url` + `post_call_analysis_data` extraction schema (booked/window/start_iso/end_iso/job_type/suburb/urgency/owner_message). Runnable + verified against the Retell API this session.
+
+**Deploy gate (Hughie's step — I cannot reach the VPS):** add `app.include_router(retell_router)` to `app.py`, then `docker compose up -d --build app` on the box so `/retell/call-webhook` is live at `https://stl.187-77-133-39.sslip.io`. Until then, 224 talks correctly but **books nothing** (post-call webhook 404s harmlessly).
+
+**Current live liability (accepted):** 224 is on the Retell agent with **no working side-effects until the webhook is deployed** — a real inbound lead books nothing and John is not alerted. `retell_wire_twilio.py revert` restores the in-house stack in one command as the safety valve.
+
+**Follow-on phases (not done):** (1) signature-verify the webhook (`X-Retell-Signature`); (2) per-call action persistence if app runs >1 worker; (3) multi-tenant Retell agents + number routing; (4) SMS no-answer fallback decision; (5) decommission the Deepgram path once stable.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-30 — Live-call fixes: owner SMS gated off + deployed; "silence after address" prompt bug fixed
+
+**Context:** After a few live test calls to 224, two defects: (1) the owner still got a post-call text, and (2) the agent went **completely silent after the caller gave an address**, killing the call.
+
+**Fix 1 — owner SMS disconnected (deployed):** Gated the post-call owner SMS in `voice_server._flush_post_call_actions` behind `OWNER_SMS_ENABLED` (default `"0"` = off). Root cause of "still texting" was a **deploy gap** — the prior session changed local code but never rebuilt the VPS image. Copied `voice_server.py` to the VPS (backup `voice_server.py.bak-ownersms`), `docker compose up -d --build app`, verified the running container has the flag and the env var is unset → SMS OFF. Telegram + customer-facing flows untouched. Re-enable with `OWNER_SMS_ENABLED=1`. Three voice-server tests opt back into the flag to keep covering SMS formatting (43 pass).
+
+**Fix 2 — silence after address (prompt, live on Retell agent):** Pulled the call transcript: the agent broke its own no-address rule ("a job that needs an on-site quote... what's your address?"), got the address, then had no instruction for what to do with it and produced an **empty turn → dead air → caller hung up**. Fixed in `retell_build_multiprompt.py` (re-pushed to the live agent): (a) hard rule never to ask for a street address even on big/on-site-quote jobs; (b) recovery rule — if the caller volunteers an address, say one short line and keep going, never leave dead air; (c) route large/rewire/on-site-quote jobs to the **booking** state instead of dead-ending on an address question. Hughie confirms it's "working a bit better" after several test calls.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-30 — Outbound speed-to-lead callback enabled on 224 (Retell + Twilio trunk termination auth)
+
+**Decision:** Add **outbound** calling on the live 224 line so a customer number can be entered and the Syanna electrician agent dials them immediately — the speed-to-lead callback (lead in → ring back now). Same agent + post-call webhook as inbound, so booking/owner-summary behaviour is identical.
+
+**What it took:** the wire script had only set up **origination** (inbound: Twilio → Retell). Outbound (Retell → Twilio → PSTN) needs the Twilio trunk's **termination** to authorise Retell. First outbound attempt failed `not_connected / telephony_provider_permission_denied`. Per Retell's Twilio guide, fixed by whitelisting Retell's SBC IP block **`18.98.16.120/30`** via a Twilio **IP Access Control List** attached to the trunk (IP auth, so no number re-import — the credential-auth alternative would have required re-importing with sip_trunk_auth_username/password). Verified: outbound call to Hughie's mobile reached `status: ongoing` (connected).
+
+**Artifacts:**
+- `retell_outbound.py <number> [note]` — place an immediate outbound call from 224 with the electrician agent; normalises AU numbers (04xx → +61), uses override_agent_id, stores a metadata note.
+- `retell_enable_outbound.py {enable|status|disable}` — manage the trunk IP ACL; `ip_acl_sid` saved into `.retell_wire.json`.
+
+**Open / follow-on:** (1) `retell_wire_twilio.py revert` deletes the trunk but leaves the ACL resource orphaned (harmless; `retell_enable_outbound.py disable` cleans it, or do it before revert). (2) Outbound is currently a manual CLI — wiring it to the website "get a demo call" form (auto-dial on form submit) is the real product shape, not yet built. (3) Same tenant-mismatch caveat as inbound: 224 maps to crown-st-auto while the agent is an electrician.
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-30 — Website "get a demo call" form wired to the Retell outbound callback (live)
+
+**Decision:** The website demo form now fires the **Retell** outbound call (live agent on 224), not the dead in-house Deepgram media-stream path. A prospect submits name/phone/consent → Netlify `submission-created.js` → VPS `POST /api/demo-call` → Retell `create-phone-call`. Booking/owner side-effects fire post-call via the same `/retell/call-webhook`.
+
+**What changed (app.py):** kept all guardrails (shared-secret auth, AU-only validation, consent required, per-phone 24h cap, global daily cap); replaced only step 4 — swapped the `twilio_io.place_call` + `<Connect><Stream>` TwiML for a stdlib `urllib` POST to Retell `create-phone-call` (new helper `_place_retell_demo_call`, run via `run_in_threadpool`). Removed the now-orphaned `_ws_url_base`. Added env: `RETELL_API_KEY`, `RETELL_AGENT_ID`. `test_demo_call.py` updated to mock the Retell placer; full suite 117 pass.
+
+**Note:** the old `/api/demo-call` was never actually live — the VPS had no `DEMO_CALL_SECRET`/`DEMO_FROM_NUMBER`, so it 503'd. This is the first working version of the form callback.
+
+**Deployed + verified:** set `RETELL_API_KEY`, `RETELL_AGENT_ID=agent_f771...`, `DEMO_FROM_NUMBER=+61468089224`, `DEMO_CALL_SECRET` on the VPS `.env` (backups `.env.bak-democall`, `app.py.bak-democall`); rebuilt the app container. End-to-end test through the real endpoint dialled Hughie's mobile — Retell call `outbound / ongoing`, metadata `source: demo_form`.
+
+**Hughie's remaining step (Netlify dashboard env):** set `DEMO_BACKEND_URL=https://stl.187-77-133-39.sslip.io` and `DEMO_CALL_SECRET=<the secret set on the VPS>` so the Netlify function can reach the backend. Until then the form collects submissions but doesn't dial.
+
+**Open / follow-on:** same tenant-mismatch caveat (224 → crown-st-auto while the agent is an electrician); caps are per-number 24h + daily ceiling (DEMO_DAILY_CAP, default 20).
+
+**Owner:** Hughie
+
+---
+
+## 2026-06-30 — Tenant mismatch fixed: Retell agent pinned to a dedicated electrician tenant
+
+**Problem:** the Retell post-call webhook routed by dialled number. Two bugs: (1) inbound to 224 resolved to `crown-st-auto` (the auto-shop demo, wrong business/owner for an electrician agent); (2) on OUTBOUND demo calls `to_number` is the *prospect*, so `find_by_number` returned None and side-effects never fired at all.
+
+**Fix:**
+- New tenant `tenants/illawarra-electrical.json` matching the live agent (Illawarra Electrical, electrician trade, Wollongong/Illawarra suburbs reused from crown-st-auto, owner_mobile = Hughie's +61402129328). Deliberately **no `twilio_number`** so it doesn't add to the existing 224 routing collision.
+- `retell_webhook.py`: pin the agent's calls to a configured tenant via `RETELL_TENANT_ID` (env), with number-routing as fallback. Resolve the caller by `call.direction` — prospect = `to_number` on outbound, `from_number` on inbound. This fixes both the wrong-tenant and the no-tenant-on-outbound bugs in one place.
+- New `tests/test_retell_webhook.py` (none existed) covers: non-analyzed events ignored, outbound pins the electrician + uses the prospect number, inbound uses from_number. Full suite **120 pass**.
+
+**Deployed + verified:** `RETELL_TENANT_ID=illawarra-electrical` on VPS `.env` (backup `retell_webhook.py.bak-tenant`); tenant file copied; container rebuilt. Live check: outbound `call_analyzed` POST → `{"tenant":"illawarra-electrical"}`.
+
+**Still true (by design):** owner SMS stays globally gated off (`OWNER_SMS_ENABLED` unset, from the earlier "disconnect the text" request); the electrician tenant has no Telegram or Google Calendar connected, so post-call side-effects are effectively no-ops until Hughie turns one on. So bookings are captured in the transcript/analysis but not yet pushed anywhere.
+
+**Pre-existing latent issue (not touched):** both `crown-st-auto.json` and `rapidflow-plumbing.json` declare `twilio_number` +61468089224; `find_by_number` returns the alphabetically-first (crown). Doesn't affect the Retell path now (it's pinned), but the in-house revert path still maps 224 → crown. Flagging, not fixing.
+
+**Owner:** Hughie
+
+
+---
+
+## 2026-07-04 — QR dine-in menu built for Mylan (single-tenant, no payments)
+
+**Decisions (locked):**
+1. **Single-tenant for Mylan only** — multi-tenancy deferred. Noted as a resale opportunity (the same stack — menu-in-DB, table ordering, kitchen board, owner admin — templates onto any café/restaurant). No tenant dimension in the schema; one `menu.db`.
+2. **No online payment in v1** — diners pay in person (table/counter). Stripe only added if the client asks. Keeps scope tight and avoids PCI/compliance for a v1.
+3. **Menu authored in the DB, owner-maintained via `/admin`; the two 2025 PDFs are seed-only.** The owner edits prices/items themselves; PDFs are not the source of truth once seeded.
+
+**What was built (`product/qr-menu/`):** FastAPI + SQLite + Docker/Caddy, three single-file vanilla-JS surfaces — diner menu (`/?t=<table>`: browse → variant picker → cart → order), staff kitchen board (`/staff`: polls every 5s, beeps on new, new→preparing→served), owner admin (`/admin`: inline price edit, availability "86" toggle, full CRUD incl. variant `options` JSON). Reused `speed-to-lead-demo` patterns verbatim where it mattered: `store.py` (`configure`/`_connect` WAL + `CREATE TABLE IF NOT EXISTS`), signed HMAC-SHA256 session cookie (`_sign`/`_unsign`), `telegram_io.py`. Added a real `require(*roles)` dependency (speed-to-lead guarded routes by inline convention — a footgun) + explicit page redirects; two roles (owner=admin, staff=board-only).
+
+**Critical safety property:** prices are never trusted from the client — `POST /api/order` re-prices every line from the DB (`base_price` + matched choice prices by group+label), rejects unavailable items and missing required choices, per-table duplicate-tap throttle (10s).
+
+**Verified end-to-end (local):** `/api/menu` (13 groups, 81 available items); order with variant + flat item → subtotal matches menu math; duplicate→409; missing-required→400; wrong-password rejected; staff login works but is 401 on admin endpoints; admin full CRUD lifecycle (create unavailable→hidden, toggle→appears, edit price, delete→gone). All three frontends pass JS syntax check. QR generator (`segno`) produces valid per-table PNGs + printable sheet.
+
+**Data caveats the owner MUST verify in `/admin` before go-live:**
+- **Vietnamese (`name_vi`) is reconstructed, not verbatim** — the PDFs use CID fonts with no Unicode map, so diacritics couldn't be machine-extracted. English names, prices and structure are authoritative; Vietnamese tones need a quick owner pass.
+- **`(CF)` is an undefined tag** — printed on many dinner items but the menu legend only defines `(GF)`/`(VG)`. Stored verbatim; diner UI only renders GF/VG/V chips.
+- **Dinner = available, Lunch (take-away) = unavailable by default** (dine-in scope). Owner enables any lunch items they also serve dine-in.
+- **7 beverage rows were auto-corrected** during seeding: they had `base_price` + same-priced choices (would have double-charged, e.g. $6.90 → $13.80); corrected to free-choice ($base + $0). Owner should eyeball these.
+
+**Owner:** Hughie
+
+---
+
+## 2026-07-09 — HTP becomes an active workstream; start with operations discovery
+
+**Decision:** Treat **Hưng Thành Phát (HTP)** — the family door business (Cửa Cuốn / Cửa Kéo / Cửa Nhôm Kính; KH retail + ĐL dealer tiers) — as an active AIOS workstream while Hughie is in Vietnam managing it. First step is **operations discovery, not building**: run a full A-to-Z interview of how the business actually operates before automating anything.
+
+**Why:** You can't automate a process you haven't mapped, and HTP's process lives largely in the parents' heads and scattered across Zalo/Excel/paper. Discovery first (1) surfaces the real bottlenecks instead of assumed ones, (2) captures tribal knowledge before it's automated away, and (3) turns the interview into a *ranked automation build list* rather than guessing. Matches the AIOS principle: don't automate a mess — map it, then pick the highest frequency × pain × AI-fit candidate and ship one well-built thing.
+
+**Artifacts:**
+- `htp/operations-discovery.md` — 14-section A-to-Z interview guide (English), each section flagged with an automation lens + a scoring table (Frequency × Time × Pain × AI-fit) to rank candidates.
+- `htp/operations-discovery-vi.md` — Vietnamese version, to hand directly to parents/staff.
+
+**First-pass automation hypotheses (to validate in the interview, not assumed):** (1) Báo Giá quote automation, (2) quote follow-up, (3) Zalo/Facebook speed-to-lead reply, (4) order status tracking, (5) dealer (ĐL) receivables reminders.
+
+**Note:** HTP already has one shipped automation — `/htp-review` (Vietnamese Google review reply drafter) — and the `product/qr-menu/` QR-menu stack (built for Mylan) is a portable template if a hospitality angle ever comes up. This discovery is the front door to a proper HTP automation roadmap.
+
+**Owner:** Hughie
+
+---
+
+## 2026-07-12 — HTP = client-zero; custom CRM built on the house stack
+
+**Decision:** (1) Treat HTP (the family door business) as client-zero — the proving ground for the automation products Hughie sells. (2) Build the HTP CRM as a custom web app at `product/htp-crm/` (FastAPI + SQLite + server-rendered Vietnamese HTML, Docker behind the shared STL Caddy on the Hermes VPS) rather than Google Sheets/Airtable. (3) v1 scope = customer records + quote follow-up + warranty/service log + dealer công nợ, plus four GHL-inspired copies: manual reminders, lead-source attribution, post-install review asks, pipeline value totals. Users = parents + staff → 100% Vietnamese, phone-first, one shared family password.
+
+**Why:** Discovery named the leaks in Hughie's own words: quotes get zero follow-up and all customer info lives in a paper notebook. At ~800M VND/mo and 15% margin, one recovered quote/month pays for the build. Custom app over Sheets because it becomes a portfolio piece + resellable template, and the house stack already exists (qr-menu/STL patterns were copied, not reinvented). No Zalo API exists for personal accounts, so messaging stays human-in-the-loop: the app computes who/what, a person taps copy → send.
+
+**Alternatives considered:** Google Sheets + Apps Script (lowest adoption friction, but clunky on phones and dead-ends before quotes/orders); hybrid app + Sheet sync (more work, deferred); GHL itself (subscription cost, English UI, automation features dead without Zalo/SMS APIs).
+
+**Owner:** Hughie (build: AIOS; adoption: Hughie with parents)
+
+---
+
+## 2026-07-12 — HTP CRM: pivot to Zalo OA (Official Account) API for messaging
+
+**Decision:** Supersede the "no Zalo API" call from the CRM-build decision above. Integrate Zalo's **Official Account (OA)** API — `product/htp-crm/zalo_client.py` (OAuth token exchange/refresh, webhook receiver, send-text) plus `/zalo` admin route, per-customer link/unlink, and `zalo_events`/`zalo_user_id` tracking in `store.py`. Human-in-the-loop copy→send is dropped in favor of the app sending Zalo messages directly once a customer is linked to their Zalo user id.
+
+**Why:** The earlier decision ruled out messaging automation because "no Zalo API exists for personal accounts" — true, but Zalo OA is a separate, legitimate business-account API (same category as WhatsApp Business API), not the personal-account API that was ruled out. It supports OAuth-based sending once an Official Account is set up, so direct send is viable without violating personal-account ToS.
+
+**Owner:** Hughie
+
+---
+
+## 2026-07-13 — HTP CRM: redeployed live (Khách hàng tab simplification + accumulated changes)
+
+**What shipped:** Fixed a kebab-menu CSS bug on `/khach` (`.card-menu{display:flex}` was overriding the `hidden` attribute, so Sửa thông tin/Gọi điện/Xóa khách hàng always showed instead of only on ⋮ click). Simplified the Khách hàng tab per Hughie's request: removed the "+ Khách mới (xin báo giá)" button, the Khách chính/Lead toggle, the Tất cả/Khách lẻ/Đại lý filter chips, and the "Nhập nhiều khách một lúc" link — that tab now always shows all converted customers (leads/quotes still managed from Báo giá tab, which has its own add button). Also pushed accumulated local changes to `app.py`, `store.py`, `pricing.py`, `templates_vi.py`, and `requirements.txt` (adds `openpyxl`) that had drifted from the 2026-07-12 deploy.
+
+**Deploy gotcha found:** `app.py` imports `baogia.py`, which was missing from the documented scp file list in both `README.md` and `references/vps-access.md` — first rebuild crash-looped with `ModuleNotFoundError: No module named 'baogia'`. Fixed by scp'ing the missing file and updating both docs' file lists so future deploys don't hit this.
+
+**Verified:** Container `htp-crm-app` up cleanly, no errors in `docker logs`. Public `https://crm.187-77-133-39.sslip.io/health` → 200, `/khach` → 303 (login redirect, expected unauthenticated). Data untouched (deploy only copies code files, not `data/`).
+
+**Owner:** Hughie
+
+## 2026-07-14 — HTP work board: zca-js bot in existing Zalo group, web board canonical
+
+**Decision:** Build the technician work board as a mobile page in htp-crm (`/viec`, new limited `tho` login role) and add a Zalo layer via **zca-js** — an unofficial personal-account bot on a warmed-up burner SIM account sitting in the family's existing Zalo group. Bot posts a 7:00 digest + stage-change pings and accepts exactly one command (`xong <N>`). Board stays the source of truth; bot is a disposable convenience layer with loud failure (status card on `/zalo`). Plan: `product/htp-crm/ZALO-BOT-PLAN.md` (planned on Fable, execution on Sonnet).
+
+**Why:** Zalo has no bot API for normal groups. The official route (OA + GMF) requires a paid Nâng cao/Premium OA package AND a new OA-created group whose members must follow the OA — the family wants their existing group. zca-js is actively maintained and the usage profile (a few messages/day, one group) is the lowest-risk automation pattern. Would change my mind: repeated bans/breakage → pay for OA GMF (upgrade path already scoped).
+
+**Alternatives considered:** OA + GMF group (official, stable, but paid + new group); pinned-link-only web board with no chat layer (fallback that ships first anyway as Phase 1).
+
+**Owner:** Hughie (burner account warm-up + group admin); agent (build/deploy).
+
+## 2026-07-14 — Amendment: cut the /viec web board from v1, chat-first
+
+**Decision:** Drop Phase 1 (web work board + `tho` login role) from ZALO-BOT-PLAN. v1 is chat-only: the Zalo group is the technician interface (digest, pings, `xong <N>`, plus a new `viec` command that replies with a fresh numbered list). CRM stays canonical; family workflow unchanged.
+
+**Why:** For a family-scale crew the board is a parallel UI that may never get opened — speculative code. Bot-death fallback is just the status quo (phone calls), not a catastrophe. The board's one real advantage (always-current view) is mostly covered by the `viec` command + pinning the latest digest message in the group. Would change my mind: bot proves fragile or chat proves insufficient → build the board then (demand-tested) or upgrade to OA/GMF.
+
+**Alternatives considered:** keep both layers (original plan — more code, untested demand).
+
+**Owner:** Hughie.
+
+
+## 2026-07-14 — Quote Follow-up Engine (L2 Autonomy)
+
+**Decision:** Build a Quote Follow-up Engine for the HTP CRM at L2 (Drafted) autonomy. The system will detect quotes in the "Đã gửi" state for >48 hours without a reply, draft personalized follow-up messages using `templates_vi.py`, and notify Hughie to review and bulk-send them via Zalo.
+
+**Why:** Quotes sent without follow-up are a direct revenue leak. Automating the send completely (L3/L4) is too risky for customer relationships in v1. L2 ensures every pending quote gets a drafted follow-up without risking an off-tone automated message being sent. It plugs the leak while keeping a human in the loop. KPI is Quote-to-Closed conversion rate.
+
+**Alternatives considered:**
+- *L3/L4 Auto-send:* Rejected for v1; high risk of sending inappropriate messages if the customer replied through a different channel (e.g. called back directly instead of Zalo).
+- *L1 Manual Tap:* Status quo; relies on the operator checking the dashboard daily, which is the exact bottleneck causing missed follow-ups.
+
+**Owner:** Hughie
+
+## 2026-07-16 — HTP Zalo work bot: go-live (Phase 2) + behavior tuning from real testing
+
+**Decision:** Deployed the zca-js bot sidecar (built in the 2026-07-14 decision, Phase 1) to the VPS and took it live: burner account logged in via QR, family group discovered and locked in (`GROUP_THREAD_ID`), bidirectional flow confirmed. Found and fixed a real bug in the process — `bot.js`'s QR callback never called zca-js's `event.actions.saveToFile()`, so `qr.png` was never written and login could never succeed no matter how many times the QR card was reloaded. After Hughie's first live test, tuned two behaviors he flagged: (1) stage changes into "Hoàn thành" no longer ping the group — it's a to-do list, not a completion log; (2) chốt-ing a báo giá now pings the group immediately with the new job's bộ cửa details (door/kích thước/màu), reusing the existing copy-to-Zalo handoff text (`production_message`) with every VND figure stripped out, instead of waiting for the 7am digest.
+
+**Why:** The QR bug was invisible from the CRM side (health endpoint correctly reported `awaitingQR: true`; only the actual image file was missing) — smoke tests don't exercise the real zca-js network calls, so this only surfaced on the real go-live attempt. The ping tuning came directly from Hughie watching the bot behave with real data: a "job marked done" ping is noise once the CRM is the record of truth, and the highest-value moment to notify the group is the instant a job becomes real (chốt), not the next morning.
+
+**Alternatives considered:** Sending the full `production_message` (with prices) and trusting operators not to forward it — rejected, violates the locked "no VND in group messages, ever" rule from the 2026-07-14 plan. Building a separate message template from scratch — rejected in favor of reusing `production_message`'s exact phrasing/structure (now factored out as `production_message_no_price`) so the family sees consistent formatting whether it's manually copied or auto-sent.
+
+**Also found:** `product/htp-crm/{app.py,views.py,store.py,static/app.css}` carry an uncommitted, already-deployed "sổ đơn hàng" category-filter feature (chips by loại cửa, day-grouped headers) from an earlier session. Left untouched and uncommitted — out of scope for this task; smoke tests pass with it present, so it's safe to commit separately whenever Hughie wants it in git history.
+
+**Owner:** Hughie (burner account + live testing); agent (bug fix, deploy, behavior tuning)
+
+## 2026-07-17 — HTP CRM: per-door ghi chú field, dropped fabricated Nhôm Xingfa door type, refreshed price tables, cascade delete-customer
+
+**Decision:** Three changes shipped to the live CRM in one session. (1) Added a free-text ghi chú (note) field per door, captured at both door-selection points (intake wizard Bước 2/3 and the "+ Thêm cửa" form on an existing báo giá), stored on `quote_items`/`order_items`, carried onto the order on chốt, and surfaced everywhere the door line shows: quote/order/customer pages, printable hóa đơn, the Zalo group production ping + digest, and the báo giá Excel export's Ghi chú column (now combined with màu instead of màu alone). (2) Removed the fabricated standalone "Nhôm Xingfa" door type from `pricing.py`/`templates_vi.py` and refreshed the Cửa Cuốn Đức mẫu list + Cửa Nhôm Kính config/price tables against a corrected copy of the source calculator (Hughie's Downloads/index.html) — every mẫu in `DOOR_CONFIG` now has a matching KH/ĐL price entry. (3) `store.delete_customer()` now cascade-deletes a customer's quotes/quote_items/orders/order_items/order_payments/service_calls/debt_entries/reminders/touches instead of refusing when any exist — the existing double-`confirm()` dialog on the "Xóa khách hàng" button (already in `customers_page`) is now the only safety gate, its wording updated to say the related báo giá/đơn hàng/công nợ/nhắc hẹn go with it.
+
+**Why:** (1) was a direct request — quote items had no way to carry install notes ("khách yêu cầu ray nhôm", etc.) through to production/Zalo. (2) the previous port had fabricated mẫu/prices reaching real customers — real business risk. (3) was a direct request to relax the customer-delete safety rail from "hard block if any history exists" to "allow it, but require two explicit confirms" — the UI-side double-confirm already existed, only the backend block needed removing plus a real cascade so deleting a customer with orders doesn't leave orphaned quote_items/order_items/debt rows still counted in reports.
+
+**Alternatives considered:** For (3), soft-delete (flag + hide) instead of hard cascade-delete — not chosen; Hughie asked for actual deletion ("despite everything"), and a hard delete is simpler to reason about than a hidden-but-present row leaking into totals if the hide filter is ever missed somewhere.
+
+**Owner:** Hughie
+
+---
+
+## 2026-07-17 — HTP CRM: Công nợ "not working" — root cause was never a bug, chốt never auto-charges dealers
+
+**Decision:** Investigated a "Công nợ isn't working" report (live site showed "Không có đại lý nào đang nợ" despite a real dealer having a 10.1M VND chốt order). Verified — by inspecting the live DB directly and reproducing locally, not guessing — that all `/cong-no` code (`dealer_balances()`, `customer_debts()`, `add_debt_entry()`, the routes) works correctly; `git diff HEAD` confirmed `create_order_from_quote()` never called `add_debt_entry()` in any prior commit either, so this was not a regression from today's earlier deploys. The real gap: chốt-ing a dealer's quote into an order has *never* recorded a debt charge — staff had to remember to separately tap "+ Ghi nợ" and retype the amount, and today was the first time a real dealer order hit that gap. Fixed `create_order_from_quote()` (`store.py`) to auto-record a `debt_entries` "charge" for the order's VAT-inclusive value whenever the customer is Đại lý, with an offsetting "payment" entry if a cọc was already recorded on the quote (mirrors the existing KH cọc→order_payments carry-over). Manual "+ Ghi nợ"/"+ Thanh toán" still work on top of this for corrections. Backfilled the 2 real live orders (E Sánh #4: 10.100.112đ, A Tâm #5: 7.438.860đ) through the actual `/cong-no/{id}/them` route so production data is now correct.
+
+**Why:** Silent financial gaps are the worst kind — the dealer owed money and the system said 0đ, which would have compounded every time a dealer order got chốt without anyone remembering the manual step. Charging at chốt time (not order-creation time generally, since đơn hàng only ever come from chốt) makes công nợ automatically correct going forward with zero new manual steps for staff.
+
+**Alternatives considered:** Keep it fully manual (rejected — same silent-gap risk resurfaces the next time someone forgets); charge at a different lifecycle point (e.g. on order stage change to hoàn thành) — rejected, dealers extend credit at chốt/delivery of the job spec, not at production completion, and chốt is the only moment `create_order_from_quote` runs.
+
+**Verification:** New regression test `tests_smoke_phase10.py` — confirmed it fails without the fix (dealer balance stayed 0 after chốt) and passes with it; covers no-cọc chốt, chốt-with-cọc netting, KH orders NOT touching debt_entries, and manual "+ Ghi nợ" still composing on top. Full 10-file smoke suite green.
+
+**Owner:** Hughie (reported the gap); agent (root-cause investigation, fix, live backfill)
+
+
+## 2026-07-18 — Chăm sóc khách qua bot: nhắc báo giá + xin đánh giá sau lắp đặt
+
+**Decision:** Built out the quote follow-up engine and the post-install review ask as a chat-first flow on the Zalo group bot (the L2 Drafted engine decided 2026-07-14, now delivered where the family actually lives). Three pieces: (1) the morning digest gains a 💬 CHĂM SÓC KHÁCH section — báo giá past the chase window and KH installs from the last 14 days awaiting a Google-review ask, names/product/days only, never VND; (2) a new group command `nhac`/`nhắc` replies with that summary plus one forward-ready draft per khách — pure template text with no headers, so a parent long-presses → Chuyển tiếp straight into the customer chat; (3) `/bot/inbound` can now return `{replies: [...]}` and bot.js sends them as separate messages (400ms apart). Closing the loop stays human: "Đã nhắn"/"Đã xin" on the Hôm nay page; items re-surface daily until marked. Same store queries as the web page, so chat and web can never disagree.
+
+**Why:** The Hôm nay page has had both features for months, but the family opens Zalo, not the CRM — drafts nobody sees plug no revenue leak. One-draft-per-message is the detail that makes chat delivery usable: forwarding a Zalo message is two taps; copying a section out of a combined digest on a phone is not.
+
+**Alternatives considered:** Auto-send per-customer via Zalo OA (rejected for now — OA not connected, and L2 keeps a human on the send per the original decision; scoped as Phase 3+ in the quote-followup skill); putting the full drafts inside the scheduled digest (rejected — noise every morning; drafts are on-demand via `nhac`).
+
+**Verification:** New `tests_smoke_phase12.py` — empty state, summary + pure-draft replies, nhac/nhắc equivalence, digest section + VND-free, ĐL and >14-day installs excluded, lần-2 template at 5+ days, đã-nhắn/đã-xin clears the list. Full 12-file smoke suite green; `node --check bot.js` clean.
+
+**Gate before go-live:** `GOOGLE_REVIEW_LINK` in `templates_vi.py` is still the REPLACE_ME placeholder — swap in HTP's real Google review short link, then rebuild/redeploy both containers (app + bot).
+
+**Owner:** Hughie (requested); agent (design, build, tests)
+
+
+## 2026-07-18 — One-tap Zalo DM to a friended customer (quote follow-up + review ask)
+
+**Decision:** Added a per-customer direct-message path to the follow-up/review engine, on top of the group-forward flow built earlier today. Workflow (Hughie's): he sends a Zalo friend request from the burner bot account to a customer's number; from then on the Hôm nay báo giá / review cards show a **Gửi Zalo** button that DMs that customer the draft in one tap and closes the loop (Đã nhắn / review-requested) on success. Mechanism: new `POST /send-dm` on the bot (`api.findUser(phone)` → uid → `api.sendMessage({msg}, uid, ThreadType.User)`), a CRM `_bot_send_dm()` proxy, and two guarded routes (`/bao-gia/{id}/gui-zalo-bot`, `/don-hang/{id}/gui-zalo-bot`). Button only renders when the bot is configured AND the customer has a Zalo number; a failed send returns a loud 502 and leaves the card in place so the family forwards manually instead. Swapped the real Google review short link into `templates_vi.py`.
+
+**Why:** Stayed at L2 (one-tap, human authorises each send) rather than L3 (auto-DM on due-date) — asked Hughie and he chose one-tap. Two reasons L3 was rejected: it removes the tone gate on customer-facing messages, and batch-DMing individual customers from a single burner account is the exact pattern Zalo's anti-spam flags — a ban would take down the whole group bot (digest, xong/viec, care summary), not just this feature. Friend-first + one-tap + loud-failure keeps the send human-paced and low-flag while killing the copy-paste step. Would change my mind: one-tap proves too slow at volume → revisit L3, gated on confirmed-friend status + throttling, or move to Zalo OA once connected.
+
+**Alternatives considered:** Fully automatic send (rejected — tone + ban risk above); Zalo OA `send_text` per-customer (rejected for now — OA still not connected, and the existing `/khach/{id}/gui-zalo` OA path stays dormant until it is); keep group-forward only (rejected — the extra forward step is exactly the friction one-tap removes for friended customers).
+
+**Verification:** Extended `tests_smoke_phase12.py` — success path closes the loop + drops the card, failure path returns 502 and leaves the quote in chase (non-destructive), the genuine helper fails loudly when BOT_URL is unset, and the Gửi Zalo button renders only when `bot_ready`. Full 12-file smoke suite green; `node --check bot.js` clean. The live findUser/sendMessage calls aren't exercised by smoke tests (no Zalo session) — same as the rest of the bot; verify on the VPS after deploy.
+
+**Deploy:** Rebuild both containers (app for the new routes + button; bot for `/send-dm`). Then live-test: friend one real customer number from the burner, tap Gửi Zalo on a test card, confirm the DM lands.
+
+**Owner:** Hughie (requested + chose one-tap over auto); agent (design, build, tests)
+
+## 2026-07-18 — Nhôm/Cửa Cuốn Đức price-catalog refresh: committed to git (had been live since 2026-07-17, never in history)
+
+**Decision:** Committed `pricing.py`'s Nhôm Kính → Nhôm Việt/Nhôm Nhập/Nhôm Maxpro/Cửa kính bản lề sàn/Lan can cầu thang catalog refresh and Cửa Cuốn Đức mẫu trim (full rationale already in the 2026-07-17 entry above) — it had been deployed live on the VPS since that session but was still sitting as an uncommitted working-tree change with no git history. Split into its own commit (`43dc0ed`) separate from the unrelated phụ kiện manual-entry feature (`43e9db0`) shipped earlier today, per Hughie's call not to bundle the two. Pushed to `htp-crm/zalo-work-bot`, re-copied `pricing.py` to `/opt/htp-crm`, and rebuilt both containers.
+
+**Why:** The two changes were unrelated (a business-critical pricing correction vs. this session's UI feature) but sitting in the same uncommitted diff. Committing them together risked shipping an unreviewed change under the wrong message, or the catalog refresh never getting its own git history at all.
+
+**Verification:** Full 12-file smoke suite green with the refresh in place. Post-deploy: in-container `/health` → `{"status":"ok"}`, public `https://crm.187-77-133-39.sslip.io/health` → 200, bot re-logged in cleanly.
+
+**Owner:** Hughie
+
+---
+
+## 2026-07-18 — "Giá đặc biệt" manual đơn-giá override on báo giá — shipped + deployed
+
+**Decision:** Every door in the intake wizard (Bước 2/3) and the add/sửa hạng mục form now has a "Giá đặc biệt (nhập tay)" checkbox. Ticking it forces a hand-entered **đơn giá (đ/m²)** — width × height × đơn giá, no small-door/Úc surcharges — even when the catalog already has a price for that mẫu. Previously the manual-price field only appeared when there was no catalog match at all; there was no way to charge a regular customer a special (usually lower) rate on a catalogued door. Server stays authoritative: the browser sends the đơn giá + a `manual` flag, `pricing.manual_line_total()` computes the total, same pattern as the existing catalog `line_total()`. Editing an existing manual line back-derives the đơn giá for display from the stored `thanh_tien` (schema unchanged — still only stores the line total + `is_manual_price`).
+
+Committed together with two unrelated pending changes already sitting in the working tree (`DIGEST_MINUTE` config for the morning digest, and the Phase 10 dealer-auto-charge smoke suite) — Hughie's call this time to bundle rather than split, since none of the three needed independent review or its own rollback point.
+
+**Why:** Hughie's dad occasionally wants to charge an old/regular customer less than the catalog rate. Đơn giá (not a flat total) was the right input shape because that's how he already thinks about door pricing — "width x height x price," matching the catalog's own mental model, just with his number instead of the table's.
+
+**Alternatives considered:** flat manual "Thành tiền" total (rejected — doesn't match how he prices, and duplicates the pre-existing no-catalog-match manual field's meaning inconsistently); wizard-only scope (rejected — the add/sửa form on an existing quote is the other place a special price would get set, e.g. revisiting an old customer's quote).
+
+**Verification:** New `tests_smoke_manual_price.py` (4 cases: unit math, wizard override beats catalog, wizard toggle-off unchanged, add-item-form override) + full existing smoke suite (`tests_smoke_phase5.py`, `tests_smoke_phase10.py`) all green. Render-checked both GET pages for the toggle + label text, and confirmed the edit-form prefill correctly back-derives đơn giá and pre-checks the toggle for an existing manual line.
+
+**Deploy:** scp'd `app.py store.py views.py templates_vi.py pricing.py baogia.py zalo_client.py requirements.txt Dockerfile docker-compose.yml` + `static/` to `/opt/htp-crm`, `docker compose up -d --build app` (bot sidecar untouched — no bot changes this session). Post-deploy: in-container `/health` → `{"status":"ok"}`, public `https://crm.187-77-133-39.sslip.io/health` → 200, and confirmed the live wizard page (authenticated) actually serves the new "Giá đặc biệt (nhập tay)" toggle text.
+
+**Owner:** Hughie (requested); agent (design, build, tests, deploy)
