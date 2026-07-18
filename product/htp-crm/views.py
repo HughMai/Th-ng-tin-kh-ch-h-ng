@@ -4,6 +4,7 @@ strings, no template engine). 100% Vietnamese, phone-first: single column,
 """
 import html
 import json
+import re
 from collections import Counter
 from itertools import groupby
 
@@ -307,6 +308,15 @@ _TOUCH_KIND_LABELS = {
 }
 
 
+def _state_labels_vi(detail: str) -> str:
+    """Old trang_thai touches stored raw codes ('sent → won',
+    'cho_san_xuat → hoan_thanh'); translate known tokens at render so the
+    family never sees enum names. Unknown words (e.g. a lost_reason) pass
+    through untouched."""
+    words = {**_STATUS_LABEL, **STAGE_LABELS, **LOST_REASON_LABELS}
+    return re.sub(r"[a-z_]+", lambda m: words.get(m.group(0), m.group(0)), detail)
+
+
 def _touch_timeline_html(touches: list) -> str:
     """Newest-first care log, label per kind, relative day count. Rendered as a
     connected vertical rail (a dot per entry) rather than separate cards."""
@@ -317,7 +327,10 @@ def _touch_timeline_html(touches: list) -> str:
         label = _TOUCH_KIND_LABELS.get(t["kind"], t["kind"])
         days = t.get("days_ago")
         when = "Hôm nay" if days == 0 else (f"{days} ngày trước" if days and days > 0 else fmt_date(t["created_at"]))
-        detail = f' — {esc(t["detail"])}' if t.get("detail") else ""
+        detail_text = t.get("detail") or ""
+        if detail_text and t["kind"] == "trang_thai":
+            detail_text = _state_labels_vi(detail_text)
+        detail = f" — {esc(detail_text)}" if detail_text else ""
         rows.append(f'<div class="tl-item"><span class="tl-dot"></span><div class="sub">{label}{detail} — {when}</div></div>')
     return f'<div class="timeline">{"".join(rows)}</div>'
 
@@ -599,6 +612,16 @@ function showStep(n){
   document.getElementById('wizlabel').textContent = STEP_LABELS[n];
   window.scrollTo(0,0);
 }
+function firstIncompleteUnit(){
+  var bad=null;
+  document.querySelectorAll('.unit-block').forEach(function(b){
+    if(bad) return;
+    var ngang=parseInt(b.querySelector('.u-ngang').value)||0;
+    var cao=parseInt(b.querySelector('.u-cao').value)||0;
+    if(!ngang || !cao || !unitTotal(b)) bad=b;
+  });
+  return bad;
+}
 function wizNext(){
   var s=curStep();
   if(s===1){
@@ -606,7 +629,11 @@ function wizNext(){
       showStep(1); alert('Cần nhập Tên và Số điện thoại'); return;
     }
     showStep(2);
-  } else if(s===2){ showStep(3); }
+  } else if(s===2){
+    var bad=firstIncompleteUnit();
+    if(bad){ bad.scrollIntoView({behavior:'smooth',block:'center'}); alert('Mỗi cửa cần đủ kích thước và giá (theo bảng giá hoặc nhập tay)'); return; }
+    showStep(3);
+  }
 }
 function wizBack(){ var s=curStep(); if(s>1) showStep(s-1); }
 function customerType(){ return document.querySelector('input[name=type]:checked').value; }
@@ -836,13 +863,7 @@ document.getElementById('wizform').addEventListener('submit', function(e){
   if(!document.getElementById('c_name').value.trim() || !document.getElementById('c_phone').value.trim()){
     e.preventDefault(); showStep(1); alert('Cần nhập Tên và Số điện thoại'); return;
   }
-  var bad=null;
-  document.querySelectorAll('.unit-block').forEach(function(b){
-    if(bad) return;
-    var ngang=parseInt(b.querySelector('.u-ngang').value)||0;
-    var cao=parseInt(b.querySelector('.u-cao').value)||0;
-    if(!ngang || !cao || !unitTotal(b)) bad=b;
-  });
+  var bad=firstIncompleteUnit();
   if(bad){ e.preventDefault(); showStep(2); bad.scrollIntoView({behavior:'smooth',block:'center'}); alert('Mỗi cửa cần đủ kích thước và giá (theo bảng giá hoặc nhập tay)'); return; }
   serializeWizard();
 });

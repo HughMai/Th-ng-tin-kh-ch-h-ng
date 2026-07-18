@@ -54,7 +54,7 @@ assert "Thêm cửa" in r.text, "quote build page missing '➕ Thêm cửa' coll
 r = client.post(
     f"/bao-gia/{qid}/hang-muc/moi",
     data={"loai_cua": "cua_cuon", "cong_nghe": "", "mau": "",
-          "ngang": "3000", "cao": "2200", "gia_thu_cong": "12.000.000"},
+          "ngang": "3000", "cao": "2200", "gia_thu_cong": "1.000.000"},
     follow_redirects=False,
 )
 assert r.status_code == 303, f"POST hang-muc/moi -> {r.status_code} {r.text}"
@@ -62,7 +62,9 @@ assert r.headers["location"] == f"/bao-gia/{qid}", \
     f"expected redirect back to build page, got {r.headers['location']}"
 r = client.get(r.headers["location"])
 assert r.status_code == 200
-assert "12.000.000đ" in r.text or "12.000.000" in r.text, \
+# gia_thu_cong is a đơn giá (đ/m²) since the 2026-07-18 manual-price rework:
+# 1.000.000 đ/m² × 3.0m × 2.2m = 6.600.000đ line total
+assert "6.600.000" in r.text, \
     "new line item's price not shown on the re-rendered build page"
 
 # ---- GET / still 200 and carries a data-ajax attribute ----------------------

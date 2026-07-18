@@ -84,4 +84,20 @@ assert r.status_code == 303
 assert store.dealer_balance(dl1) == order1["value_vnd"] - 1_000_000, "manual payment on top of auto-charge broken"
 print("4. manual + Ghi nợ still works on top of the auto-charge OK")
 
+# ---- 5. daily_report counts a dealer cọc exactly once ---------------------------
+# Regression: the ĐL cọc used to land in BOTH order_payments (carried onto the
+# order) and debt_entries (offsetting payment), and daily_report summed both —
+# inflating tiền thu trong ngày by every dealer cọc.
+assert store.order_payments_for(oid2) == [], (
+    "ĐL cọc must not be written to order_payments (dealer money lives in debt_entries)")
+store.add_order_payment(oid3 := store.get_quote(qid3)["order_id"], "thanh_toan", 4_000_000)
+report = store.daily_report(store.today_vn())
+coc_rows = [p for p in report["thu_list"] if p["name"] == "Đại lý Có Cọc"]
+assert len(coc_rows) == 1 and coc_rows[0]["amount_vnd"] == 2_000_000, (
+    f"dealer cọc must appear exactly once in the daily report, got {coc_rows}")
+# 2M dl2 cọc + 1M dl1 manual payment (test 4) + 4M KH payment just recorded
+assert report["thu_total"] == 7_000_000, (
+    f"thu_total must count each real payment once: expected 7.000.000, got {report['thu_total']}")
+print("5. daily_report counts dealer cọc once (no order_payments phantom) OK")
+
 print("ALL PHASE 10 SMOKE TESTS PASSED")

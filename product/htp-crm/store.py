@@ -970,7 +970,12 @@ def create_order_from_quote(quote_id: int) -> Optional[int]:
                        note=q.get("note") or "")
     link_quote_order(quote_id, oid)
     snapshot_order_items_from_quote(oid, quote_id)
-    if q.get("deposit_vnd"):  # carry the báo giá's đặt cọc as the order's first payment
+    if q.get("deposit_vnd") and q.get("customer_type") != "DL":
+        # carry the báo giá's đặt cọc as the order's first payment — KH only;
+        # ĐL money is tracked in debt_entries below (the order page shows no
+        # payment block for dealers, and daily_report/settlements count KH
+        # order_payments + ĐL debt_entries, so a dealer row here would be a
+        # phantom that double-counts the cọc)
         add_order_payment(oid, "coc", q["deposit_vnd"], note="Cọc từ báo giá")
     if q.get("customer_type") == "DL":
         order_value = get_order(oid)["value_vnd"]
@@ -1705,12 +1710,14 @@ def daily_report(day: str = "") -> dict:
     +7h so a chốt lands on the right VN day."""
     day = day or today_vn()
     with _connect() as db:
-        # money collected today — KH order payments (cọc + thanh toán) …
+        # money collected today — KH order payments (cọc + thanh toán) only;
+        # ĐL money lives in debt_entries (same c.type gate as settlements()),
+        # otherwise a dealer cọc carried onto the order would count twice
         kh_pays = db.execute(
             "SELECT c.name, p.kind, p.method, p.amount_vnd "
             "FROM order_payments p JOIN orders o ON o.id = p.order_id "
             "JOIN customers c ON c.id = o.customer_id "
-            "WHERE p.pay_date = ? ORDER BY p.amount_vnd DESC", (day,),
+            "WHERE c.type = 'KH' AND p.pay_date = ? ORDER BY p.amount_vnd DESC", (day,),
         ).fetchall()
         # … plus ĐL công nợ settlements the same day
         dl_pays = db.execute(
