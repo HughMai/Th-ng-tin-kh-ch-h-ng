@@ -269,6 +269,7 @@ def today_page(request: Request):
         reviews=store.orders_review_due(today),
         kh_debts=store.orders_debt_due(today),
         summary=store.open_quotes_summary(),
+        bot_ready=bool(BOT_URL and BOT_TOKEN),
     )
     return views.page("Hôm nay", body, active="/")
 
@@ -1028,6 +1029,40 @@ def order_review_requested(request: Request, order_id: int, next: str = Form("")
     return _order_flag_route(order_id, "review_requested_at", next, request)
 
 
+# ---- one-tap Zalo DM from a Hôm nay care card (bot must be friends w/ number) --
+@app.post("/bao-gia/{quote_id}/gui-zalo-bot")
+def quote_send_zalo_bot(request: Request, quote_id: int, text: str = Form(...), next: str = Form("")):
+    """DM the follow-up draft to the customer via the bot, then close the loop
+    (Đã nhắn) exactly as the manual button would. Loud 502 on failure so the
+    card stays and the family forwards the draft from the group instead."""
+    if r := _guard(request):
+        return r
+    q = store.get_quote(quote_id)
+    if not q:
+        raise HTTPException(status_code=404)
+    ok, err = _bot_send_dm(q.get("zalo_phone") or q.get("phone"), text)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Gửi Zalo thất bại: {err}. Chuyển tiếp tay trong nhóm nhé.")
+    store.mark_quote_contacted(quote_id)
+    return RedirectResponse(_safe_next(next, "/"), status_code=303)
+
+
+@app.post("/don-hang/{order_id}/gui-zalo-bot")
+def order_review_send_zalo_bot(request: Request, order_id: int, text: str = Form(...), next: str = Form("")):
+    """DM the review-ask draft to the customer via the bot, then mark review
+    requested. Loud 502 on failure (same fall-back contract as above)."""
+    if r := _guard(request):
+        return r
+    o = store.get_order(order_id)
+    if not o:
+        raise HTTPException(status_code=404)
+    ok, err = _bot_send_dm(o.get("zalo_phone") or o.get("phone"), text)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Gửi Zalo thất bại: {err}. Chuyển tiếp tay trong nhóm nhé.")
+    store.set_order_flag(order_id, "review_requested_at")
+    return RedirectResponse(_safe_next(next, f"/don-hang/{order_id}"), status_code=303)
+
+
 # ---- công nợ ------------------------------------------------------------------------
 @app.get("/cong-no", response_class=HTMLResponse)
 def debts(request: Request, loc: str = "tat-ca", ngay: str = ""):
@@ -1254,6 +1289,30 @@ def _bot_send(text: str) -> None:
         pass
 
 
+def _bot_send_dm(phone: str, text: str) -> tuple[bool, str]:
+    """One-tap customer DM via the personal-account bot (zca-js findUser +
+    sendMessage). Requires the bot configured, logged in, and already FRIENDS
+    with the number (Hughie sends the friend request first). Returns
+    (ok, error_vi) — fails loudly so the family falls back to forwarding the
+    draft from the group instead of a silent no-op."""
+    if not (BOT_URL and BOT_TOKEN):
+        return False, "Bot chưa cấu hình"
+    if not phone:
+        return False, "Khách chưa có số Zalo"
+    try:
+        r = requests.post(f"{BOT_URL}/send-dm", json={"phone": phone, "text": text},
+                          headers={"X-Bot-Token": BOT_TOKEN}, timeout=10)
+    except Exception as e:
+        return False, f"Không gọi được bot ({e})"
+    if r.status_code == 200:
+        return True, ""
+    try:
+        detail = r.json().get("error", "")
+    except Exception:
+        detail = ""
+    return False, detail or f"Bot lỗi {r.status_code}"
+
+
 def _bot_health() -> dict | None:
     if not BOT_URL:
         return None
@@ -1318,6 +1377,55 @@ def _digest_text(today: str) -> str:
         lines.append(f"{idx}. {tag}{o['customer_name']} — {_job_desc(o)}{addr}{phone}")
     lines.append("Lắp xong nhắn: xong <số> · Xem việc: viec")
     return "\n".join(lines)
+
+
+def _care_lists(today: str) -> tuple[list, list]:
+    """Sales-side follow-ups: báo giá past the chase window + KH installs
+    awaiting a review ask. Same store queries as the Hôm nay page, so chat
+    and web can never disagree."""
+    return store.quotes_to_chase(today), store.orders_review_due(today)
+
+
+def _care_summary_text(chase: list, reviews: list, hint: bool) -> str:
+    """💬 CHĂM SÓC KHÁCH section — names/product/days only, never VND."""
+    if not (chase or reviews):
+        return ""
+    lines = ["💬 CHĂM SÓC KHÁCH"]
+    if chase:
+        lines.append(f"Nhắc báo giá ({len(chase)}):")
+        for q in chase:
+            lan = " — nhắc lần 2" if q["nudge_level"] == 2 else ""
+            phone = q["zalo_phone"] or q["phone"] or ""
+            lines.append(f"• {q['customer_name']} — {_job_desc(q)} — gửi {q['days_sent']} ngày{lan}"
+                         + (f" — {phone}" if phone else ""))
+    if reviews:
+        lines.append(f"Xin đánh giá ({len(reviews)}):")
+        for o in reviews:
+            phone = o["zalo_phone"] or o["phone"] or ""
+            lines.append(f"• {o['customer_name']} — {_job_desc(o)} — lắp {views.fmt_date(o['install_date'])}"
+                         + (f" — {phone}" if phone else ""))
+    if hint:
+        lines.append("Lấy tin nhắn mẫu, gõ: nhac")
+    return "\n".join(lines)
+
+
+def _care_replies(today: str) -> list:
+    """'nhac' command: summary first, then one pure-draft message per khách —
+    no headers, so the family can long-press → chuyển tiếp a draft straight
+    into the customer chat without editing."""
+    chase, reviews = _care_lists(today)
+    if not (chase or reviews):
+        return ["Không có khách nào cần nhắc hôm nay 🎉"]
+    summary = _care_summary_text(chase, reviews, hint=False)
+    replies = [summary + "\nGiữ từng tin bên dưới để chuyển tiếp cho khách:"]
+    for q in chase:
+        tpl = "quote_followup_2" if q["nudge_level"] == 2 else "quote_followup_1"
+        replies.append(views.render(tpl, ten=q["customer_name"],
+                                    san_pham=views.PRODUCT_LABELS.get(q["product"], "sản phẩm")))
+    for o in reviews:
+        replies.append(views.render("review_request", ten=o["customer_name"],
+                                    san_pham=views.PRODUCT_LABELS.get(o["product"], "sản phẩm")))
+    return replies
 
 
 def _stage_ping(order_id: int, stage: str) -> None:
@@ -1388,6 +1496,12 @@ async def bot_inbound(request: Request):
     if text.lower() in ("viec", "việc"):
         return {"reply": _digest_text(today) or "Hôm nay không có việc 🎉"}
 
+    if text.lower() in ("nhac", "nhắc"):
+        replies = _care_replies(today)
+        if len(replies) == 1:
+            return {"reply": replies[0]}
+        return {"replies": replies}
+
     if text.lower().startswith("xong"):
         return {"reply": "Gõ: xong <số> (số trong bảng công việc)"}
 
@@ -1397,11 +1511,13 @@ async def bot_inbound(request: Request):
 @app.get("/bot/digest")
 def bot_digest_pull(request: Request):
     """Pulled once a day by the bot sidecar's morning schedule (DIGEST_HOUR/
-    DIGEST_MINUTE) — combines the xưởng production queue with the lắp đặt
-    work list."""
+    DIGEST_MINUTE) — xưởng production queue + lắp đặt work list + chăm sóc
+    khách summary (quote nudges / review asks due)."""
     _check_bot_token(request)
     today = store.today_vn()
-    parts = [t for t in (_production_text(), _digest_text(today)) if t]
+    chase, reviews = _care_lists(today)
+    parts = [t for t in (_production_text(), _digest_text(today),
+                         _care_summary_text(chase, reviews, hint=True)) if t]
     return {"text": "\n\n".join(parts)}
 
 

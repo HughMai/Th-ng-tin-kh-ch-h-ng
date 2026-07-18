@@ -23,6 +23,7 @@ const CRM_URL = process.env.CRM_URL || "http://htp-crm-app:8000";
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
 const GROUP_THREAD_ID = process.env.GROUP_THREAD_ID || "";
 const DIGEST_HOUR = Number(process.env.DIGEST_HOUR || 7);
+const DIGEST_MINUTE = Number(process.env.DIGEST_MINUTE || 30);
 const RECONNECT_MS = 60_000;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -123,8 +124,13 @@ async function onMessage(message) {
             name: message.data.dName || "",
             text: message.data.content,
         });
-        if (result && result.reply) {
-            await api.sendMessage({ msg: result.reply }, GROUP_THREAD_ID, ThreadType.Group);
+        // "nhac" answers with replies[] — each draft goes out as its own
+        // message so the family can long-press → forward one straight to a
+        // customer chat. Small gap keeps ordering stable on Zalo's side.
+        const replies = result ? result.replies || (result.reply ? [result.reply] : []) : [];
+        for (let i = 0; i < replies.length; i++) {
+            if (i > 0) await new Promise((resolve) => setTimeout(resolve, 400));
+            await api.sendMessage({ msg: replies[i] }, GROUP_THREAD_ID, ThreadType.Group);
         }
     } catch (e) {
         log("inbound forward failed:", e.message);
@@ -134,7 +140,9 @@ async function onMessage(message) {
 async function digestTick() {
     if (!state.loggedIn || !GROUP_THREAD_ID) return;
     const now = new Date();
-    if (now.getHours() !== DIGEST_HOUR) return;
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const targetMinutes = DIGEST_HOUR * 60 + DIGEST_MINUTE;
+    if (nowMinutes < targetMinutes) return;
     const todayStr = localDateStr(now);
     if (lastDigestDate === todayStr) return;
 
@@ -263,6 +271,50 @@ const server = http.createServer((req, res) => {
                     return;
                 }
                 await api.sendMessage({ msg: text }, GROUP_THREAD_ID, ThreadType.Group);
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ status: "ok" }));
+            } catch (e) {
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+        return;
+    }
+
+    // Direct message to one customer — the CRM's one-tap "Gửi Zalo" on a
+    // quote-followup / review-ask card. Resolves a phone number to a Zalo uid
+    // (works when the bot account is already FRIENDS with that number) and DMs
+    // the draft. No GROUP_THREAD_ID needed — this is a person, not the group.
+    if (url.pathname === "/send-dm" && req.method === "POST") {
+        const token = req.headers["x-bot-token"] || "";
+        if (!BOT_TOKEN || token !== BOT_TOKEN) {
+            res.writeHead(403);
+            res.end();
+            return;
+        }
+        if (!state.loggedIn) {
+            res.writeHead(503);
+            res.end(JSON.stringify({ error: "bot chưa đăng nhập" }));
+            return;
+        }
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", async () => {
+            try {
+                const { phone, text } = JSON.parse(body || "{}");
+                if (!phone || !text) {
+                    res.writeHead(400);
+                    res.end(JSON.stringify({ error: "thiếu phone hoặc text" }));
+                    return;
+                }
+                const found = await api.findUser(String(phone)).catch(() => null);
+                const uid = found && (found.uid || found.userId);
+                if (!uid) {
+                    res.writeHead(404);
+                    res.end(JSON.stringify({ error: "không tìm thấy Zalo cho số này (chưa kết bạn?)" }));
+                    return;
+                }
+                await api.sendMessage({ msg: text }, uid, ThreadType.User);
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok" }));
             } catch (e) {

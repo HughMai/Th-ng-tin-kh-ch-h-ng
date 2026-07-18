@@ -311,8 +311,22 @@ def _touch_timeline_html(touches: list) -> str:
 
 # ---------------------------------------------------------------- Hôm nay
 
+def _zalo_bot_btn(action: str, msg: str) -> str:
+    """One-tap: DM this draft to the customer via the personal-account bot.
+    On 200 the AJAX layer removes the card (loop already closed server-side);
+    on failure it falls back to a normal POST that shows a loud error and
+    keeps the card, so the family can forward the draft from the group."""
+    return (
+        f'<form method="post" action="{esc(action)}" class="flex grow" data-ajax="remove">'
+        f'<input type="hidden" name="text" value="{esc(msg)}">'
+        f'<input type="hidden" name="next" value="/">'
+        f'<button class="btn zalo w-full">Gửi Zalo</button></form>'
+    )
+
+
 def today_page(chase: list, checkins: list, expiring: list, debts: list,
-               reminders: list, reviews: list, summary: dict, kh_debts: list = None) -> str:
+               reminders: list, reviews: list, summary: dict, kh_debts: list = None,
+               bot_ready: bool = False) -> str:
     kh_debts = kh_debts or []
     # Stat-card row (GHL-style dashboard convention) — visible on all
     # viewports. No new store.py queries: the pipeline total reuses the
@@ -337,11 +351,15 @@ def today_page(chase: list, checkins: list, expiring: list, debts: list,
             msg = render("quote_followup_2" if q["nudge_level"] == 2 else "quote_followup_1",
                          ten=q["customer_name"], san_pham=label)
             badge = '<span class="badge">Lần 2</span>' if q["nudge_level"] == 2 else ""
+            bot_row = ""
+            if bot_ready and (q["zalo_phone"] or q["phone"]):
+                bot_row = f'<div class="row">{_zalo_bot_btn("/bao-gia/" + str(q["id"]) + "/gui-zalo-bot", msg)}</div>'
             parts.append(f"""
 <div class="card">
   <div class="name">{esc(q["customer_name"])} {badge}</div>
   <div class="sub">{esc(label.capitalize())} — {fmt_vnd(q["value_vnd"])} — gửi {q["days_sent"]} ngày trước</div>
   {contact_buttons(q["phone"], q["zalo_phone"], msg, customer_id=q["customer_id"])}
+  {bot_row}
   <div class="row">{_post_btn(f'/bao-gia/{q["id"]}/da-nhan', "Đã nhắn", next_url="/", data_ajax="remove")}
   <a class="btn done" href="/bao-gia">Xem</a></div>
 </div>""")
@@ -362,11 +380,15 @@ def today_page(chase: list, checkins: list, expiring: list, debts: list,
         for o in reviews:
             label = PRODUCT_LABELS.get(o["product"], "sản phẩm")
             msg = render("review_request", ten=o["customer_name"], san_pham=label)
+            bot_row = ""
+            if bot_ready and (o["zalo_phone"] or o["phone"]):
+                bot_row = f'<div class="row">{_zalo_bot_btn("/don-hang/" + str(o["id"]) + "/gui-zalo-bot", msg)}</div>'
             parts.append(f"""
 <div class="card">
   <div class="name">{esc(o["customer_name"])}</div>
   <div class="sub">{esc(label.capitalize())} — lắp {fmt_date(o["install_date"])}</div>
   {contact_buttons(o["phone"], o["zalo_phone"], msg, customer_id=o["customer_id"])}
+  {bot_row}
   <div class="row">{_post_btn(f'/don-hang/{o["id"]}/da-xin-danh-gia', "Đã xin", next_url="/", data_ajax="remove")}</div>
 </div>""")
 

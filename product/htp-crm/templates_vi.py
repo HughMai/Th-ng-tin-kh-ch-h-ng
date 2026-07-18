@@ -8,15 +8,14 @@ formatted VND · {ngay} date (DD/MM/YYYY) · {link} Google review link.
 No DB table, no edit UI: this file IS the template store (edit + redeploy).
 """
 
-# Google Business Profile review link — replace with HTP's real short link
-# (Google Maps -> business profile -> "Ask for reviews" -> copy link).
-GOOGLE_REVIEW_LINK = "https://g.page/r/REPLACE_ME/review"
+# HTP's Google Business Profile review short link (Google Maps -> business
+# profile -> "Ask for reviews" -> copy link). Live.
+GOOGLE_REVIEW_LINK = "https://g.page/r/CRtKU-gKY9OxEAI/review"
 
 PRODUCT_LABELS = {
     "nhom_kinh": "cửa nhôm kính",
     "cua_cuon": "cửa cuốn",
     "cua_keo": "cửa kéo",
-    "xingfa": "nhôm xingfa",
     "khac": "sản phẩm",
 }
 
