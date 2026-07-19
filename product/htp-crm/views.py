@@ -179,6 +179,79 @@ def login_page(error: str = "") -> str:
 <body><div class="wrap">{body}</div></body></html>"""
 
 
+NEED_OPTIONS = [
+    ("cua_cuon", "Cửa cuốn mới"),
+    ("cua_keo", "Cửa kéo mới"),
+    ("nhom_kinh", "Cửa nhôm kính"),
+    ("sua_chua", "Sửa chữa / bảo trì"),
+    ("khac", "Khác"),
+]
+
+
+def _public_page(title: str, body: str) -> str:
+    """Bare public page (no nav, no logout) — same skeleton as login_page."""
+    return f"""<!doctype html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{esc(title)} — Hưng Thành Phát Door</title>
+<link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css">{FAVICON}</head>
+<body><div class="wrap">{body}</div></body></html>"""
+
+
+def baogia_public_page(company: dict, vals: dict | None = None, error: str = "") -> str:
+    """Public quote-request form (/yeu-cau) — the link handed out on
+    Zalo/Facebook/Chợ Tốt. Unauthenticated; keep it phone-first and short."""
+    v = vals or {}
+    err = f'<div class="callout callout-danger">{esc(error)}</div>' if error else ""
+    opts = "".join(
+        f'<option value="{val}"{" selected" if v.get("nhu_cau") == val else ""}>{label}</option>'
+        for val, label in NEED_OPTIONS
+    )
+    body = f"""
+<div class="card login-card">
+  <div class="login-brand">{esc(company["name"].title())}</div>
+  <div class="login-sub">{esc(company["tagline"])} — Cần Thơ, từ 2005</div>
+  <p class="mt-4">Anh/chị để lại thông tin, bên em <b>gọi lại báo giá trong 30 phút</b>
+  (giờ làm việc 8:00–17:30, T2–T7). Khảo sát tận nơi miễn phí ·
+  Lắp xong mới thanh toán · Sai vật tư đền 200%.</p>
+  {err}
+  <form method="post" action="/yeu-cau">
+    <label>Họ tên anh/chị</label>
+    <input name="ten" value="{esc(v.get("ten", ""))}" autofocus>
+    <label>Số điện thoại (có Zalo càng tốt)</label>
+    <input name="sdt" type="tel" value="{esc(v.get("sdt", ""))}">
+    <label>Khu vực / địa chỉ công trình</label>
+    <input name="khu_vuc" value="{esc(v.get("khu_vuc", ""))}" placeholder="VD: Bình Thủy, Cần Thơ">
+    <label>Anh/chị cần gì?</label>
+    <select name="nhu_cau">{opts}</select>
+    <label>Kích thước ngang × cao (mét — nếu biết)</label>
+    <input name="kich_thuoc" value="{esc(v.get("kich_thuoc", ""))}" placeholder="VD: 3m x 2.5m">
+    <label>Ghi chú thêm</label>
+    <textarea name="ghi_chu" rows="2">{esc(v.get("ghi_chu", ""))}</textarea>
+    <input name="website" value="" tabindex="-1" autocomplete="off" aria-hidden="true"
+           style="position:absolute;left:-9999px;height:0;width:0;border:0;padding:0">
+    <button class="btn big mt-4">Gửi yêu cầu báo giá</button>
+  </form>
+  <p class="mt-4">Cần gấp? Gọi/Zalo <a href="tel:0945042345"><b>0945 042 345</b></a></p>
+</div>"""
+    return _public_page("Yêu cầu báo giá", body)
+
+
+def baogia_thanks_page(company: dict) -> str:
+    body = f"""
+<div class="card login-card">
+  <div class="login-brand">Đã nhận yêu cầu của anh/chị! ✅</div>
+  <p class="mt-4">Bên em sẽ <b>gọi lại trong 30 phút</b> trong giờ làm việc
+  (8:00–17:30, T2–T7). Ngoài giờ, bên em gọi sớm sáng hôm sau.</p>
+  <p class="mt-4">Cần gấp anh/chị gọi <a href="tel:0945042345"><b>0945 042 345</b></a>
+  hoặc nhắn Zalo số này nha!</p>
+  <p class="mt-4">{esc(company["address"])} · {esc(company["website"])}</p>
+</div>"""
+    return _public_page("Cảm ơn anh/chị", body)
+
+
 # ---------------------------------------------------------------- shared bits
 
 def contact_buttons(phone: str, zalo_phone: str = "", msg: str = "",

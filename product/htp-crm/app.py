@@ -254,6 +254,51 @@ def zalo_domain_verify_root():
     return _ZALO_DOMAIN_VERIFY_HTML
 
 
+# ---- public lead form (/yeu-cau) ------------------------------------------------
+# Unauthenticated on purpose (like /login and the Zalo verify files): this is
+# the link the family hands out on Zalo/Facebook/Chợ Tốt so a customer can
+# leave a quote request after hours. Spam guards: honeypot field + per-IP
+# hourly throttle + hard length caps. A submission lands as a stage='lead'
+# customer plus a due-today reminder, so it surfaces in Hôm nay's Nhắc việc
+# with zero new UI. (/bao-gia was taken by the internal quotes tab.)
+_NEED_LABELS = dict(views.NEED_OPTIONS)
+
+
+@app.get("/yeu-cau", response_class=HTMLResponse)
+def lead_form_public():
+    return views.baogia_public_page(COMPANY)
+
+
+@app.post("/yeu-cau")
+def lead_form_submit(request: Request, ten: str = Form(""), sdt: str = Form(""),
+                     khu_vuc: str = Form(""), nhu_cau: str = Form("khac"),
+                     kich_thuoc: str = Form(""), ghi_chu: str = Form(""),
+                     website: str = Form("")):
+    if website.strip():  # honeypot — bots fill it, humans never see it
+        return RedirectResponse("/yeu-cau/cam-on", status_code=303)
+    ip = request.client.host if request.client else "?"
+    if _rate_check(f"lead:{ip}", 5, 3600):  # max 5 accepted submissions / hour / IP
+        raise HTTPException(status_code=429, detail="Gửi nhiều quá, anh/chị thử lại sau nhé.")
+    ten, khu_vuc = ten.strip()[:80], khu_vuc.strip()[:120]
+    kich_thuoc, ghi_chu = kich_thuoc.strip()[:60], ghi_chu.strip()[:500]
+    digits = re.sub(r"\D", "", sdt)
+    if len(ten) < 2 or not (9 <= len(digits) <= 12):
+        return HTMLResponse(views.baogia_public_page(
+            COMPANY,
+            vals={"ten": ten, "sdt": sdt, "khu_vuc": khu_vuc, "nhu_cau": nhu_cau,
+                  "kich_thuoc": kich_thuoc, "ghi_chu": ghi_chu},
+            error="Anh/chị kiểm tra lại họ tên và số điện thoại giúp em nhé."))
+    _rate_mark(f"lead:{ip}")
+    store.add_web_lead(ten, digits, khu_vuc, _NEED_LABELS.get(nhu_cau, "Khác"),
+                       kich_thuoc, ghi_chu)
+    return RedirectResponse("/yeu-cau/cam-on", status_code=303)
+
+
+@app.get("/yeu-cau/cam-on", response_class=HTMLResponse)
+def lead_form_thanks():
+    return views.baogia_thanks_page(COMPANY)
+
+
 # ---- Hôm nay -------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def today_page(request: Request):

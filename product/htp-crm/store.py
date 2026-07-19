@@ -1460,6 +1460,24 @@ def create_reminder(customer_id: int, due_date: str, note: str) -> int:
         return cur.lastrowid
 
 
+def add_web_lead(name: str, phone: str, area: str, need_label: str,
+                 size: str = "", note: str = "") -> int:
+    """Public /yeu-cau form submission → lead customer + a due-today reminder,
+    so the request surfaces in Hôm nay's Nhắc việc with no new UI. Reuses the
+    existing customer when the phone is already known (a past customer asking
+    again is exactly who we want to recognise, not duplicate)."""
+    existing = find_customer_by_phone(phone)
+    if existing:
+        cid = existing["id"]
+    else:
+        cid = create_customer(name, phone, type_="KH", source="khac",
+                              address=area, note="Từ form yêu cầu báo giá web",
+                              stage="lead")
+    detail = " · ".join(x for x in (need_label, size.strip(), note.strip()) if x)
+    create_reminder(cid, today_vn(), f"📥 Form web: {detail}")
+    return cid
+
+
 def mark_reminder_done(reminder_id: int) -> bool:
     with _connect() as db:
         cur = db.execute(
