@@ -20,6 +20,7 @@ os.environ["DB_PATH"] = str(Path(_tmp_dir) / "test.db")
 os.environ["FAMILY_PASSWORD"] = "test-pass-123"
 os.environ["SESSION_SECRET"] = "test-session-secret"
 os.environ["COOKIE_INSECURE"] = "1"
+os.environ["WEB_LEAD_TOKEN"] = "test-web-token"
 
 from fastapi.testclient import TestClient
 
@@ -78,5 +79,25 @@ assert len(leads) == 1, f"repeat phone must not duplicate: {leads}"
 mine = [x for x in store.reminders_due(store.today_vn()) if x["customer_id"] == c["id"]]
 assert len(mine) == 2, f"second request must add a second reminder: {mine}"
 
+# 7. JSON API (/api/yeu-cau — the hungthanhphat.vn website forward).
+r = client.post("/api/yeu-cau", json={"name": "Web Khách", "phone": "0987000111"})
+assert r.status_code == 401, f"missing token must 401: {r.status_code}"
+r = client.post("/api/yeu-cau", json={"name": "Web Khách", "phone": "0987000111"},
+                headers={"X-Web-Token": "wrong"})
+assert r.status_code == 401, f"wrong token must 401: {r.status_code}"
+r = client.post("/api/yeu-cau", headers={"X-Web-Token": "test-web-token"},
+                json={"name": "Web Khách", "phone": "0987 000 111",
+                      "need": "Cửa Cuốn — CN Đức — KV380", "size": "3m x 2.5m",
+                      "note": "Ước tính web: 9.702.000đ | web@test.vn"})
+assert r.status_code == 200 and r.json() == {"ok": True}, r.text
+wc = store.find_customer_by_phone("0987000111")
+assert wc and wc["stage"] == "lead", f"API lead missing: {wc}"
+wrem = [x for x in store.reminders_due(store.today_vn()) if x["customer_id"] == wc["id"]]
+assert len(wrem) == 1 and "KV380" in wrem[0]["note"] and "9.702.000" in wrem[0]["note"], wrem
+r = client.post("/api/yeu-cau", headers={"X-Web-Token": "test-web-token"},
+                json={"name": "X", "phone": "123"})
+assert r.status_code == 422, f"bad name/phone must 422: {r.status_code}"
+
 print("OK — tests_smoke_webleads: public form renders, lead+reminder stored, "
-      "surfaces on Hôm nay, honeypot dropped, bad input re-rendered, phone dedup works")
+      "surfaces on Hôm nay, honeypot dropped, bad input re-rendered, phone dedup works, "
+      "JSON API token-gated + stores lead")

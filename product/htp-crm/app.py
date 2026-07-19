@@ -50,6 +50,9 @@ ZALO_REDIRECT_URI = f"https://{PUBLIC_HOSTNAME}/zalo/oauth/callback"
 # when either is blank, so the app runs unchanged without the bot container.
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 BOT_URL = os.environ.get("BOT_URL", "")
+# Shared secret for the hungthanhphat.vn website's form → /api/yeu-cau forward.
+# Blank = the JSON endpoint is disabled (503); the HTML /yeu-cau form is unaffected.
+WEB_LEAD_TOKEN = os.environ.get("WEB_LEAD_TOKEN", "")
 # Company header printed on the exported Báo Giá. Defaults are HTP's real brand
 # details (from the quote template); any field can be overridden via env, and a
 # field left blank is simply omitted from the sheet.
@@ -291,12 +294,46 @@ def lead_form_submit(request: Request, ten: str = Form(""), sdt: str = Form(""),
     _rate_mark(f"lead:{ip}")
     store.add_web_lead(ten, digits, khu_vuc, _NEED_LABELS.get(nhu_cau, "Khác"),
                        kich_thuoc, ghi_chu)
+    _ping_group_new_lead(ten, digits, _NEED_LABELS.get(nhu_cau, "Khác"), kich_thuoc)
     return RedirectResponse("/yeu-cau/cam-on", status_code=303)
 
 
 @app.get("/yeu-cau/cam-on", response_class=HTMLResponse)
 def lead_form_thanks():
     return views.baogia_thanks_page(COMPANY)
+
+
+def _ping_group_new_lead(name: str, phone: str, need: str, size: str) -> None:
+    """Instant Zalo-group heads-up for a web lead. Name/phone/need/size ONLY —
+    the no-VND-in-group rule means the website's price estimate never rides
+    along (it still lands in the CRM reminder note, which is family-only)."""
+    parts = [f"📥 KHÁCH MỚI TỪ WEBSITE", f"👤 {name} — 📞 {phone}"]
+    detail = " · ".join(x for x in (need, size) if x)
+    if detail:
+        parts.append(detail)
+    parts.append("→ Gọi lại trong 15 phút nha!")
+    _bot_send("\n".join(parts))
+
+
+@app.post("/api/yeu-cau")
+def lead_api_submit(request: Request, payload: dict):
+    """JSON forward from hungthanhphat.vn's contact form (route.ts notifyViaCRM).
+    Token-gated so random internet POSTs can't write leads; the public HTML
+    form above stays the unauthenticated path with its own honeypot/throttle."""
+    if not WEB_LEAD_TOKEN:
+        raise HTTPException(status_code=503, detail="web lead forward not configured")
+    if not secrets.compare_digest(request.headers.get("X-Web-Token", ""), WEB_LEAD_TOKEN):
+        raise HTTPException(status_code=401, detail="bad token")
+    name = str(payload.get("name", "")).strip()[:80]
+    digits = re.sub(r"\D", "", str(payload.get("phone", "")))
+    need = str(payload.get("need", "")).strip()[:120]
+    size = str(payload.get("size", "")).strip()[:60]
+    note = str(payload.get("note", "")).strip()[:500]
+    if len(name) < 2 or not (9 <= len(digits) <= 12):
+        raise HTTPException(status_code=422, detail="ten/sdt")
+    store.add_web_lead(name, digits, "", need or "Từ website", size, note)
+    _ping_group_new_lead(name, digits, need, size)
+    return {"ok": True}
 
 
 # ---- Hôm nay -------------------------------------------------------------------
