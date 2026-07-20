@@ -7,7 +7,7 @@
  *
  * Bump CACHE when any precached asset changes so old copies get evicted.
  */
-const CACHE = 'htp-crm-v1';
+const CACHE = 'htp-crm-v2';
 const SHELL = [
   '/static/app.css',
   '/static/app.js',
