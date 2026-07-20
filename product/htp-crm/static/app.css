@@ -103,8 +103,7 @@ h2{font-size:var(--fs-xs);color:var(--ink-faint);margin:20px 2px 8px;
 .chip.urgent{background:var(--danger-text);color:#fff;font-weight:600}
 .chip.stage-cho_san_xuat{background:var(--surface-sunken);color:var(--ink-muted)}
 .chip.stage-dang_san_xuat{background:var(--info-bg);color:var(--info-text)}
-.chip.stage-dang_lap{background:var(--warn-bg);color:var(--warn-text)}
-.chip.stage-hoan_thanh{background:var(--ok-bg);color:var(--ok-text)}
+.chip.stage-dang_lap{background:var(--ok-bg);color:var(--ok-text)}
 .badge{background:var(--danger-text);color:#fff;border-radius:var(--r-pill);
  padding:2px 9px;font-size:var(--fs-xs);font-weight:600}
 
@@ -175,12 +174,6 @@ details.card>summary{font-weight:600;min-height:32px;display:flex;align-items:ce
 .preview-ok{background:var(--ok-bg)}
 .preview-dup{background:var(--warn-bg)}
 .preview-bad{background:var(--danger-bg)}
-
-.toast{position:fixed;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px) + 28px);
- left:50%;transform:translateX(-50%) translateY(6px);background:var(--ink);
- color:#fff;padding:10px 18px;border-radius:var(--r-pill);font-size:var(--fs-sm);
- opacity:0;transition:opacity var(--speed) ease-out,transform var(--speed) ease-out;z-index:20}
-.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
 /* ---- intake wizard (customer + doors + deposit) ---- */
 .wiz-progress{height:4px;background:var(--line);border-radius:var(--r-pill);margin:2px 0 16px}
@@ -272,7 +265,7 @@ details.card>summary{font-weight:600;min-height:32px;display:flex;align-items:ce
 .inv td.num,.inv th.num{text-align:right;white-space:nowrap}
 .inv .totals td{border:none;padding:3px 8px}
 @media print{
-  .top,.nav,.no-print,.toast{display:none !important}
+  .top,.nav,.no-print{display:none !important}
   .wrap{max-width:none}
   body{background:#fff;padding-bottom:0}
   .card{border:none;padding:0}
@@ -308,12 +301,56 @@ details.card>summary{font-weight:600;min-height:32px;display:flex;align-items:ce
 .callout-ok{border-left-color:var(--ok-text);background:var(--ok-bg);color:var(--ok-text)}
 .callout-brand{border-left-color:var(--brand);background:var(--brand-soft);color:var(--ink)}
 
+/* ---- board: Trello-style lists (Hôm nay work queues, Báo giá pipeline) ----
+   Unlike the old desktop-only .kanban this renders at every width. On a phone
+   the columns are ~84vw and scroll-snap, so one swipe lands exactly one list
+   in view — the same gesture Trello's own mobile board uses. Negative margins
+   bleed the strip to the viewport edges so a snapped column isn't clipped by
+   the .wrap padding. */
+.board{display:flex;gap:12px;align-items:flex-start;overflow-x:auto;
+ scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;
+ margin:0 calc(var(--sp-3) * -1);padding:2px var(--sp-3) 14px;scrollbar-width:thin}
+.board-col{flex:0 0 84vw;max-width:340px;scroll-snap-align:start;
+ background:var(--surface-sunken);border-radius:var(--r-lg);
+ border-top:3px solid var(--board-accent,var(--brand));padding:0 10px 10px}
+.board-col.accent-brand{--board-accent:var(--brand)}
+.board-col.accent-warn{--board-accent:var(--warn-text)}
+.board-col.accent-ok{--board-accent:var(--ok-text)}
+.board-col.accent-info{--board-accent:var(--info-text)}
+.board-col.accent-danger{--board-accent:var(--danger-text)}
+/* Deliberately NOT position:sticky — .board is an overflow-x scroll container,
+   so a sticky header resolves against THAT scrollport and gets pushed down
+   over its own first card. Columns are short; a plain header is correct. */
+.board-col-h{display:flex;align-items:center;gap:8px;padding:10px 4px}
+.board-col-t{flex:1;min-width:0;font-size:var(--fs-xs);color:var(--ink-muted);
+ text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+.board-col-n{flex:0 0 auto;background:var(--surface);color:var(--ink-muted);
+ border-radius:var(--r-pill);padding:1px 9px;font-size:var(--fs-xs);font-weight:600}
+.board-col-meta{flex:0 0 auto;font-size:var(--fs-xs);color:var(--ink-faint);
+ font-variant-numeric:tabular-nums}
+.board-col-body{display:flex;flex-direction:column;gap:8px}
+.board-card{background:var(--surface);border:1px solid var(--line);
+ border-radius:var(--r-md);box-shadow:var(--shadow-1);padding:12px}
+.board-card .name{font-weight:600;font-size:var(--fs-base)}
+.board-card .sub{color:var(--ink-muted);font-size:var(--fs-sm);margin-top:3px}
+.board-card .acts{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:var(--fs-xs)}
+.board-card .acts a{color:var(--brand);font-weight:600}
+.board-card .acts a:hover{text-decoration:underline}
+/* Cards are narrower than the old full-width list rows — shrink the controls
+   so a two-button row still fits side by side instead of stacking. */
+.board-card .row{gap:6px;margin-top:8px}
+.board-card .btn{min-height:42px;padding:8px 10px;font-size:14px}
+/* Drag is a desktop-only affordance; touch uses the buttons on the card. */
+.board-drag .board-card{cursor:grab}
+.board-drag .board-card:active{cursor:grabbing}
+.board-col.drop-over{outline:2px dashed var(--brand)}
+
 /* ---- GHL-style desktop shell: additive only, invisible below 900px ---- */
 .sidebar{display:none}
-.kanban{display:none}
 @media (min-width: 900px){
   .nav{display:none}
-  .quotes-list-mobile{display:none}
+  .board{margin:0;padding-left:0;padding-right:0;scroll-snap-type:none}
+  .board-col{flex:1 1 0;min-width:270px;max-width:none}
   body{margin-left:var(--sidebar-w);padding-bottom:24px}
   /* full-width shell: content fills the space beside the sidebar instead of
      floating as a narrow centered column */
@@ -335,20 +372,6 @@ details.card>summary{font-weight:600;min-height:32px;display:flex;align-items:ce
   .sidebar .brand{color:#fff;font-size:var(--fs-base);font-weight:700;
    letter-spacing:.14em;padding:16px 22px 22px}
   .top{margin-left:0}
-  .kanban{display:grid;grid-template-columns:repeat(3, 1fr);gap:12px;align-items:start}
-  .kanban-col{background:var(--surface-sunken);border-radius:var(--r-lg);padding:10px;min-height:120px}
-  .kanban-col h3{font-size:var(--fs-xs);color:var(--ink-faint);margin:2px 4px 10px;
-   text-transform:uppercase;letter-spacing:.08em;font-weight:600}
-  .kanban-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);
-   padding:10px;margin-bottom:8px;cursor:grab;font-size:var(--fs-sm)}
-  .kanban-card:active{cursor:grabbing}
-  .kanban-card .n{font-weight:600}
-  .kanban-card .n a{color:inherit;text-decoration:none}
-  .kanban-card .n a:hover{text-decoration:underline}
-  .kanban-card .acts{display:flex;gap:12px;margin-top:6px;font-size:var(--fs-xs)}
-  .kanban-card .acts a{color:var(--brand);text-decoration:none;font-weight:600}
-  .kanban-card .acts a:hover{text-decoration:underline}
-  .kanban-col.drop-over{outline:2px dashed var(--brand)}
   /* customer detail: fields-left / care-log-right master-detail (Twenty-style).
      Single stacked column below 900px — .detail-cols is undefined there. */
   .detail-cols{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:20px;align-items:start}

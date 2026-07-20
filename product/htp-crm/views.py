@@ -1,6 +1,6 @@
 """Server-rendered HTML for the HTP CRM (STL dashboard pattern: inline HTML
 strings, no template engine). 100% Vietnamese, phone-first: single column,
-17px base, >=48px touch targets, fixed bottom nav, tap-to-copy Zalo messages.
+17px base, >=48px touch targets, fixed bottom nav, one-tap Zalo/gọi actions.
 """
 import html
 import json
@@ -11,6 +11,7 @@ from itertools import groupby
 from templates_vi import (
     LOST_REASON_LABELS,
     PRODUCT_LABELS,
+    RETIRED_STAGE_LABELS,
     SOURCE_LABELS,
     STAGE_LABELS,
     render,
@@ -84,24 +85,6 @@ def fmt_date(d) -> str:
 
 
 _JS = """
-function copyMsg(btn){
-  var msg = btn.getAttribute('data-msg');
-  function done(){ showToast('Đã chép'); }
-  if (navigator.clipboard && window.isSecureContext){
-    navigator.clipboard.writeText(msg).then(done);
-  } else {
-    var ta = document.createElement('textarea');
-    ta.value = msg; ta.style.position='fixed'; ta.style.opacity='0';
-    document.body.appendChild(ta); ta.select();
-    try { document.execCommand('copy'); done(); } catch(e){}
-    ta.remove();
-  }
-}
-function showToast(t){
-  var el = document.getElementById('toast');
-  el.textContent = t; el.classList.add('show');
-  setTimeout(function(){ el.classList.remove('show'); }, 1600);
-}
 function fmtMoney(inp){
   // Keep the field as plain digits WHILE typing — do NOT re-insert grouping dots
   // on every keystroke. Rewriting .value mid-keystroke makes phone keyboards
@@ -167,7 +150,6 @@ def page(title: str, body: str, active: str = "", show_nav: bool = True,
 <form id="lo" method="post" action="/logout" hidden></form>
 <div class="wrap{(' ' + wrap_class) if wrap_class else ''}">{body}</div>
 {nav}
-<div class="toast" id="toast"></div>
 <script>{_JS}</script>
 <script src="/static/app.js"></script>
 </body></html>"""
@@ -273,15 +255,14 @@ def baogia_thanks_page(company: dict) -> str:
 
 def contact_buttons(phone: str, zalo_phone: str = "", msg: str = "",
                     customer_id: int = 0, zalo_user_id: str = "") -> str:
-    """Copy / Zalo / Gọi button row. ``msg`` empty -> no copy button.
+    """Zalo / Gọi button row. ``msg`` is no longer copied to the clipboard —
+    the family sends through the bot or the API instead, so a "Chép tin nhắn"
+    button was one tap of dead weight on every card. It survives only as the
+    body of the API direct-send below.
     When the customer is linked to a Zalo OA user id, add a direct-send button
     that posts through the API instead of opening the Zalo app — still a person
     tapping "send", just via the API rather than a deep link."""
     z = zalo_phone or phone
-    copy = (
-        f'<button type="button" class="btn copy" data-msg="{esc(msg)}" '
-        f'onclick="copyMsg(this)">Chép tin nhắn</button>'
-    ) if msg else ""
     zalo = f'<a class="btn zalo" href="{esc(zalo_link(z))}">Zalo</a>' if z else ""
     call = (f'<a class="btn call" href="tel:{esc(phone)}"'
             + (f' onclick="logGoi({customer_id})"' if customer_id else "")
@@ -293,7 +274,7 @@ def contact_buttons(phone: str, zalo_phone: str = "", msg: str = "",
             f'<input type="hidden" name="text" value="{esc(msg)}">'
             f'<button class="btn zalo w-full">Gửi qua API</button></form>'
         )
-    return f'<div class="row">{copy}{zalo}{call}{api_send}</div>'
+    return f'<div class="row">{zalo}{call}{api_send}</div>'
 
 
 def _post_btn(action: str, label: str, cls: str = "done", next_url: str = "", data_ajax: str = "") -> str:
@@ -405,7 +386,7 @@ def _state_labels_vi(detail: str) -> str:
     'cho_san_xuat → hoan_thanh'); translate known tokens at render so the
     family never sees enum names. Unknown words (e.g. a lost_reason) pass
     through untouched."""
-    words = {**_STATUS_LABEL, **STAGE_LABELS, **LOST_REASON_LABELS}
+    words = {**_STATUS_LABEL, **STAGE_LABELS, **RETIRED_STAGE_LABELS, **LOST_REASON_LABELS}
     return re.sub(r"[a-z_]+", lambda m: words.get(m.group(0), m.group(0)), detail)
 
 
@@ -442,139 +423,150 @@ def _zalo_bot_btn(action: str, msg: str) -> str:
     )
 
 
+def _board_html(columns: list, extra_class: str = "") -> str:
+    """Trello-style board. ``columns`` is a list of dicts:
+      label  — column heading
+      cards  — list of already-rendered card-body HTML strings
+      accent — token name for the 4px stripe on the column head (colour-codes
+               the list the way Trello's label strip does)
+      meta   — optional small right-aligned figure in the head (a money total)
+      attrs  — optional extra attributes on the column (drag-drop wiring)
+
+    Renders at every viewport, unlike the old desktop-only .kanban: on a phone
+    the columns are ~84vw and scroll-snap so each swipe lands one list square
+    in view, which is exactly how Trello's own mobile board behaves. Callers
+    drop empty columns before calling — an all-empty board is the caller's
+    empty state, not a row of blank lists."""
+    cols = []
+    for c in columns:
+        cards = "".join(f'<div class="board-card">{b}</div>' for b in c["cards"])
+        meta = f'<span class="board-col-meta">{c["meta"]}</span>' if c.get("meta") else ""
+        cols.append(f"""
+<div class="board-col accent-{esc(c.get("accent", "brand"))}"{c.get("attrs", "")}>
+  <div class="board-col-h"><span class="board-col-t">{esc(c["label"])}</span>
+    <span class="board-col-n">{len(c["cards"])}</span>{meta}</div>
+  <div class="board-col-body">{cards}</div>
+</div>""")
+    return f'<div class="board {extra_class}">{"".join(cols)}</div>'
+
+
 def today_page(chase: list, checkins: list, expiring: list, debts: list,
                reminders: list, reviews: list, summary: dict, kh_debts: list = None,
-               bot_ready: bool = False) -> str:
+               debt_total: int = 0, bot_ready: bool = False) -> str:
     kh_debts = kh_debts or []
     # Stat-card row (GHL-style dashboard convention) — visible on all
-    # viewports. No new store.py queries: the pipeline total reuses the
-    # already-existing open_quotes_summary(); the task count and debt total
-    # are derived from the SAME lists rendered below, so the numbers can
-    # never disagree with what's listed on the page.
+    # viewports. The pipeline total reuses the already-existing
+    # open_quotes_summary(); the task count is derived from the SAME lists
+    # rendered below, so it can never disagree with what's listed on the
+    # page. debt_total is the one exception: it comes from
+    # store.debt_outstanding_total() (the /cong-no grand total, dealer +
+    # every unpaid KH order) rather than from `debts`/`kh_debts` alone,
+    # because those two lists are gated to "actionable today" — an order
+    # that's unpaid but not yet past its nag grace period must still count
+    # here, or the headline number quietly disagrees with /cong-no.
     task_count = (len(chase) + len(checkins) + len(expiring) + len(debts)
                   + len(reminders) + len(reviews) + len(kh_debts))
-    debt_total = sum(d["balance"] for d in debts)
     stat_row = f"""
 <div class="stat-row">
   <div class="stat-card"><div class="n">{task_count}</div><div class="lbl">Việc cần làm hôm nay</div></div>
   <div class="stat-card"><div class="n">{fmt_vnd_short(summary["total"])}</div><div class="lbl">Báo giá đang theo dõi</div></div>
   <div class="stat-card"><div class="n">{fmt_vnd_short(debt_total)}</div><div class="lbl">Công nợ quá hạn</div></div>
 </div>"""
-    parts = [stat_row]
+    if task_count == 0:
+        return (stat_row + '<div class="empty" style="padding-top:70px;font-size:18px">'
+                "Hôm nay không có việc cần làm.</div>")
 
-    if chase:
-        parts.append(f"<h2>Cần nhắc báo giá ({len(chase)})</h2>")
-        for q in chase:
-            label = PRODUCT_LABELS.get(q["product"], "sản phẩm")
-            msg = render("quote_followup_2" if q["nudge_level"] == 2 else "quote_followup_1",
-                         ten=q["customer_name"], san_pham=label)
-            badge = '<span class="badge">Lần 2</span>' if q["nudge_level"] == 2 else ""
-            bot_row = ""
-            if bot_ready and (q["zalo_phone"] or q["phone"]):
-                bot_row = f'<div class="row">{_zalo_bot_btn("/bao-gia/" + str(q["id"]) + "/gui-zalo-bot", msg)}</div>'
-            parts.append(f"""
-<div class="card">
+    # One board column per kind of work. Columns are lists of things to DO, not
+    # stages a card moves between — nothing is dragged here; each card carries
+    # the button that closes its own loop and then removes itself (data-ajax).
+    cols = []
+
+    def col(label: str, accent: str, cards: list) -> None:
+        if cards:
+            cols.append({"label": label, "accent": accent, "cards": cards})
+
+    chase_cards = []
+    for q in chase:
+        label = PRODUCT_LABELS.get(q["product"], "sản phẩm")
+        msg = render("quote_followup_2" if q["nudge_level"] == 2 else "quote_followup_1",
+                     ten=q["customer_name"], san_pham=label)
+        badge = '<span class="badge">Lần 2</span>' if q["nudge_level"] == 2 else ""
+        bot_row = (f'<div class="row">{_zalo_bot_btn("/bao-gia/" + str(q["id"]) + "/gui-zalo-bot", msg)}</div>'
+                   if bot_ready and (q["zalo_phone"] or q["phone"]) else "")
+        chase_cards.append(f"""
   <div class="name">{esc(q["customer_name"])} {badge}</div>
   <div class="sub">{esc(label.capitalize())} — {fmt_vnd(q["value_vnd"])} — gửi {q["days_sent"]} ngày trước</div>
   {contact_buttons(q["phone"], q["zalo_phone"], msg, customer_id=q["customer_id"])}
   {bot_row}
   <div class="row">{_post_btn(f'/bao-gia/{q["id"]}/da-nhan', "Đã nhắn", next_url="/", data_ajax="remove")}
-  <a class="btn done" href="/bao-gia">Xem</a></div>
-</div>""")
+  <a class="btn done" href="/bao-gia">Xem</a></div>""")
+    col("Cần nhắc báo giá", "warn", chase_cards)
 
-    if reminders:
-        parts.append(f"<h2>Nhắc hôm nay ({len(reminders)})</h2>")
-        for r in reminders:
-            parts.append(f"""
-<div class="card">
+    col("Nhắc hôm nay", "brand", [f"""
   <div class="name">{esc(r["customer_name"])}</div>
   <div class="sub">{esc(r["note"])} — hẹn {fmt_date(r["due_date"])}</div>
   {contact_buttons(r["phone"], r["zalo_phone"], customer_id=r["customer_id"])}
-  <div class="row">{_post_btn(f'/nhac/{r["id"]}/xong', "Xong", next_url="/", data_ajax="remove")}</div>
-</div>""")
+  <div class="row">{_post_btn(f'/nhac/{r["id"]}/xong', "Xong", next_url="/", data_ajax="remove")}</div>""" for r in reminders])
 
-    if reviews:
-        parts.append(f"<h2>Xin đánh giá ({len(reviews)})</h2>")
-        for o in reviews:
-            label = PRODUCT_LABELS.get(o["product"], "sản phẩm")
-            msg = render("review_request", ten=o["customer_name"], san_pham=label)
-            bot_row = ""
-            if bot_ready and (o["zalo_phone"] or o["phone"]):
-                bot_row = f'<div class="row">{_zalo_bot_btn("/don-hang/" + str(o["id"]) + "/gui-zalo-bot", msg)}</div>'
-            parts.append(f"""
-<div class="card">
+    # Only reaches this queue once the đơn hàng is đã lắp đặt/đã giao —
+    # store.orders_review_due() gates on stage, not just an install date.
+    review_cards = []
+    for o in reviews:
+        label = PRODUCT_LABELS.get(o["product"], "sản phẩm")
+        msg = render("review_request", ten=o["customer_name"], san_pham=label)
+        bot_row = (f'<div class="row">{_zalo_bot_btn("/don-hang/" + str(o["id"]) + "/gui-zalo-bot", msg)}</div>'
+                   if bot_ready and (o["zalo_phone"] or o["phone"]) else "")
+        review_cards.append(f"""
   <div class="name">{esc(o["customer_name"])}</div>
   <div class="sub">{esc(label.capitalize())} — lắp {fmt_date(o["install_date"])}</div>
   {contact_buttons(o["phone"], o["zalo_phone"], msg, customer_id=o["customer_id"])}
   {bot_row}
-  <div class="row">{_post_btn(f'/don-hang/{o["id"]}/da-xin-danh-gia', "Đã xin", next_url="/", data_ajax="remove")}</div>
-</div>""")
+  <div class="row">{_post_btn(f'/don-hang/{o["id"]}/da-xin-danh-gia', "Đã xin", next_url="/", data_ajax="remove")}</div>""")
+    col("Xin đánh giá", "ok", review_cards)
 
-    if checkins:
-        parts.append(f"<h2>Bảo trì 6 tháng ({len(checkins)})</h2>")
-        for o in checkins:
-            label = PRODUCT_LABELS.get(o["product"], "sản phẩm")
-            msg = render("checkin_6m", ten=o["customer_name"], san_pham=label)
-            parts.append(f"""
-<div class="card">
+    col("Bảo trì 6 tháng", "info", [f"""
   <div class="name">{esc(o["customer_name"])}</div>
-  <div class="sub">{esc(label.capitalize())} — lắp {fmt_date(o["install_date"])}</div>
-  {contact_buttons(o["phone"], o["zalo_phone"], msg, customer_id=o["customer_id"])}
-  <div class="row">{_post_btn(f'/don-hang/{o["id"]}/da-bao-tri', "Đã bảo trì", next_url="/", data_ajax="remove")}</div>
-</div>""")
+  <div class="sub">{esc(PRODUCT_LABELS.get(o["product"], "sản phẩm").capitalize())} — lắp {fmt_date(o["install_date"])}</div>
+  {contact_buttons(o["phone"], o["zalo_phone"],
+                   render("checkin_6m", ten=o["customer_name"],
+                          san_pham=PRODUCT_LABELS.get(o["product"], "sản phẩm")),
+                   customer_id=o["customer_id"])}
+  <div class="row">{_post_btn(f'/don-hang/{o["id"]}/da-bao-tri', "Đã bảo trì", next_url="/", data_ajax="remove")}</div>""" for o in checkins])
 
-    if expiring:
-        parts.append(f"<h2>Bảo hành sắp hết ({len(expiring)})</h2>")
-        for o in expiring:
-            label = PRODUCT_LABELS.get(o["product"], "sản phẩm")
-            msg = render("warranty_expiring", ten=o["customer_name"], san_pham=label,
-                         ngay=fmt_date(o["expiry_date"]))
-            parts.append(f"""
-<div class="card">
+    col("Bảo hành sắp hết", "warn", [f"""
   <div class="name">{esc(o["customer_name"])}</div>
-  <div class="sub">{esc(label.capitalize())} — hết BH {fmt_date(o["expiry_date"])}</div>
-  {contact_buttons(o["phone"], o["zalo_phone"], msg, customer_id=o["customer_id"])}
-  <div class="row">{_post_btn(f'/don-hang/{o["id"]}/da-nhan-bh', "Đã nhắn", next_url="/", data_ajax="remove")}</div>
-</div>""")
+  <div class="sub">{esc(PRODUCT_LABELS.get(o["product"], "sản phẩm").capitalize())} — hết BH {fmt_date(o["expiry_date"])}</div>
+  {contact_buttons(o["phone"], o["zalo_phone"],
+                   render("warranty_expiring", ten=o["customer_name"],
+                          san_pham=PRODUCT_LABELS.get(o["product"], "sản phẩm"),
+                          ngay=fmt_date(o["expiry_date"])),
+                   customer_id=o["customer_id"])}
+  <div class="row">{_post_btn(f'/don-hang/{o["id"]}/da-nhan-bh', "Đã nhắn", next_url="/", data_ajax="remove")}</div>""" for o in expiring])
 
-    if debts:
-        parts.append(f"<h2>Công nợ cần thu ({len(debts)})</h2>")
-        for d in debts:
-            msg = render("debt_reminder", ten=d["name"], so_tien=fmt_vnd(d["balance"]))
-            last = f"trả lần cuối {fmt_date(d['last_payment'])}" if d["last_payment"] else "chưa trả lần nào"
-            parts.append(f"""
-<div class="card">
+    col("Công nợ đại lý", "danger", [f"""
   <div class="name">{esc(d["name"])} <span class="chip warn">{fmt_vnd(d["balance"])}</span></div>
-  <div class="sub">{last}</div>
-  {contact_buttons(d["phone"], d["zalo_phone"], msg, customer_id=d["id"])}
-  <div class="row"><a class="btn done" href="/cong-no/{d["id"]}">Xem sổ nợ</a></div>
-</div>""")
+  <div class="sub">{f"trả lần cuối {fmt_date(d['last_payment'])}" if d["last_payment"] else "chưa trả lần nào"}</div>
+  {contact_buttons(d["phone"], d["zalo_phone"],
+                   render("debt_reminder", ten=d["name"], so_tien=fmt_vnd(d["balance"])),
+                   customer_id=d["id"])}
+  <div class="row"><a class="btn done" href="/cong-no/{d["id"]}">Xem sổ nợ</a></div>""" for d in debts])
 
-    if kh_debts:
-        parts.append(f"<h2>Khách lẻ còn nợ ({len(kh_debts)})</h2>")
-        for o in kh_debts:
-            bal = o["balance_vnd"]
-            label = PRODUCT_LABELS.get(o["product"], "sản phẩm")
-            msg = render("debt_reminder", ten=o["customer_name"], so_tien=fmt_vnd(bal))
-            parts.append(f"""
-<div class="card">
-  <div class="name">{esc(o["customer_name"])} <span class="chip warn">{fmt_vnd(bal)}</span></div>
-  <div class="sub">{esc(label.capitalize())} — lắp {fmt_date(o["install_date"])} · còn nợ</div>
-  {contact_buttons(o["phone"], o["zalo_phone"], msg, customer_id=o["customer_id"])}
+    col("Khách lẻ còn nợ", "danger", [f"""
+  <div class="name">{esc(o["customer_name"])} <span class="chip warn">{fmt_vnd(o["balance_vnd"])}</span></div>
+  <div class="sub">{esc(PRODUCT_LABELS.get(o["product"], "sản phẩm").capitalize())} — lắp {fmt_date(o["install_date"])} · còn nợ</div>
+  {contact_buttons(o["phone"], o["zalo_phone"],
+                   render("debt_reminder", ten=o["customer_name"], so_tien=fmt_vnd(o["balance_vnd"])),
+                   customer_id=o["customer_id"])}
   <div class="row">
     <form method="post" action="/don-hang/{o["id"]}/thanh-toan" class="flex grow" data-ajax="remove">
-      <input type="hidden" name="amount_vnd" value="{bal}">
+      <input type="hidden" name="amount_vnd" value="{o["balance_vnd"]}">
       <input type="hidden" name="kind" value="thanh_toan">
       <input type="hidden" name="next" value="/">
       <button class="btn done w-full">Đã thu đủ</button></form>
     <a class="btn done" href="/don-hang/{o["id"]}">Xem đơn</a>
-  </div>
-</div>""")
+  </div>""" for o in kh_debts])
 
-    if task_count == 0:
-        parts.append('<div class="empty" style="padding-top:70px;font-size:18px">'
-                     "Hôm nay không có việc cần làm.</div>")
-    return "".join(parts)
+    return stat_row + _board_html(cols)
 
 
 # ---------------------------------------------------------------- customers
@@ -1256,27 +1248,28 @@ VD:<br>Anh Hùng Trần Phú, 0901234567, KH, 12 Trần Phú<br>Đại lý Minh 
 
 # ---------------------------------------------------------------- quotes
 
-def _quote_pipeline_controls(q: dict, next_url: str = "/bao-gia", ajax: bool = False) -> str:
-    """Đã gửi / Chốt / Mất controls shared by the báo giá list card and the
+def _quote_pipeline_controls(q: dict, next_url: str = "/bao-gia") -> str:
+    """Đã gửi / Chốt / Mất controls shared by the báo giá board card and the
     quote detail page, so the two never drift. Chốt posts won → the server
     creates the đơn hàng, promotes the customer, and (303) returns to /bao-gia —
     the card moves Đã gửi → Chốt without leaving the pipeline. next_url only
     steers the 'Đã gửi' redirect; chốt/mất redirects are server-owned.
-    ajax=True (mobile báo-giá list) removes the card in place on Chốt/Mất instead
-    of a full reload; the kanban and detail page keep the plain POST + redirect."""
+
+    Deliberately a plain POST + redirect, not data-ajax="remove": on a board
+    the card has to LAND in the Chốt column (and the column counts/totals have
+    to follow it). Removing it in place would just make it vanish."""
     if q["status"] in ("sent", "chasing"):
-        aj = ' data-ajax="remove"' if ajax else ""
         lost_opts = "".join(f'<option value="{v}">{label}</option>'
                             for v, label in LOST_REASON_LABELS.items())
         return f"""
   <div class="row">
     {_post_btn(f'/bao-gia/{q["id"]}/da-nhan', "Đã gửi", next_url=next_url)}
-    <form method="post" action="/bao-gia/{q["id"]}/trang-thai" class="flex grow"{aj}>
+    <form method="post" action="/bao-gia/{q["id"]}/trang-thai" class="flex grow">
       <input type="hidden" name="trang_thai" value="won">
       <button class="btn call w-full">Chốt</button></form>
   </div>
   <details class="mt-2"><summary class="btn danger w-full">Mất</summary>
-    <form method="post" action="/bao-gia/{q["id"]}/trang-thai" class="mt-2"{aj}>
+    <form method="post" action="/bao-gia/{q["id"]}/trang-thai" class="mt-2">
       <input type="hidden" name="trang_thai" value="lost">
       <select name="ly_do">{lost_opts}</select>
       <button class="btn danger w-full mt-2">Xác nhận mất</button>
@@ -1290,25 +1283,7 @@ def _quote_pipeline_controls(q: dict, next_url: str = "/bao-gia", ajax: bool = F
 def quotes_page(rows: list, archived: list, summary: dict) -> str:
     header = (f'<div class="total">Đang theo dõi: {summary["n"]} báo giá — '
               f'{fmt_vnd_short(summary["total"])}</div>')
-    cards = []
-    for q in rows:
-        actions = _quote_pipeline_controls(q, next_url="/bao-gia", ajax=True)
-        lost = f' — {LOST_REASON_LABELS.get(q["lost_reason"], "")}' if q["status"] == "lost" and q["lost_reason"] else ""
-        cards.append(f"""
-<div class="card">
-  <div class="name">{esc(q["customer_name"])} {status_chip(q["status"])}</div>
-  <div class="sub">{bao_gia_so(q["id"], q.get("sent_date"))} · {esc(PRODUCT_LABELS.get(q["product"], "").capitalize())} — {fmt_vnd(q["value_vnd"])}
-   — gửi {fmt_date(q["sent_date"])} ({q["days_sent"]} ngày){lost}</div>
-  {f'<div class="sub">Ghi chú: {esc(q["description"])}</div>' if q.get("description") else ""}
-  <div class="row">
-    <a class="btn done" href="/bao-gia/{q["id"]}">{"Xem báo giá" if q.get("order_id") else "Sửa thông tin"}</a>
-    {'' if q.get("order_id") else f'<a class="btn done" href="/bao-gia/{q["id"]}/hang-muc/moi">+ Hạng mục</a>'}
-    {f'<a class="btn done" href="/bao-gia/{q["id"]}/xuat">Xuất báo giá</a>' if q.get("item_count") else ''}
-  </div>
-  {actions}
-</div>""")
-    body = "".join(cards) or '<div class="empty">Chưa có báo giá nào.</div>'
-    kanban = _kanban_html(rows)
+    board = _kanban_html(rows) if rows else '<div class="empty">Chưa có báo giá nào.</div>'
     archive = ""
     if archived:
         arch_cards = "".join(f"""
@@ -1324,8 +1299,7 @@ def quotes_page(rows: list, archived: list, summary: dict) -> str:
     return f"""
 {header}
 <a class="btn add" href="/khach/tiep-nhan">+ Khách hàng mới (tạo báo giá)</a>
-<div class="quotes-list-mobile">{body}</div>
-{kanban}
+{board}
 {archive}"""
 
 
@@ -1339,36 +1313,58 @@ _KANBAN_COLS = ((("sent", "chasing"), "sent", "Đã gửi"),
 
 
 def _kanban_html(rows: list) -> str:
-    """Desktop-only pipeline board (hidden <900px via CSS). Buckets the SAME
-    rows already fetched for the mobile list — switching the segment-filter
-    chip to "Tất cả" populates every column; the default "Đang theo dõi"
-    segment only has sent/chasing cards, which is the existing filter
-    behavior, not a kanban-specific limitation."""
+    """Báo giá pipeline board — now the ONLY rendering of the list (the parallel
+    mobile card list is gone, so the two can no longer drift). Drag-drop is a
+    desktop nicety; on touch the same moves are made with the Đã gửi / Chốt /
+    Mất buttons on each card, which is why those controls live on the card
+    rather than only in a hover menu.
+
+    Switching the segment-filter chip to "Tất cả" populates every column; the
+    default "Đang theo dõi" segment only has sent/chasing cards, which is the
+    existing filter behavior, not a board-specific limitation."""
+    _accent = {"sent": "brand", "won": "ok", "lost": "danger"}
     cols = []
     for statuses, drop_status, label in _KANBAN_COLS:
         col_rows = [q for q in rows if q["status"] in statuses]
         total = sum(q["value_vnd"] or 0 for q in col_rows)
-        cards = "".join(f"""
-<div class="kanban-card" draggable="true" ondragstart="kbDragStart(event,{q['id']})">
-  <div class="n"><a href="/bao-gia/{q['id']}" draggable="false">{esc(q["customer_name"])}</a></div>
-  <div>{esc(PRODUCT_LABELS.get(q["product"], "").capitalize())} — {fmt_vnd(q["value_vnd"])}</div>
+        cards = []
+        for q in col_rows:
+            lost = (f' — {LOST_REASON_LABELS.get(q["lost_reason"], "")}'
+                    if q["status"] == "lost" and q["lost_reason"] else "")
+            cards.append(f"""
+  <div class="name"><a href="/bao-gia/{q['id']}" draggable="false">{esc(q["customer_name"])}</a></div>
+  <div class="sub">{bao_gia_so(q["id"], q.get("sent_date"))} · {esc(PRODUCT_LABELS.get(q["product"], "").capitalize())} — {fmt_vnd(q["value_vnd"])}
+   — gửi {fmt_date(q["sent_date"])} ({q["days_sent"]} ngày){lost}</div>
+  {f'<div class="sub">Ghi chú: {esc(q["description"])}</div>' if q.get("description") else ""}
   <div class="acts">
-    <a href="/bao-gia/{q['id']}" draggable="false">{"Xem" if q.get("order_id") else "Sửa thông tin"}</a>
+    <a href="/bao-gia/{q['id']}" draggable="false">{"Xem báo giá" if q.get("order_id") else "Sửa thông tin"}</a>
     {'' if q.get("order_id") else f'<a href="/bao-gia/{q["id"]}/hang-muc/moi" draggable="false">+ Hạng mục</a>'}
     {f'<a href="/bao-gia/{q["id"]}/xuat" draggable="false">Xuất</a>' if q.get("item_count") else ''}
   </div>
-  <div draggable="false">{_quote_pipeline_controls(q, next_url="/bao-gia")}</div>
-</div>""" for q in col_rows)
-        cols.append(f"""
-<div class="kanban-col" data-status="{drop_status}" ondragover="kbAllowDrop(event)" ondrop="kbDrop(event,'{drop_status}')">
-  <h3>{label} ({len(col_rows)}) · {fmt_vnd_short(total)}</h3>
-  {cards}
-</div>""")
+  <div draggable="false">{_quote_pipeline_controls(q, next_url="/bao-gia")}</div>""")
+        cols.append({
+            "label": label, "accent": _accent[drop_status], "cards": cards,
+            "meta": fmt_vnd_short(total),
+            "attrs": (f' data-status="{drop_status}" ondragover="kbAllowDrop(event)"'
+                      f" ondrop=\"kbDrop(event,'{drop_status}')\""),
+        })
     return f"""
-<div class="kanban">{"".join(cols)}</div>
+{_board_html(cols, extra_class="board-drag")}
 <script>
 function kbAllowDrop(ev) {{ ev.preventDefault(); }}
-function kbDragStart(ev, id) {{ ev.dataTransfer.setData('text/plain', id); }}
+// The card wrapper is emitted by the shared board helper, so drag is wired up
+// here instead of via inline attributes. The quote id is read back off the
+// card's own /bao-gia/<id> link rather than duplicated into a data- attribute.
+// No JS -> no drag, and the Đã gửi / Chốt / Mất buttons still do every move.
+document.querySelectorAll('.board-drag .board-card').forEach(function (card) {{
+  var a = card.querySelector('a[href^="/bao-gia/"]');
+  if (!a) return;
+  var id = a.getAttribute('href').split('/')[2];
+  card.setAttribute('draggable', 'true');
+  card.addEventListener('dragstart', function (ev) {{
+    ev.dataTransfer.setData('text/plain', id);
+  }});
+}});
 function kbDrop(ev, newStatus) {{
   ev.preventDefault();
   var id = ev.dataTransfer.getData('text/plain');

@@ -1,4 +1,4 @@
-"""Vietnamese message templates for the HTP CRM tap-to-copy buttons.
+"""Vietnamese message templates for the HTP CRM Zalo send buttons.
 
 DRAFT WORDING — polish against references/htp-review-style.md (the family's
 voice on Google reviews) before the parents start sending these.
@@ -39,10 +39,14 @@ LOST_REASON_LABELS = {
 # button walks this sequence.
 STAGE_LABELS = {
     "cho_san_xuat": "Chờ sản xuất",
-    "dang_san_xuat": "Đang sản xuất",
-    "dang_lap": "Đang lắp đặt",
-    "hoan_thanh": "Hoàn thành",
+    "dang_san_xuat": "Sản xuất xong",
+    "dang_lap": "Đã lắp đặt/đã giao",
 }
+
+# 'hoan_thanh' was retired when the board collapsed to 3 stages — a job is done
+# when it's delivered, so old rows migrate to 'dang_lap'. Kept only so historic
+# care-log lines ("cho_san_xuat → hoan_thanh") still render in Vietnamese.
+RETIRED_STAGE_LABELS = {"hoan_thanh": "Đã lắp đặt/đã giao"}
 
 TEMPLATES = {
     # Day-2 gentle nudge after a quote went quiet.

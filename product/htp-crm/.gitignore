@@ -3,3 +3,5 @@ data/
 .venv/
 __pycache__/
 *.pyc
+backups/
+.playwright-cli/

@@ -71,18 +71,23 @@ def main() -> None:
                        iso(today - timedelta(days=6)))
 
     # --- orders -------------------------------------------------------------
+    # These are all jobs already on the wall, so they sit at the terminal stage.
+    # 'dang_lap' matters for the review ask specifically: orders_review_due()
+    # gates on stage, so an order left at chờ sản xuất would never queue one.
     # Check-in due: installed ~6.2 months ago (still inside 24-month warranty).
-    store.create_order(kh_hung, "cua_cuon", "Cửa cuốn nhà chính", 11_000_000,
-                       iso(shift_months(today, -6) - timedelta(days=7)), 24)
+    o_checkin = store.create_order(kh_hung, "cua_cuon", "Cửa cuốn nhà chính", 11_000_000,
+                                   iso(shift_months(today, -6) - timedelta(days=7)), 24)
     # Warranty expiring in ~20 days (24-month warranty).
-    store.create_order(kh_tuan, "nhom_kinh", "Bộ cửa nhôm kính mặt tiền", 25_000_000,
-                       iso(shift_months(today + timedelta(days=20), -24)), 24)
+    o_expiry = store.create_order(kh_tuan, "nhom_kinh", "Bộ cửa nhôm kính mặt tiền", 25_000_000,
+                                  iso(shift_months(today + timedelta(days=20), -24)), 24)
     # Review ask: KH order installed 3 days ago.
-    store.create_order(kh_lan, "cua_cuon", "Cửa cuốn gara", 14_000_000,
-                       iso(today - timedelta(days=3)), 24)
-    # Dealer order (should NOT trigger a review card).
+    o_review = store.create_order(kh_lan, "cua_cuon", "Cửa cuốn gara", 14_000_000,
+                                  iso(today - timedelta(days=3)), 24)
+    # Dealer order (should NOT trigger a review card — the queue is KH only).
     dl_order = store.create_order(dl_thanh_cong, "cua_keo", "5 bộ cửa kéo", 40_000_000,
                                   iso(today - timedelta(days=3)), 24)
+    for _oid in (o_checkin, o_expiry, o_review, dl_order):
+        store.set_order_stage(_oid, "dang_lap")
 
     # --- dealer ledger: overdue Minh Phát, linked charge for Thành Công ------
     store.add_debt_entry(dl_minh_phat, "charge", 10_000_000, iso(today - timedelta(days=90)),

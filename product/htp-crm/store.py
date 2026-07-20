@@ -406,13 +406,16 @@ def _migrate_orders_columns(db: sqlite3.Connection) -> None:
     urgent (làm gấp) flag that pins it to the top of the Tiến độ board."""
     existing = {row["name"] for row in db.execute("PRAGMA table_info(orders)")}
     for col, coltype in (
-        ("stage", "TEXT NOT NULL DEFAULT 'cho_san_xuat'"),  # cho_san_xuat|dang_san_xuat|dang_lap|hoan_thanh
+        ("stage", "TEXT NOT NULL DEFAULT 'cho_san_xuat'"),  # cho_san_xuat|dang_san_xuat|dang_lap
         ("urgent", "INTEGER NOT NULL DEFAULT 0"),
         ("urgent_at", "TEXT"),  # when it was flagged gấp (for the notify message)
         ("note", "TEXT"),  # ghi chú sản xuất/lắp đặt — carried from the báo giá on chốt, editable after
     ):
         if col not in existing:
             db.execute(f"ALTER TABLE orders ADD COLUMN {col} {coltype}")
+    # 4 stages → 3: 'hoan_thanh' folded into 'dang_lap' (đã lắp đặt/đã giao is
+    # the terminal stage now). Idempotent — a no-op once every row is migrated.
+    db.execute("UPDATE orders SET stage = 'dang_lap' WHERE stage = 'hoan_thanh'")
 
 
 def _migrate_quote_items_columns(db: sqlite3.Connection) -> None:
@@ -720,7 +723,7 @@ def list_quotes(segment: str = "open") -> list:
         params.append(segment)
     elif segment == "all":
         base += (" WHERE NOT (q.status = 'won' AND q.order_id IN "
-                  "(SELECT id FROM orders WHERE stage = 'hoan_thanh'))")
+                  "(SELECT id FROM orders WHERE stage = 'dang_lap'))")
     base += " ORDER BY q.sent_date DESC, q.id DESC"
     with _connect() as db:
         rows = db.execute(base, params).fetchall()
@@ -728,14 +731,14 @@ def list_quotes(segment: str = "open") -> list:
 
 
 def quotes_archived() -> list:
-    """Won quotes whose order has reached hoàn thành — archived out of the
+    """Won quotes whose order has been lắp đặt/giao — archived out of the
     default báo giá board, still viewable in a collapsed section."""
     with _connect() as db:
         rows = db.execute(
             "SELECT q.*, c.name AS customer_name, c.phone, c.zalo_phone "
             "FROM quotes q JOIN customers c ON c.id = q.customer_id "
             "JOIN orders o ON o.id = q.order_id "
-            "WHERE q.status = 'won' AND o.stage = 'hoan_thanh' "
+            "WHERE q.status = 'won' AND o.stage = 'dang_lap' "
             "ORDER BY o.updated_at DESC, q.id DESC"
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1199,7 +1202,7 @@ def delete_order_payment(payment_id: int) -> bool:
         return cur.rowcount > 0
 
 
-_ORDER_STAGES = ("cho_san_xuat", "dang_san_xuat", "dang_lap", "hoan_thanh")
+_ORDER_STAGES = ("cho_san_xuat", "dang_san_xuat", "dang_lap")
 
 
 def set_order_stage(order_id: int, stage: str) -> bool:
@@ -1279,7 +1282,7 @@ def orders_active() -> list:
     the make-by-deadline ordering lives in orders_in_production() instead."""
     with _connect() as db:
         rows = db.execute(
-            _ORDER_SELECT + " WHERE o.stage != 'hoan_thanh' "
+            _ORDER_SELECT + " WHERE o.stage != 'dang_lap' "
             "ORDER BY o.urgent DESC, o.created_at ASC, o.id ASC"
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1298,11 +1301,11 @@ def orders_in_production() -> list:
 
 
 def orders_completed() -> list:
-    """Đã hoàn thành — archived out of the default Đơn hàng view, still fully
-    viewable on demand (newest first)."""
+    """Đã lắp đặt/đã giao — archived out of the default Đơn hàng view, still
+    fully viewable on demand (newest first)."""
     with _connect() as db:
         rows = db.execute(
-            _ORDER_SELECT + " WHERE o.stage = 'hoan_thanh' ORDER BY o.updated_at DESC, o.id DESC"
+            _ORDER_SELECT + " WHERE o.stage = 'dang_lap' ORDER BY o.updated_at DESC, o.id DESC"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1345,7 +1348,7 @@ def orders_for_digest(today: str = "") -> list:
     today = today or today_vn()
     with _connect() as db:
         rows = db.execute(
-            _ORDER_SELECT + " WHERE o.stage != 'hoan_thanh' "
+            _ORDER_SELECT + " WHERE o.stage != 'dang_lap' "
             "AND (o.urgent = 1 OR (o.install_date IS NOT NULL AND o.install_date <= date(?, '+1 day'))) "
             "ORDER BY "
             "CASE WHEN o.install_date IS NOT NULL AND o.install_date < ? THEN 0 "
@@ -1435,13 +1438,17 @@ def orders_expiring(today: str = "") -> list:
 
 
 def orders_review_due(today: str = "") -> list:
-    """Hôm nay section F: KH order installed within the last REVIEW_ASK_DAYS."""
+    """Hôm nay section F: KH order installed within the last REVIEW_ASK_DAYS.
+    Gated on stage = 'dang_lap' (đã lắp đặt/đã giao) — asking for a review
+    before the cửa is actually on the wall reads as tone-deaf, so the nudge
+    only enters the queue once the job reaches the terminal stage. An
+    install_date alone is just a plan; the stage is the confirmation."""
     today = today or today_vn()
     with _connect() as db:
         rows = db.execute(
             _ORDER_SELECT + """
             WHERE o.install_date IS NOT NULL AND o.review_requested_at IS NULL
-              AND c.type = 'KH'
+              AND c.type = 'KH' AND o.stage = 'dang_lap'
               AND julianday(?) - julianday(o.install_date) BETWEEN 0 AND ?
             ORDER BY o.install_date DESC
             """,
@@ -1631,6 +1638,15 @@ def customer_debts() -> list:
             """
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def debt_outstanding_total() -> int:
+    """The /cong-no grand total — every dealer balance plus every unpaid KH
+    order, no install-date or grace-period gating. Powers the Hôm nay
+    headline stat so it always matches the real ledger, even on days when
+    nothing has crossed the daily nag threshold yet."""
+    return (sum(d["balance"] for d in dealer_balances())
+            + sum(o["balance_vnd"] for o in customer_debts()))
 
 
 def settlements(day: str = "") -> list:

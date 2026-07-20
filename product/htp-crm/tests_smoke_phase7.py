@@ -56,7 +56,7 @@ r = client.get("/don-hang")
 assert f"/don-hang/{oid}" in r.text and "Đã hoàn thành" not in r.text, \
     "active order should render without an archive section yet"
 
-store.set_order_stage(oid, "hoan_thanh")
+store.set_order_stage(oid, "dang_lap")
 assert oid in [o["id"] for o in store.orders_completed()], "order should move to completed"
 assert oid not in [o["id"] for o in store.orders_active()], "order should leave active"
 r = client.get("/don-hang")

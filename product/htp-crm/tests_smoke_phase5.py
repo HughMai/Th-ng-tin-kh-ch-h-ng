@@ -49,7 +49,7 @@ assert "Cô Lan" in reply and "1." in reply, f"digest missing order: {reply}"
 assert store.get_digest_order(TODAY, 1) == oid, "bot_digest not written for item 1"
 print("2. viec command OK")
 
-# ---- 3. "xong <N>" -> order hoan_thanh, install_date backfilled, reply confirms
+# ---- 3. "xong <N>" -> order dang_lap, install_date backfilled, reply confirms
 oid2 = store.create_order(cid, "cua_keo", "Cửa kéo 6zem", 8_000_000)  # no install_date
 store.set_order_urgent(oid2, True)  # so it appears in the digest despite no install_date
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ Tùng", "text": "viec"}, headers=HDR)
@@ -60,7 +60,7 @@ assert r.status_code == 200, r.text
 reply = r.json()["reply"]
 assert "LẮP XONG" in reply and "Thợ Tùng" in reply, f"unexpected reply: {reply}"
 o2 = store.get_order(oid2)
-assert o2["stage"] == "hoan_thanh", f"stage not flipped: {o2['stage']}"
+assert o2["stage"] == "dang_lap", f"stage not flipped: {o2['stage']}"
 assert o2["install_date"] == TODAY, f"install_date not backfilled: {o2['install_date']}"
 print(f"3. xong <N> completes order OK (don #{oid2})")
 
@@ -76,7 +76,7 @@ print("4. wrong number / chatter / malformed xong OK")
 # ---- 5. "xong <N>" twice -> second reply says already done, stage unchanged ----
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ Tùng", "text": f"xong {n2}"}, headers=HDR)
 assert "đã xong rồi" in r.json()["reply"], f"unexpected: {r.json()}"
-assert store.get_order(oid2)["stage"] == "hoan_thanh"
+assert store.get_order(oid2)["stage"] == "dang_lap"
 print("5. double xong is a no-op OK")
 
 # ---- 6. /bot/digest matches "viec"; no VND leaks into either reply -------------

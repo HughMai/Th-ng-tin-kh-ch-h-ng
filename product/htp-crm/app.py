@@ -372,6 +372,7 @@ def today_page(request: Request):
         reviews=store.orders_review_due(today),
         kh_debts=store.orders_debt_due(today),
         summary=store.open_quotes_summary(),
+        debt_total=store.debt_outstanding_total(),
         bot_ready=bool(BOT_URL and BOT_TOKEN),
     )
     return views.page("Hôm nay", body, active="/")
@@ -1570,9 +1571,9 @@ async def bot_inbound(request: Request):
         o = store.get_order(order_id) if order_id else None
         if not o:
             return {"reply": f"Không thấy số {m.group(1)} trong bảng hôm nay. Gõ: viec để xem bảng mới."}
-        if o["stage"] == "hoan_thanh":
+        if o["stage"] == "dang_lap":
             return {"reply": f"{o['customer_name']} — đã xong rồi."}
-        store.set_order_stage(order_id, "hoan_thanh")
+        store.set_order_stage(order_id, "dang_lap")
         if not o.get("install_date"):
             store.set_order_install(order_id, today)
         who = f" ({name} báo)" if name else ""

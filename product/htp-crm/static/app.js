@@ -12,7 +12,7 @@ document.addEventListener("submit", function (e) {
   }).then(function (resp) {
     if (!resp.ok) throw new Error("request failed");
     if (mode === "remove") {
-      var card = form.closest(".card");
+      var card = form.closest(".board-card, .card");
       if (card) card.remove();
     } else if (mode === "reload") {
       location.reload();

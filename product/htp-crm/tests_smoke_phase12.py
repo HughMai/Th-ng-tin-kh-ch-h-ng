@@ -60,7 +60,7 @@ cid = store.create_customer("Anh Tuấn", "0905111222", "KH")
 qid = store.create_quote(cid, "cua_cuon", "", 15_000_000, sent_date=days_ago(3))
 cid2 = store.create_customer("Cô Hoa", "0905333444", "KH")
 oid = store.create_order(cid2, "nhom_kinh", "", 20_000_000, days_ago(2))
-store.set_order_stage(oid, "hoan_thanh")
+store.set_order_stage(oid, "dang_lap")
 
 data = nhac()
 replies = data["replies"]
@@ -90,10 +90,10 @@ print("4. digest care section OK")
 # ---- 5. ĐL / old installs excluded; >= 5 days sent -> lần-2 template -----------
 cid3 = store.create_customer("Đại lý Minh", "0905999888", "DL")
 oid_dl = store.create_order(cid3, "cua_cuon", "", 30_000_000, days_ago(1))
-store.set_order_stage(oid_dl, "hoan_thanh")
+store.set_order_stage(oid_dl, "dang_lap")
 cid4 = store.create_customer("Chú Bảy", "0905777666", "KH")
 oid_old = store.create_order(cid4, "cua_keo", "", 9_000_000, days_ago(20))
-store.set_order_stage(oid_old, "hoan_thanh")
+store.set_order_stage(oid_old, "dang_lap")
 qid2 = store.create_quote(cid4, "cua_keo", "", 5_000_000, sent_date=days_ago(6))
 
 data = nhac()
@@ -120,7 +120,7 @@ print("6. đã nhắn / đã xin clears the list OK")
 cidz = store.create_customer("Bác Sơn", "0912000111", "KH")
 qidz = store.create_quote(cidz, "cua_cuon", "", 12_000_000, sent_date=days_ago(3))
 oidz = store.create_order(cidz, "nhom_kinh", "", 18_000_000, days_ago(1))
-store.set_order_stage(oidz, "hoan_thanh")
+store.set_order_stage(oidz, "dang_lap")
 
 sent = []
 app._bot_send_dm = lambda phone, text: (sent.append((phone, text)) or (True, ""))

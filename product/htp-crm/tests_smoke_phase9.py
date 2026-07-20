@@ -39,7 +39,7 @@ o_nk = store.create_order(kh_nam, "nhom_kinh", "Bộ cửa nhôm kính", value_v
 o_urgent = store.create_order(kh_sang, "cua_keo", "Cửa kéo kho", value_vnd=7_000_000)
 o_done = store.create_order(kh_binh, "cua_cuon", "Cửa cuốn cũ", value_vnd=5_000_000)
 store.set_order_urgent(o_urgent, True)
-store.set_order_stage(o_done, "hoan_thanh")
+store.set_order_stage(o_done, "dang_lap")
 
 # backdate one order 4 days so the timeline has more than one date group
 db = sqlite3.connect(os.environ["DB_PATH"])

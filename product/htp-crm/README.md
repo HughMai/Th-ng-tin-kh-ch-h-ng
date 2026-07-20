@@ -17,14 +17,17 @@ Home screen is **Hôm nay** — the morning to-do list, computed at read time
 |---|---|
 | 📨 Cần nhắc báo giá | Quote sent 2+ days ago with no contact; re-surfaces every 3 days after a nudge until Chốt/Mất. 5+ days old → "Lần 2" stronger template |
 | ⏰ Nhắc hôm nay | Manual reminders ("gọi lại sau Tết") due today |
-| ⭐ Xin đánh giá | KH order installed within 14 days → ask for a Google review |
+| ⭐ Xin đánh giá | KH order at stage **đã lắp đặt/đã giao** and installed within 14 days → ask for a Google review. The stage gate matters: an install date alone is only a plan, so a job still in the xưởng never queues a review ask |
 | 🔧 Bảo trì 6 tháng | Installed 6+ months ago, warranty still live, no check-in yet |
 | 🛡️ Bảo hành sắp hết | Warranty expires within 30 days |
 | 💰 Công nợ cần thu | Dealer balance > 0 and no payment for 30+ days |
 
-Every card has **📋 Chép tin nhắn** (tap-to-copy prewritten Vietnamese message),
-**Zalo** (zalo.me deep link), and **Gọi** (tel:). Sending stays human — the app
-decides *who and what*, a person taps send. Customers linked to the HTP **Zalo
+Hôm nay renders as a **Trello-style board**: one column per kind of work, in the
+order above. Nothing is dragged here — each card carries the button that closes
+its own loop and then removes itself.
+
+Every card has **Zalo** (zalo.me deep link) and **Gọi** (tel:). Sending stays
+human — the app decides *who and what*, a person taps send. Customers linked to the HTP **Zalo
 OA** (see `/zalo`) also get a **📨 Gửi qua API** button that sends the same
 message straight through Zalo's OA Message API instead of opening the app —
 still a manual tap, just no app-switch. See `zalo_client.py`.
@@ -53,14 +56,21 @@ for quick verbal quotes to repeat customers. Full pricing logic (in
 Vietnamese, for the family to reference/edit) lives in
 `BAOGIA-PRICING-LOGIC.md`.
 
+## Boards
+
+Hôm nay and Báo giá both render as Trello-style boards at **every** width — on a
+phone the columns are ~84vw and scroll-snap, so one swipe lands one list. Báo giá
+is a 3-column pipeline (Đã gửi/Chốt/Mất); on desktop you can drag a card between
+columns, and on touch the Đã gửi/Chốt/Mất buttons on the card do the same moves
+through the same routes. The board is the only rendering of the list, so there's
+no parallel mobile view to drift out of sync.
+
 ## Desktop shell (GHL-style)
 
 On screens ≥900px wide the same pages grow a left sidebar nav (bottom nav
-hides), a stat-card row appears at the top of every viewport (open-pipeline
-value, overdue công nợ, today's task count), and Báo giá renders as a 4-column
-kanban board (Đã gửi/Đang theo dõi/Chốt/Mất) — drag a card between columns to
-change its status, same routes the buttons already use. Below 900px nothing
-changes: bottom nav, segmented list, and card layout are exactly as before.
+hides) and a stat-card row appears at the top of every viewport (open-pipeline
+value, overdue công nợ, today's task count). Below 900px: bottom nav and the
+phone-first card layout, exactly as before.
 
 ## Cài như app (PWA — iPhone / Android / máy tính)
 
@@ -151,7 +161,7 @@ scp root@187.77.133.39:/opt/htp-crm/data/htp-backup.db backups/
 - `app.py` — routes + shared-password auth (HMAC session cookie, per-IP login throttle)
 - `store.py` — schema (customers/quotes/quote_items/orders/service_calls/reminders/debt_entries), follow-up rule constants, all queries
 - `pricing.py` — ported báo giá calculator: door-model config, KH/ĐL price tables, `get_price()`/`line_total()`
-- `views.py` — server-rendered Vietnamese HTML, phone-first shell + GHL-style desktop shell (sidebar/stat-cards/kanban, additive CSS only)
-- `templates_vi.py` — copyable Zalo message templates + `zalo_link()`
+- `views.py` — server-rendered Vietnamese HTML, phone-first shell + GHL-style desktop shell (sidebar/stat-cards) + the shared `_board_html()` board used by Hôm nay and Báo giá
+- `templates_vi.py` — Zalo message templates, stage labels + `zalo_link()`
 - `seed_demo.py` — dev demo data (never run in prod)
 - `static/manifest.webmanifest`, `static/sw.js`, `static/offline.html`, `static/icons/` — PWA install plumbing (served via `/manifest.webmanifest` + `/sw.js` routes in `app.py`)
