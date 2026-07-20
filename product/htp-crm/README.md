@@ -62,6 +62,26 @@ kanban board (Đã gửi/Đang theo dõi/Chốt/Mất) — drag a card between c
 change its status, same routes the buttons already use. Below 900px nothing
 changes: bottom nav, segmented list, and card layout are exactly as before.
 
+## Cài như app (PWA — iPhone / Android / máy tính)
+
+The CRM is an installable Progressive Web App: no App Store, no download — the
+live site adds itself as a full-screen app with its own icon. `manifest.webmanifest`
++ `static/sw.js` (root-scope service worker) + `static/icons/*` supply the install
+criteria; the head tags live in `views.PWA_HEAD`. **Requires HTTPS** (already true
+on `crm.hungthanhphat.vn`) — it will not offer to install over plain http.
+
+Hand the family these steps once:
+
+- **iPhone (Safari):** mở `crm.hungthanhphat.vn` → nút Chia sẻ → **Thêm vào MH chính**.
+- **Android (Chrome):** mở trang → menu ⋮ → **Cài đặt ứng dụng / Thêm vào MH chính**.
+- **Máy tính (Chrome/Edge):** biểu tượng cài đặt ⊕ ở thanh địa chỉ → **Cài đặt**.
+
+After install it opens standalone (no browser bar) and every deploy updates it
+automatically. The service worker caches only shell assets (CSS/JS/fonts/icons) —
+never CRM pages or data — so the family always sees fresh info; offline it shows a
+"mất mạng" card (`static/offline.html`). Bump `CACHE` in `sw.js` when a shell asset
+changes. Test install on the real HTTPS domain, not localhost.
+
 ## Run locally
 
 ```bash
@@ -97,16 +117,26 @@ scp -r static root@187.77.133.39:/opt/htp-crm/
 ssh root@187.77.133.39 'cd /opt/htp-crm && docker compose up -d --build'
 ```
 
+Live at **`https://crm.hungthanhphat.vn`** (memorable domain added 2026-07-18,
+DNS managed at tenten.vn — A record `crm -> 187.77.133.39`). Old
+`https://crm.187-77-133-39.sslip.io` still works as a fallback.
+
 Append to `/opt/speed-to-lead/Caddyfile` (back it up first):
 
 ```
+crm.hungthanhphat.vn {
+    reverse_proxy htp-crm-app:8000
+}
+
 crm.187-77-133-39.sslip.io {
     reverse_proxy htp-crm-app:8000
 }
 ```
 
-`docker compose up -d` in `/opt/speed-to-lead` to reload Caddy, then
-`curl https://crm.187-77-133-39.sslip.io/health`. Update both STATE.md files.
+Reload Caddy with `docker exec speed-to-lead-caddy-1 caddy reload --config
+/etc/caddy/Caddyfile` (a plain `docker compose up -d` does NOT reload it — the
+Caddyfile is bind-mounted so compose sees no config change), then
+`curl https://crm.hungthanhphat.vn/health`. Update both STATE.md files.
 Tap-to-copy needs HTTPS — test the copy button on the real domain.
 
 **Backup** (SQLite, safest via .backup):
@@ -124,3 +154,4 @@ scp root@187.77.133.39:/opt/htp-crm/data/htp-backup.db backups/
 - `views.py` — server-rendered Vietnamese HTML, phone-first shell + GHL-style desktop shell (sidebar/stat-cards/kanban, additive CSS only)
 - `templates_vi.py` — copyable Zalo message templates + `zalo_link()`
 - `seed_demo.py` — dev demo data (never run in prod)
+- `static/manifest.webmanifest`, `static/sw.js`, `static/offline.html`, `static/icons/` — PWA install plumbing (served via `/manifest.webmanifest` + `/sw.js` routes in `app.py`)

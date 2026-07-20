@@ -38,6 +38,23 @@ FAVICON = (
 )
 
 
+# PWA plumbing shared by every page: links the manifest, sets the theme/status-bar
+# colour, points iOS at the home-screen icon, and registers the service worker so
+# the CRM installs as a standalone app on iOS/Android/desktop. Injected right after
+# FAVICON in each <head>.
+PWA_HEAD = (
+    '<link rel="manifest" href="/manifest.webmanifest">'
+    '<meta name="theme-color" content="#0f4c81">'
+    '<meta name="mobile-web-app-capable" content="yes">'
+    '<meta name="apple-mobile-web-app-capable" content="yes">'
+    '<meta name="apple-mobile-web-app-status-bar-style" content="default">'
+    '<meta name="apple-mobile-web-app-title" content="HTP CRM">'
+    '<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">'
+    "<script>if('serviceWorker' in navigator){"
+    "addEventListener('load',function(){navigator.serviceWorker.register('/sw.js')})}</script>"
+)
+
+
 def fmt_vnd(n) -> str:
     if n is None:
         return "—"
@@ -143,7 +160,7 @@ def page(title: str, body: str, active: str = "", show_nav: bool = True,
 <title>{esc(title)} — HTP</title>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/app.css">{FAVICON}</head>
+<link rel="stylesheet" href="/static/app.css">{FAVICON}{PWA_HEAD}</head>
 <body>
 {sidebar}
 <div class="top">{esc(title)}<a href="/logout" onclick="event.preventDefault();document.getElementById('lo').submit()">Thoát</a></div>
@@ -175,7 +192,7 @@ def login_page(error: str = "") -> str:
 <title>Đăng nhập — HTP</title>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/app.css">{FAVICON}</head>
+<link rel="stylesheet" href="/static/app.css">{FAVICON}{PWA_HEAD}</head>
 <body><div class="wrap">{body}</div></body></html>"""
 
 
@@ -196,7 +213,7 @@ def _public_page(title: str, body: str) -> str:
 <title>{esc(title)} — Hưng Thành Phát Door</title>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/app.css">{FAVICON}</head>
+<link rel="stylesheet" href="/static/app.css">{FAVICON}{PWA_HEAD}</head>
 <body><div class="wrap">{body}</div></body></html>"""
 
 
@@ -685,6 +702,7 @@ function showStep(n){
   document.querySelectorAll('.wiz-step').forEach(function(s){ s.classList.toggle('active', parseInt(s.dataset.step)===n); });
   document.getElementById('wizbar').style.width = Math.round(n*100/3)+'%';
   document.getElementById('wizlabel').textContent = STEP_LABELS[n];
+  var ab=document.getElementById('addbar'); if(ab) ab.hidden = (n!==2);  // sticky add-bar only while choosing cửa
   window.scrollTo(0,0);
 }
 function firstIncompleteUnit(){
@@ -718,19 +736,15 @@ function customerType(){ return document.querySelector('input[name=type]:checked
 function optionHtml(list){
   return list.map(function(o){ return '<option value="'+o+'">'+(o||'— Chọn —')+'</option>'; }).join('');
 }
-function reconcileUnits(){
+function quickAdd(type){
   var cont=document.getElementById('units-container');
-  document.querySelectorAll('.dt-chk').forEach(function(chk){
-    var type=chk.dataset.type;
-    var qtyEl=document.querySelector('.dt-qty[data-type="'+type+'"]');
-    qtyEl.disabled=!chk.checked;
-    var desired=chk.checked ? Math.max(1, parseInt(qtyEl.value)||1) : 0;
-    var existing=cont.querySelectorAll('.unit-block[data-type="'+type+'"]');
-    for(var i=existing.length; i<desired; i++){ cont.appendChild(buildUnit(type)); }
-    existing=cont.querySelectorAll('.unit-block[data-type="'+type+'"]');
-    for(var j=existing.length-1; j>=desired; j--){ existing[j].remove(); }
-  });
+  var block=buildUnit(type);
+  cont.appendChild(block);
   renumber(); updateTotal();
+  // bring the new block into view above the sticky bar and start filling it in
+  block.scrollIntoView({behavior:'smooth', block:'center'});
+  var first=block.querySelector('input, select');
+  if(first) first.focus({preventScroll:true});
 }
 function renumber(){
   var counts={};
@@ -861,17 +875,13 @@ function updateTotal(){
   var sum=0; var blocks=document.querySelectorAll('.unit-block');
   blocks.forEach(function(b){ sum+=unitTotal(b); });
   var gt=document.getElementById('grandtotal');
-  if(blocks.length){ gt.style.display='block'; gt.textContent='Tổng tạm tính: '+sum.toLocaleString('vi-VN')+'đ ('+blocks.length+' cửa)'; }
-  else { gt.style.display='none'; }
+  if(gt){ gt.textContent = blocks.length
+    ? 'Tổng tạm tính: '+sum.toLocaleString('vi-VN')+'đ ('+blocks.length+' cửa)'
+    : 'Chưa có cửa nào — bấm nút để thêm'; }
+  var hint=document.getElementById('units-empty');
+  if(hint) hint.style.display = blocks.length ? 'none' : 'block';
 }
-function removeUnit(b){
-  var type=b.dataset.type; b.remove();
-  var remaining=document.querySelectorAll('.unit-block[data-type="'+type+'"]').length;
-  var qtyEl=document.querySelector('.dt-qty[data-type="'+type+'"]');
-  if(remaining===0){ document.querySelector('.dt-chk[data-type="'+type+'"]').checked=false; qtyEl.disabled=true; qtyEl.value=1; }
-  else { qtyEl.value=remaining; }
-  renumber(); updateTotal();
-}
+function removeUnit(b){ b.remove(); renumber(); updateTotal(); }
 (function(){
   var cont=document.getElementById('units-container');
   cont.addEventListener('change', function(e){
@@ -971,11 +981,11 @@ def intake_wizard_page(today: str) -> str:
     creates the customer and, if any door units were added, a multi-item quote
     (server re-prices authoritatively via pricing.get_price)."""
     src_opts = "".join(f'<option value="{v}">{label}</option>' for v, label in SOURCE_LABELS.items())
-    door_rows = "".join(f'''
-    <div class="acc-row">
-      <label><input type="checkbox" class="dt-chk" data-type="{key}" onchange="reconcileUnits()"> {esc(cfg["label"])}</label>
-      <input type="number" class="dt-qty" data-type="{key}" min="1" value="1" disabled inputmode="numeric" oninput="reconcileUnits()">
-    </div>''' for key, cfg in DOOR_CONFIG.items())
+    # Sticky add-bar buttons: one per door type (short label, "Cửa " stripped) + Khác.
+    add_btns = "".join(
+        f'<button type="button" class="addbtn" onclick="quickAdd(\'{key}\')">+ {esc(cfg["label"].replace("Cửa ", ""))}</button>'
+        for key, cfg in DOOR_CONFIG.items()
+    ) + '<button type="button" class="addbtn khac" onclick="quickAdd(\'khac\')">+ Khác</button>'
     acc_rows = "".join(f'''
     <div class="acc-row">
       <label><input type="checkbox" class="acc-chk" data-label="{esc(label)}"> {esc(label)}</label>
@@ -1024,16 +1034,9 @@ def intake_wizard_page(today: str) -> str:
   </div>
 
   <div class="wiz-step" data-step="2">
-    <div class="card">
-      <div class="card-title">Chọn loại cửa & số lượng</div>
-      {door_rows}
-    <div class="acc-row">
-      <label><input type="checkbox" class="dt-chk" data-type="khac" onchange="reconcileUnits()"> Khác (tự nhập tên + giá)</label>
-      <input type="number" class="dt-qty" data-type="khac" min="1" value="1" disabled inputmode="numeric" oninput="reconcileUnits()">
-    </div>
-    </div>
+    <div class="card-title">Chọn cửa</div>
+    <div id="units-empty" class="wiz-hint">Chưa có cửa nào. Dùng thanh bên dưới để thêm cửa — thêm bao nhiêu tùy ý, không cần cuộn lên.</div>
     <div id="units-container"></div>
-    <div class="grand-total" id="grandtotal" style="display:none">Tổng tạm tính: 0đ</div>
     <div class="wiz-nav">
       <button type="button" class="btn done" onclick="wizBack()">← Quay lại</button>
       <button type="button" class="btn copy" onclick="wizNext()">Tiếp theo →</button>
@@ -1062,6 +1065,12 @@ def intake_wizard_page(today: str) -> str:
     </div>
   </div>
 </form>
+<div class="addbar" id="addbar" hidden>
+  <div class="addbar-inner">
+    <div class="addbar-total" id="grandtotal">Chưa có cửa nào — bấm nút để thêm</div>
+    <div class="addbar-btns">{add_btns}</div>
+  </div>
+</div>
 {script}'''
 
 

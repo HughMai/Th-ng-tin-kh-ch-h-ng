@@ -21,7 +21,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -83,6 +83,27 @@ async def _static_cache_headers(request: Request, call_next):
     if request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "max-age=86400"
     return response
+
+
+# ---- PWA: manifest + service worker (installable "app" on iOS/Android/desktop) --
+# sw.js is served from the origin root so its scope is the whole site. no-cache so
+# a redeploy pushes the new worker instead of a day-stale one. The manifest gets
+# the correct content-type browsers expect.
+@app.get("/manifest.webmanifest", include_in_schema=False)
+async def pwa_manifest():
+    return FileResponse(
+        HERE / "static" / "manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
+
+
+@app.get("/sw.js", include_in_schema=False)
+async def pwa_service_worker():
+    return FileResponse(
+        HERE / "static" / "sw.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
+    )
 
 
 # ---- signed session cookie (copied from qr-menu/app.py) ----------------------

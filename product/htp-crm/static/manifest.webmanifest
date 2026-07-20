@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "HTP — Sổ khách hàng",
+  "short_name": "HTP CRM",
+  "description": "Sổ khách hàng Hưng Thành Phát — cửa cuốn, cửa kéo, cửa nhôm kính.",
+  "lang": "vi",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#0f4c81",
+  "icons": [
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
