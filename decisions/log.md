@@ -1466,3 +1466,82 @@ Committed together with two unrelated pending changes already sitting in the wor
 **Verification:** New phase10 case 5 asserts the dealer cọc appears exactly once in `daily_report` and never in order_payments — confirmed it fails without the fix. Full 12-file smoke suite green. Live post-deploy: `/health` ok, Báo cáo ngày now shows 58.406.722đ (reconciles with Công nợ Đã thu exactly), A.Hùng's care log renders "Chờ sản xuất → Hoàn thành" / "Đã gửi → Đã chốt", and the wizard's step-2 Tiếp theo pops "Mỗi cửa cần đủ kích thước và giá" on an unconfigured door. Nothing was submitted during the audit — no production data touched.
 
 **Owner:** Hughie (asked for the audit); agent (audit, fixes, tests, deploy)
+
+
+## 2026-07-18 — Customer-acquisition pack shipped: dealer recruitment kit + researched target list + reactivation campaign
+
+**Decision:** Hughie set the goal "as many customers as possible for Hưng Thành Phát door." The conversion-side engines were already live (CRM, quote-chase + review-ask on the Zalo bot digest, referral program drafted), so the gap was **acquisition volume** — the two unshipped growth-plan levers. Shipped three assets: (1) `htp/dealer-targets.csv` — 23 researched ĐL prospects (nhôm kính shops, VLXD stores) across Cần Thơ districts + Vĩnh Long, Vị Thanh, Sa Đéc, Long Xuyên, scraped from canthoreview/toplistcantho/trangvang/thangmaynidec directories, every row marked *chưa xác minh*, likely-competitors (Minh Tân Door, Adoor) flagged; (2) `htp/dealer-kit.md` — the §3a dealer offer (báo giá 30 phút, giao đúng hẹn, đền 200%, no-poaching rule), Zalo/phone/visit scripts, objection table, follow-up cadence, CRM-as-tracker — ask is always *one trial order*, pitch cửa cuốn (what nhôm kính shops can't make), never nhôm kính; (3) `htp/reactivation-campaign.md` — Fast Cash 7-day "kiểm tra cửa mùa mưa bão, 20 suất" Zalo campaign to past KH from the CRM, with door-step continuity pitch + referral ask, reframed from "trước mùa mưa" to mid-storm-season since it's already July.
+
+**Why these two levers:** dealers = 70% of revenue and each one compounds ($100M Leads: More → Better → New — this is *More* on the #1 channel); reactivation monetizes the freshly-digitized customer list at near-zero cost. Both are assets the family executes by phone/Zalo — no new automation, honoring the "one shipped > five half-done" rule.
+
+**Blocked on Dad (⚠️ in the docs, one sign-off each):** ĐL chiết khấu + công nợ terms, no-poaching rule wording, bảo trì visit price (free vs ___k) + annual contract price, finder-fee amounts.
+
+**Verification:** none possible from the desk — the proof is trial quotes sent and suất đặt, measured on the weekly scoreboard rows both docs plug into. Target-list phones are directory-sourced and must be verified on first call.
+
+**Addendum (same session):** Two execution-friction removers added after the first ship: `htp/dealer-outreach-messages.md` — the 23 CSV prospects turned into individually personalized, copy-paste Zalo/phone first-touch drafts grouped into three geographic trips with a 4-week contact rhythm; `htp/social-pack.md` — the Lever-1c FB/Zalo auto-reply text (30-minute quote promise + the 3 quoting inputs) plus an 8-week rotating Facebook/Zalo post template pack (install showcase, before/after, review, storm-season/bảo trì tie-in, bình lưu điện, nhôm kính, public dealer-recruitment, family-story). Checked whether the hungthanhphat.vn website was improvable from here: it's a Next.js app on Vercel, source not on this machine, and its local-SEO head (title/keywords/OG targeting "cửa cuốn Cần Thơ") is already strong — no action, noted as out of desk reach.
+
+**Owner:** Hughie (goal); agent (research, drafting)
+
+
+## 2026-07-19 — Competitor analysis: HTP's website is not indexed by Google (stale previous-owner pages) + market gap map
+
+**Decision:** On Hughie's expanded authorization ("do anything with this computer… analyze competitors, find loopholes"), ran desk recon of the Cần Thơ door market and shipped `htp/competitor-analysis.md`. **Headline finding: `site:hungthanhphat.vn` still returns the domain's previous owner — a copper/brass metals supplier.** The new Next.js site (Vercel, live since ~May) was never submitted to Google Search Console; its technical SEO is fine (robots.txt ✅, sitemap.xml ✅ incl. a `/sua-chua-cua-cuon-can-tho` landing page, old metals URLs 404 ✅), so a 20-minute GSC verify+submit unlocks the site's already-strong local-SEO head. Until then HTP is invisible for its own brand + product searches while lookalike names (Cửa Cuốn Thành Phát / Tâm Thành Phát / Phát Thành Đạt) absorb the traffic.
+
+**Other exploitable gaps found:** canthoreview.vn's page-1 "5 đơn vị cửa cuốn Cần Thơ" toplist lists MTDoor/Quốc Hải/Phát Thành Đạt but not HTP (TOPAZ MEDIA runs it — ask for inclusion); the only brand-search directory hit (googlemediavn) shows the pre-2022 address 105 Đường 3/2 (NAP fix); "sửa cửa cuốn" SERP is bait-pricing SEO farms — HTP's real-workshop counter-position + a free Chợ Tốt listing takes the repair wedge; Alpha Door openly recruits Cần Thơ thợ at giá sỉ and Austdoor signed Việt Dũng as dealer — dealer-war counter-script (local 3–7-day fabrication, run both, đền 200%) added to the analysis; Adoor publishes full price tables (~1.2–1.4M đ/m²) — flagged the "giá từ" middle path as a Dad decision, with an explicit rule against price-matching down.
+
+**Verification:** all claims are from live fetches/searches on 2026-07-19 (probes of robots/sitemap/404s run directly; toplist/Adoor pages scraped). Competitor behavior marked ⚠️ (quote speed, guarantees) needs a mystery-shop call to confirm — listed as action #6.
+
+**Owner:** Hughie (authorization); agent (recon, analysis, report)
+
+
+## 2026-07-19 — Submission pack: every visibility fix reduced to copy-paste (contacts verified live)
+
+**Decision:** Shipped `htp/submission-pack.md` — the execution layer for competitor-analysis actions #2–5. Contains the canonical NAP block (correct Võ Văn Kiệt address, the one every listing must carry), ready-to-send Vietnamese messages to canthoreview.vn (inclusion request — real contact scraped live: canthoreview.vn@gmail.com, 0795 567 268), googlemediavn (old-address correction via zalo.me/0911407774), toplistcantho (listing update — digitalmarketingdanang@gmail.com), two Chợ Tốt listings (install + repair, deliberately positioned against the 24/24 bait-pricing farms: "giá báo trước khi làm, không câu kéo", no fake 100K hook), a GBP paste-pack (750-char description, categories, services list), and a one-morning send-order runbook (~75 min total). Boundary honored: nothing was sent — external comms go out in the family's voice only after Hughie reviews, per the house rule; GSC/GBP/Zalo/Gmail sends need his accounts regardless.
+
+**Why:** the stop-hook goal ("as many customers as possible") demands execution; everything executable from the desk without breaching the draft-first rule is now done, and the remaining friction is literally copy-paste. Measurable follow-ups defined: GSC clicks baseline = 8 clicks/2 months (recheck in 7 days), toplist inclusion visible on page 1, Chợ Tốt lead calls.
+
+**Owner:** Hughie (sends); agent (research, drafting, contact verification)
+
+
+## 2026-07-19 — Live lead-capture form shipped (Jotform) — first executed customer-facing asset from the goal session
+
+**Decision:** Created and published a Vietnamese quote-request form on Hughie's connected Jotform account: **https://form.jotform.com/261988351543062** ("Yêu cầu báo giá — Hưng Thành Phát Door" — tên/SĐT/khu vực/loại cửa/kích thước/ảnh, with the 30-minute callback promise). This was the one acquisition action executable end-to-end from the desk without breaching the draft-first rule: it's HTP's own tool, not outbound comms, and it's live now. Purpose: a shareable capture link for Zalo after-hours replies, Facebook bio, GBP, and the Chợ Tốt listings — catching the leads that currently die as missed calls/unanswered messages (the exact speed-to-lead thesis). Wired into `htp/submission-pack.md` §6 with placement instructions.
+
+**Follow-ups (Hughie):** enable email notifications to hungthanhphat6688@gmail.com in form settings; route every submission into the CRM same-day; later, replace with a native hungthanhphat.vn/bao-gia page and redirect.
+
+**Owner:** agent (built, published); Hughie (notifications, distribution, lead handling)
+
+
+## 2026-07-19 — Jotform is DNS-blocked in Vietnam → public /yeu-cau lead form built INTO the CRM (deploy pending approval)
+
+**Decision:** Verifying the just-created Jotform link before distribution found it dead for the exact audience it targets: the default VN resolver (VNPT) poisons `jotform.com` → `127.0.0.1` (confirmed: hosts file clean, `nslookup` local = 127.0.0.1 vs 8.8.8.8 = real IP; urllib, curl, AND a headed Edge all get connection-refused). Distributing that link would have burned every lead. Replaced it with a native public page on the CRM (`crm.hungthanhphat.vn/yeu-cau` — `/bao-gia` was taken by the quotes tab): unauthenticated GET/POST following the existing public-route precedent (/login, Zalo verify), honeypot + 5-per-hour-per-IP throttle + length caps, and — the key design choice — **no new storage or UI**: a submission reuses `find_customer_by_phone` → `create_customer(stage='lead')` → `create_reminder(due today)`, so every web lead surfaces in Hôm nay's Nhắc việc through the flow the family already checks each morning. Repeat phone = same customer + second reminder, never a duplicate row.
+
+**Verification:** new `tests_smoke_webleads.py` (6 cases: unauth render, lead+reminder created, shows on Hôm nay after login, honeypot silently dropped, bad-phone re-render preserves input, phone dedup) + **full 14-file smoke suite green** (six files' "failures" were only cp1252 console printing of Vietnamese — pass under PYTHONIOENCODING=utf-8). Committed as `bb4bd76` (surgical: 4 files only, on `htp-crm/zalo-work-bot`).
+
+**Deploy:** pre-deploy DB backup taken on the box (`data/htp-backup-predeploy-webform.db`). The scp+rebuild step was **blocked by the permission classifier** — honored as a production-deploy approval boundary; exact command handed to Hughie instead of working around it.
+
+**Owner:** agent (find, build, tests, commit, backup); Hughie (deploy approval + run)
+
+**Website wiring update (2026-07-19, Hughie's request "link that with the Zalo"):** hungthanhphat.vn's existing "Yêu cầu báo giá" form (repo HughMai/Website-HTP, Next.js on Vercel) was notifying Telegram + Resend email only (both confirmed configured in Vercel — not a black hole, but not where the family lives). Added a third notifier `notifyViaCRM` (website commit `02c1fdd`, pushed → Vercel auto-deploy Ready) POSTing to a new token-gated CRM endpoint `/api/yeu-cau` (Enki commit `f69f764`): records the lead via `add_web_lead` + pings the family Zalo group through the existing bot sidecar — name/SĐT/need/size only, the price estimate's VND never enters the group (locked rule); full detail incl. estimate lands in the CRM reminder note. Token: generated, set in VPS `.env` (`WEB_LEAD_TOKEN`) and Vercel production env (`CRM_WEBHOOK_TOKEN`, production-only so previews can't write real leads) — both via CLI, no manual step left. **Verified live end-to-end:** POST to hungthanhphat.vn/api/contact → 200 → lead present in production CRM → bot loggedIn+groupConfigured (ping delivered to the group). All test rows (3 synthetic + Hughie's own joke-name test from 13:22) cleaned from production; web-lead reminders back to 0. Distribution links now point to hungthanhphat.vn as the primary capture page; `/yeu-cau` stays as the after-hours Zalo-reply fallback.
+
+**Access map logged (2026-07-19, Hughie's request):** wrote `htp/ACCESS.md` — one page mapping every component of the HTP growth stack: the lead flow diagram, website (repo/Vercel project/env var names), CRM (login location, deploy runbook, DB + backups, public routes, webhook token rotation = change BOTH `/opt/htp-crm/.env` and Vercel), VPS access recipe pointer, Zalo bot admin (`/zalo` card, logs, locked rules), GSC property + pending sitemap action, Telegram/Resend side-channels, the deprecated VN-blocked Jotform, and the full `htp/` document index. Secrets policy upheld: locations only, never values. Also appended rows 16–19 to `connections.md` (website, CRM, Zalo bot, GSC) so `/audit` sees the new coverage.
+
+**Deploy update (2026-07-19, after Hughie's explicit "deploy it"):** scp'd app.py/store.py/views.py to /opt/htp-crm, `docker compose up -d --build` (app + bot containers restarted clean). Live verification over the public URL from a Vietnamese connection (the customer path): `/health` 200, `/yeu-cau` 200 with correct content, honeypot POST → 303 to `/yeu-cau/cam-on` (200), and production DB confirmed **zero** web-lead rows written by the verification. **https://crm.hungthanhphat.vn/yeu-cau is live.** Distribution (Chợ Tốt, FB bio, GBP, after-hours Zalo) per submission-pack §6 is Hughie's next step.
+
+## 2026-07-19 — Content machine for HTP built (draft-queue only) — awaiting the media dump
+
+**Decision:** Hughie is about to dump a large batch of photos/videos (the 700+ Hải Door pictures turned out to be phone-only — Zalo Web refuses to sync media from before login day, so the web scrape stopped at 10 files; manual dump replaces it). Built the **content machine** to turn that dump into channel-ready Vietnamese content: `htp/content-machine/` (inbox → `ingest.py` hash-dedupe + ffprobe manifest → library → queue → posted) driven by the new `/content-machine` skill (ingest / draft / review / status). Channels per Hughie's picks: **Facebook Page, Zalo, TikTok**. Captions come from the proven 8-template rotation in `htp/social-pack.md`, hooks per Hormozi playbook-hooks, proof-first per Proof Checklist. **Autonomy locked at L1 draft-queue** (Hughie's explicit choice): the machine never posts — it makes approval a 30-second yes. Hard rules carried over: no public prices, no dealer photos, supplier-watermarked media never queued, media binaries gitignored (manifest + drafts tracked).
+
+**Verification:** ingest smoke-tested end-to-end with a real photo — new-file path (id, move, 720×1280 probe, manifest row) and duplicate path (moved to `inbox/_duplicates/`, not deleted) both green; artifacts then reset to pristine.
+
+**Owner:** agent (pipeline, skill, docs); Hughie (dump media into `inbox/`, approve drafts, paste posts)
+
+## 2026-07-20 — Wizard "Khác" free-form item + 10-digit phone guard — shipped live
+
+**Decision:** Hughie asked for a "Khác" option on the intake wizard's step 2/3 (chọn cửa) so non-catalog jobs (mái tôn, lưới an toàn, …) can be quoted in the same flow: custom product name + kích thước + đơn giá nhập tay (đ/m², same manual-price math as "Giá đặc biệt"). Design choice: the custom name rides in `quote_items.cong_nghe` under `product='khac'` — no new column; `order_items` already accepted 'khac' from day one. The `quote_items` CHECK constraint did not, so a one-time rename-copy-drop rebuild migration runs at startup (guarded, idempotent). The hạng mục add/edit form also learned "Khác" — without it, editing a wizard-created khac item would have silently converted it to Cửa Cuốn. Phone + Zalo fields on step 1 are now digits-only, capped at 10, and step 1 requires exactly 10 digits (client-side; server keeps normalize_phone as before).
+
+**Verification:** new `tests_smoke_khac.py` (legacy-DDL DB pre-seeded so the real CHECK-rebuild migration path runs: rebuild keeps old rows; wizard khac unit → 3.300.000đ manual; name shows in _door_desc/baogia/build page; hạng mục add + edit round-trip stays khac; chốt snapshots khac lines onto the order) + full 15-file smoke suite green. Commit `63812e4`.
+
+**Deploy:** pre-deploy backup `data/htp-backup-pre-khac.db` on the box, scp app/store/views/baogia.py, `docker compose up -d --build` clean. Live checks: /health 200, production DB CHECK now includes 'khac' with all rows intact, and the served wizard page contains the Khác row, Tên sản phẩm field, and both maxlength="10" phone guards.
+
+**Owner:** agent (build, tests, deploy, verify); Hughie (use it on the next non-catalog quote)
