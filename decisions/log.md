@@ -1545,3 +1545,15 @@ Committed together with two unrelated pending changes already sitting in the wor
 **Deploy:** pre-deploy backup `data/htp-backup-pre-khac.db` on the box, scp app/store/views/baogia.py, `docker compose up -d --build` clean. Live checks: /health 200, production DB CHECK now includes 'khac' with all rows intact, and the served wizard page contains the Khác row, Tên sản phẩm field, and both maxlength="10" phone guards.
 
 **Owner:** agent (build, tests, deploy, verify); Hughie (use it on the next non-catalog quote)
+
+## 2026-07-20 — Wizard step 2 QoL: sticky "add cửa" bar (tap-to-add, phone-first) — shipped live
+
+**Decision:** Building a long báo giá on intake step 2/3 meant scrolling up to the door-type checkboxes for every new item, then back down to fill it in — painful on a phone. Replaced the top checkbox+quantity card with an **always-visible sticky bottom bar**: a running total line + four tap-to-add buttons (+ Cuốn / + Kéo / + Nhôm Kính / + Khác). Each tap appends a unit block, auto-scrolls it to center, and focuses its first field — no scrolling required, add as many as you like. The old checkbox/qty reconcile model (`reconcileUnits`, `dt-chk`/`dt-qty`) is gone; `quickAdd(type)` replaces it and `removeUnit` simplified (each block's × just removes it). Bar sits above the mobile bottom-nav; on desktop it pins past the sidebar. 46px thumb targets.
+
+**Verification:** full 16-file smoke suite green (server serialize/price contract unchanged — `serializeWizard` still reads the same `.unit-block` DOM). Visually driven with a headed browser at 390×844 (phone) and 1280×900 (desktop): empty state, tap-to-add + auto-scroll + focus, live total ("2 cửa"), and × remove ("1 cửa") all confirmed on both layouts.
+
+**Note on git:** a parallel session (HughMai + Claude Sonnet 5) landed `5b1a68b feat: installable PWA` at 09:33 which swept my in-progress step-2 views.py changes into that commit. My views.py work is intact in HEAD; the add-bar CSS committed separately as `a94f816`. Deployed the full current app state (app.py, views.py, static/ incl. app.css + the PWA manifest/sw/icons that views.py now references) so nothing is half-wired.
+
+**Deploy:** pre-deploy backup `data/htp-backup-pre-addbar.db`; scp app.py/views.py/static, `docker compose up -d --build` clean. Live: /health 200, app.css serves `.addbar`, wizard renders the bar + quickAdd buttons. **crm.hungthanhphat.vn/khach/tiep-nhan** step 2 is the new flow.
+
+**Owner:** agent (build, tests, headed-browser QA, deploy, verify); Hughie (use it on the next multi-item quote)
