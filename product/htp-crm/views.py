@@ -306,6 +306,8 @@ def _door_desc(item: dict) -> str:
     items carry an explicit description for phụ kiện/generic lines — it wins."""
     if item.get("description"):
         return item["description"]
+    if item["product"] == "khac":  # free-form item — its name rides in cong_nghe
+        return item.get("cong_nghe") or "Sản phẩm khác"
     label = DOOR_CONFIG.get(item["product"], {}).get("label", item["product"])
     parts = [label]
     cong_nghe = item.get("cong_nghe") or ""
@@ -691,20 +693,23 @@ function firstIncompleteUnit(){
     if(bad) return;
     var ngang=parseInt(b.querySelector('.u-ngang').value)||0;
     var cao=parseInt(b.querySelector('.u-cao').value)||0;
-    if(!ngang || !cao || !unitTotal(b)) bad=b;
+    var tenEl=unitField(b,'ten');
+    if(!ngang || !cao || !unitTotal(b) || (tenEl && !tenEl.value.trim())) bad=b;
   });
   return bad;
 }
+function phoneOk(){ return /^[0-9]{10}$/.test(document.getElementById('c_phone').value.trim()); }
 function wizNext(){
   var s=curStep();
   if(s===1){
-    if(!document.getElementById('c_name').value.trim() || !document.getElementById('c_phone').value.trim()){
-      showStep(1); alert('Cần nhập Tên và Số điện thoại'); return;
+    if(!document.getElementById('c_name').value.trim()){
+      showStep(1); alert('Cần nhập Tên khách'); return;
     }
+    if(!phoneOk()){ showStep(1); alert('Số điện thoại phải gồm đúng 10 chữ số'); return; }
     showStep(2);
   } else if(s===2){
     var bad=firstIncompleteUnit();
-    if(bad){ bad.scrollIntoView({behavior:'smooth',block:'center'}); alert('Mỗi cửa cần đủ kích thước và giá (theo bảng giá hoặc nhập tay)'); return; }
+    if(bad){ bad.scrollIntoView({behavior:'smooth',block:'center'}); alert('Mỗi cửa cần đủ kích thước và giá (theo bảng giá hoặc nhập tay); mục "Khác" cần thêm tên sản phẩm'); return; }
     showStep(3);
   }
 }
@@ -731,7 +736,7 @@ function renumber(){
   var counts={};
   document.querySelectorAll('.unit-block').forEach(function(b){
     var t=b.dataset.type; counts[t]=(counts[t]||0)+1;
-    b.querySelector('.uhead .lbl').textContent = DOOR_CONFIG[t].label + ' #' + counts[t];
+    b.querySelector('.uhead .lbl').textContent = (DOOR_CONFIG[t]?DOOR_CONFIG[t].label:'Khác') + ' #' + counts[t];
   });
 }
 function colorSpec(type){ return COLORS[type]||{}; }
@@ -755,9 +760,23 @@ function buildColorFields(type){
   return '<div class="fld"><label>Màu</label><select data-key="mau_sac"><option value="">— Chọn màu —</option>'+optionHtml(initColors)+'</select></div>';
 }
 function buildUnit(type){
-  var cfg=DOOR_CONFIG[type];
   var div=document.createElement('div');
   div.className='unit-block'; div.dataset.type=type;
+  if(type==='khac'){  // free-form item: name + kích thước + đơn giá tay (no catalog)
+    div.innerHTML =
+      '<div class="uhead"><span class="lbl">Khác</span><button type="button" class="ux">&times;</button></div>'
+      + '<div class="fld"><label>Tên sản phẩm</label><input data-key="ten" placeholder="VD: Mái tôn, lưới an toàn..."></div>'
+      + '<div class="field-grid">'
+      +   '<div class="fld"><label>Ngang (mm)</label><input class="u-ngang" inputmode="numeric" maxlength="4" placeholder="VD: 3000"></div>'
+      +   '<div class="fld"><label>Cao (mm)</label><input class="u-cao" inputmode="numeric" maxlength="4" placeholder="VD: 2200"></div>'
+      + '</div>'
+      + '<div class="unit-price manual">Nhập đơn giá tay (đ/m²)</div>'
+      + '<label class="u-manual-toggle" style="display:none"><input type="checkbox" class="u-manual-on" checked> Giá đặc biệt (nhập tay)</label>'
+      + '<div class="u-manual-wrap"><label>Đơn giá tay (đ/m²)</label><input class="u-manual" inputmode="numeric" placeholder="VD: 1.300.000"></div>'
+      + '<div class="fld"><label>Ghi chú</label><textarea data-key="ghi_chu" rows="2" placeholder="VD: khách yêu cầu ray nhôm, lắp mặt trong..."></textarea></div>';
+    return div;
+  }
+  var cfg=DOOR_CONFIG[type];
   var fields='';
   cfg.fields.forEach(function(f){
     var opts = (f.type==='select-dynamic') ? '<option value="">— Chọn —</option>' : optionHtml(f.options);
@@ -780,6 +799,7 @@ function buildUnit(type){
 function unitField(b,key){ return b.querySelector('[data-key="'+key+'"]'); }
 function onUnitField(b,key){
   var type=b.dataset.type;
+  if(type==='khac'){ priceUnit(b); return; }  // no catalog fields to cascade
   var cfg=DOOR_CONFIG[type];
   cfg.fields.forEach(function(f){
     if(f.type==='select-dynamic' && f.depends_on===key){
@@ -906,8 +926,10 @@ function serializeWizard(){
   var units=[];
   document.querySelectorAll('.unit-block').forEach(function(b){
     var cnEl=unitField(b,'cong_nghe'); var mEl=unitField(b,'mau');
+    var tenEl=unitField(b,'ten');
     units.push({
       product:b.dataset.type,
+      ten:tenEl?tenEl.value.trim():'',
       cong_nghe:cnEl?cnEl.value:'',
       mau:mEl?mEl.value:'',
       mau_sac:unitColorText(b),
@@ -933,11 +955,11 @@ function serializeWizard(){
   document.getElementById('accessories').value=accs.join(', ');
 }
 document.getElementById('wizform').addEventListener('submit', function(e){
-  if(!document.getElementById('c_name').value.trim() || !document.getElementById('c_phone').value.trim()){
-    e.preventDefault(); showStep(1); alert('Cần nhập Tên và Số điện thoại'); return;
+  if(!document.getElementById('c_name').value.trim() || !phoneOk()){
+    e.preventDefault(); showStep(1); alert('Cần nhập Tên và Số điện thoại (đúng 10 chữ số)'); return;
   }
   var bad=firstIncompleteUnit();
-  if(bad){ e.preventDefault(); showStep(2); bad.scrollIntoView({behavior:'smooth',block:'center'}); alert('Mỗi cửa cần đủ kích thước và giá (theo bảng giá hoặc nhập tay)'); return; }
+  if(bad){ e.preventDefault(); showStep(2); bad.scrollIntoView({behavior:'smooth',block:'center'}); alert('Mỗi cửa cần đủ kích thước và giá (theo bảng giá hoặc nhập tay); mục "Khác" cần thêm tên sản phẩm'); return; }
   serializeWizard();
 });
 """
@@ -985,11 +1007,13 @@ def intake_wizard_page(today: str) -> str:
         <div class="fld"><label>Tên khách *</label>
           <input name="name" id="c_name" placeholder="VD: Anh Hùng — Trần Phú"></div>
         <div class="fld"><label>Số điện thoại *</label>
-          <input name="phone" id="c_phone" inputmode="tel"></div>
+          <input name="phone" id="c_phone" inputmode="numeric" maxlength="10"
+            oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,10)"></div>
         <div class="fld"><label>Email</label><input name="email" type="email" inputmode="email"></div>
         <div class="fld"><label>Địa chỉ</label><input name="address"></div>
         <div class="fld"><label>Khách biết mình qua đâu?</label><select name="source">{src_opts}</select></div>
-        <div class="fld"><label>Số Zalo (nếu khác SĐT)</label><input name="zalo_phone" inputmode="tel"></div>
+        <div class="fld"><label>Số Zalo (nếu khác SĐT)</label><input name="zalo_phone" inputmode="numeric" maxlength="10"
+          oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,10)"></div>
       </div>
       <label>Ghi chú</label>
       <textarea name="note"></textarea>
@@ -1003,6 +1027,10 @@ def intake_wizard_page(today: str) -> str:
     <div class="card">
       <div class="card-title">Chọn loại cửa & số lượng</div>
       {door_rows}
+    <div class="acc-row">
+      <label><input type="checkbox" class="dt-chk" data-type="khac" onchange="reconcileUnits()"> Khác (tự nhập tên + giá)</label>
+      <input type="number" class="dt-qty" data-type="khac" min="1" value="1" disabled inputmode="numeric" oninput="reconcileUnits()">
+    </div>
     </div>
     <div id="units-container"></div>
     <div class="grand-total" id="grandtotal" style="display:none">Tổng tạm tính: 0đ</div>
@@ -1624,7 +1652,9 @@ def _quote_item_form_body(quote: dict, item: dict = None) -> str:
     collapsible on quote_build_page, so adding an item doesn't require
     navigating away from the build page first."""
     customer_type = quote["customer_type"]
-    products = list(DOOR_CONFIG.items())
+    # "khac" = free-form item (custom name in cong_nghe, always manual-priced);
+    # the wizard can create these, so this form must round-trip them too.
+    products = list(DOOR_CONFIG.items()) + [("khac", {"label": "Khác", "fields": []})]
     radios, blocks = [], []
     for i, (key, cfg) in enumerate(products):
         active = (item["product"] == key) if item else (i == 0)
@@ -1634,6 +1664,13 @@ def _quote_item_form_body(quote: dict, item: dict = None) -> str:
             f'<span>{esc(cfg["label"])}</span></label>'
         )
         field_html = []
+        if key == "khac":
+            field_html.append(f"""
+    <div class="unit-field">
+      <label>Tên sản phẩm</label>
+      <input id="f_khac_cong_nghe" name="cong_nghe" {"" if active else "disabled"}
+        oninput="updatePreview()" placeholder="VD: Mái tôn, lưới an toàn...">
+    </div>""")
         for f in cfg["fields"]:
             is_dynamic = f["type"] == "select-dynamic"
             wrap_style = ' style="display:none"' if is_dynamic else ""
@@ -1661,7 +1698,7 @@ function selectProduct(product) {{
   document.querySelectorAll('.product-fields').forEach(function(div) {{
     var active = div.dataset.product === product;
     div.style.display = active ? 'block' : 'none';
-    div.querySelectorAll('select').forEach(function(sel) {{ sel.disabled = !active; }});
+    div.querySelectorAll('select, input').forEach(function(sel) {{ sel.disabled = !active; }});
   }});
   updatePreview();
 }}
@@ -1717,15 +1754,20 @@ function prefillEdit(product, values) {{
   if (radio) radio.checked = true;
   selectProduct(product);
   var cfg = DOOR_CONFIG[product];
-  cfg.fields.filter(function(f) {{ return f.type !== 'select-dynamic'; }}).forEach(function(f) {{
-    var el = document.getElementById('f_' + product + '_' + f.key);
-    if (el && values[f.key] !== undefined) el.value = values[f.key];
-  }});
-  cfg.fields.filter(function(f) {{ return f.type === 'select-dynamic'; }}).forEach(function(f) {{
-    onFieldChanged(product, f.depends_on);
-    var el = document.getElementById('f_' + product + '_' + f.key);
-    if (el && values[f.key] !== undefined) el.value = values[f.key];
-  }});
+  if (cfg) {{
+    cfg.fields.filter(function(f) {{ return f.type !== 'select-dynamic'; }}).forEach(function(f) {{
+      var el = document.getElementById('f_' + product + '_' + f.key);
+      if (el && values[f.key] !== undefined) el.value = values[f.key];
+    }});
+    cfg.fields.filter(function(f) {{ return f.type === 'select-dynamic'; }}).forEach(function(f) {{
+      onFieldChanged(product, f.depends_on);
+      var el = document.getElementById('f_' + product + '_' + f.key);
+      if (el && values[f.key] !== undefined) el.value = values[f.key];
+    }});
+  }} else {{
+    var tenEl = document.getElementById('f_' + product + '_cong_nghe');
+    if (tenEl && values.cong_nghe !== undefined) tenEl.value = values.cong_nghe;
+  }}
   document.getElementById('ngang').value = values.ngang || '';
   document.getElementById('cao').value = values.cao || '';
   if (values.is_manual) {{

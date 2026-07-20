@@ -127,7 +127,7 @@ def configure(db_path: str) -> None:
             CREATE TABLE IF NOT EXISTS quote_items (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 quote_id        INTEGER NOT NULL REFERENCES quotes(id),
-                product         TEXT NOT NULL CHECK (product IN ('nhom_kinh','cua_cuon','cua_keo','xingfa')),
+                product         TEXT NOT NULL CHECK (product IN ('nhom_kinh','cua_cuon','cua_keo','xingfa','khac')),
                 cong_nghe       TEXT,
                 mau             TEXT,
                 ngang_mm        INTEGER NOT NULL,
@@ -142,6 +142,7 @@ def configure(db_path: str) -> None:
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_quote_items_quote ON quote_items(quote_id)")
         _migrate_quote_items_columns(db)
+        _migrate_quote_items_product_check(db)
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS orders (
@@ -423,6 +424,46 @@ def _migrate_quote_items_columns(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE quote_items ADD COLUMN mau_sac TEXT")
     if "ghi_chu" not in existing:
         db.execute("ALTER TABLE quote_items ADD COLUMN ghi_chu TEXT")
+
+
+def _migrate_quote_items_product_check(db: sqlite3.Connection) -> None:
+    """One-time table rebuild so quote_items.product accepts 'khac' — the
+    intake wizard's free-form "Khác" line (custom name in cong_nghe, manual
+    price). SQLite can't ALTER a CHECK, so this is the standard rename-copy-drop
+    rebuild; order_items already allowed 'khac' from day one. Runs AFTER
+    _migrate_quote_items_columns so mau_sac/ghi_chu exist on old DBs."""
+    row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='quote_items'"
+    ).fetchone()
+    if not row or "'khac'" in row["sql"]:
+        return
+    db.execute("ALTER TABLE quote_items RENAME TO quote_items_old")
+    db.execute(
+        """
+        CREATE TABLE quote_items (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            quote_id        INTEGER NOT NULL REFERENCES quotes(id),
+            product         TEXT NOT NULL CHECK (product IN ('nhom_kinh','cua_cuon','cua_keo','xingfa','khac')),
+            cong_nghe       TEXT,
+            mau             TEXT,
+            ngang_mm        INTEGER NOT NULL,
+            cao_mm          INTEGER NOT NULL,
+            mau_sac         TEXT,
+            ghi_chu         TEXT,
+            thanh_tien      INTEGER NOT NULL,
+            is_manual_price INTEGER NOT NULL DEFAULT 0,
+            sort_order      INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    db.execute(
+        "INSERT INTO quote_items (id, quote_id, product, cong_nghe, mau, ngang_mm, cao_mm, "
+        "mau_sac, ghi_chu, thanh_tien, is_manual_price, sort_order) "
+        "SELECT id, quote_id, product, cong_nghe, mau, ngang_mm, cao_mm, "
+        "mau_sac, ghi_chu, thanh_tien, is_manual_price, sort_order FROM quote_items_old"
+    )
+    db.execute("DROP TABLE quote_items_old")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_quote_items_quote ON quote_items(quote_id)")
 
 
 def _migrate_order_items_columns(db: sqlite3.Connection) -> None:

@@ -121,6 +121,8 @@ def doc_so_tien(n: int) -> str:
 
 def _describe(item: dict) -> str:
     """'Cửa Cuốn Đức KV 380' — door label + technology (short) + model."""
+    if item["product"] == "khac":  # free-form item — its name rides in cong_nghe
+        return item.get("cong_nghe") or "Sản phẩm khác"
     label = pricing.DOOR_CONFIG.get(item["product"], {}).get("label", item["product"])
     parts = [label]
     cong_nghe = item.get("cong_nghe") or ""

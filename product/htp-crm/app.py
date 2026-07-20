@@ -412,7 +412,7 @@ def intake_submit(request: Request, name: str = Form(...), phone: str = Form(...
         raw_units = []
     priced = []
     for u in raw_units if isinstance(raw_units, list) else []:
-        if not isinstance(u, dict) or u.get("product") not in pricing.DOOR_CONFIG:
+        if not isinstance(u, dict) or u.get("product") not in (*pricing.DOOR_CONFIG, "khac"):
             continue
         try:
             ngang, cao = int(u.get("ngang") or 0), int(u.get("cao") or 0)
@@ -422,6 +422,8 @@ def intake_submit(request: Request, name: str = Form(...), phone: str = Form(...
             continue
         product = u["product"]
         cong_nghe = (u.get("cong_nghe") or "").strip()
+        if product == "khac":  # free-form item: its name rides in cong_nghe (no catalog fields)
+            cong_nghe = (u.get("ten") or "").strip()[:120]
         mau = (u.get("mau") or "").strip()
         manual_on = bool(u.get("manual"))
         table_price = pricing.get_price(product, cong_nghe, mau, type)
