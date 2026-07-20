@@ -767,8 +767,8 @@ function buildUnit(type){
       '<div class="uhead"><span class="lbl">Khác</span><button type="button" class="ux">&times;</button></div>'
       + '<div class="fld"><label>Tên sản phẩm</label><input data-key="ten" placeholder="VD: Mái tôn, lưới an toàn..."></div>'
       + '<div class="field-grid">'
-      +   '<div class="fld"><label>Ngang (mm)</label><input class="u-ngang" inputmode="numeric" maxlength="4" placeholder="VD: 3000"></div>'
-      +   '<div class="fld"><label>Cao (mm)</label><input class="u-cao" inputmode="numeric" maxlength="4" placeholder="VD: 2200"></div>'
+      +   '<div class="fld"><label>Ngang (mm)</label><input class="u-ngang" inputmode="numeric" placeholder="VD: 3000"></div>'
+      +   '<div class="fld"><label>Cao (mm)</label><input class="u-cao" inputmode="numeric" placeholder="VD: 2200"></div>'
       + '</div>'
       + '<div class="unit-price manual">Nhập đơn giá tay (đ/m²)</div>'
       + '<label class="u-manual-toggle" style="display:none"><input type="checkbox" class="u-manual-on" checked> Giá đặc biệt (nhập tay)</label>'
@@ -787,8 +787,8 @@ function buildUnit(type){
     '<div class="uhead"><span class="lbl">'+cfg.label+'</span><button type="button" class="ux">&times;</button></div>'
     + '<div class="field-grid">'+fields+'</div>'
     + '<div class="field-grid">'
-    +   '<div class="fld"><label>Ngang (mm)</label><input class="u-ngang" inputmode="numeric" maxlength="4" placeholder="VD: 3000"></div>'
-    +   '<div class="fld"><label>Cao (mm)</label><input class="u-cao" inputmode="numeric" maxlength="4" placeholder="VD: 2200"></div>'
+    +   '<div class="fld"><label>Ngang (mm)</label><input class="u-ngang" inputmode="numeric" placeholder="VD: 3000"></div>'
+    +   '<div class="fld"><label>Cao (mm)</label><input class="u-cao" inputmode="numeric" placeholder="VD: 2200"></div>'
     + '</div>'
     + '<div class="unit-price">Chọn đầy đủ để xem giá</div>'
     + '<label class="u-manual-toggle"><input type="checkbox" class="u-manual-on"> Giá đặc biệt (nhập tay)</label>'
@@ -882,7 +882,7 @@ function removeUnit(b){
   cont.addEventListener('input', function(e){
     var b=e.target.closest('.unit-block'); if(!b) return;
     if(e.target.classList.contains('u-ngang') || e.target.classList.contains('u-cao')){
-      e.target.value=e.target.value.replace(/[^0-9]/g,'').slice(0,4); priceUnit(b);
+      e.target.value=e.target.value.replace(/[^0-9]/g,''); priceUnit(b);
     } else if(e.target.classList.contains('u-manual')){ fmtMoney(e.target); priceUnit(b); }
   });
   cont.addEventListener('click', function(e){
@@ -1806,13 +1806,13 @@ document.addEventListener('DOMContentLoaded', updatePreview);
   <div class="row">
     <div class="unit-field">
       <label>Ngang (mm)</label>
-      <input id="ngang" name="ngang" inputmode="numeric" maxlength="4"
-        oninput="this.value=this.value.replace(/\\D/g,'').slice(0,4);updatePreview()" placeholder="VD: 3000">
+      <input id="ngang" name="ngang" inputmode="numeric"
+        oninput="this.value=this.value.replace(/\\D/g,'');updatePreview()" placeholder="VD: 3000">
     </div>
     <div class="unit-field">
       <label>Cao (mm)</label>
-      <input id="cao" name="cao" inputmode="numeric" maxlength="4"
-        oninput="this.value=this.value.replace(/\\D/g,'').slice(0,4);updatePreview()" placeholder="VD: 2200">
+      <input id="cao" name="cao" inputmode="numeric"
+        oninput="this.value=this.value.replace(/\\D/g,'');updatePreview()" placeholder="VD: 2200">
     </div>
   </div>
   <div class="total" id="price_preview">Chọn đầy đủ để xem giá</div>
