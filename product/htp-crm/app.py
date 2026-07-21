@@ -1487,31 +1487,74 @@ def _production_text() -> str:
     return "\n".join(lines)
 
 
+# Zalo group messages are plain text — no bold, no colour. Emoji prefixes and a
+# rule between jobs are the only tools for making a field scannable, so each
+# field the xưởng needs gets its own glyph and its own line.
+_DIGEST_RULE = "━━━━━━━━━━━━━━━━"
+
+
+def _digest_when(o: dict, today: str) -> str:
+    """Urgency line — the first thing the xưởng should read about a job."""
+    inst = o.get("install_date")
+    bits = ["⚡ GẤP"] if o.get("urgent") else []
+    if inst and inst < today:
+        bits.append(f"🔴 QUÁ HẸN {views.fmt_date(inst)}")
+    elif inst == today:
+        bits.append("⏰ LẮP HÔM NAY")
+    elif inst:
+        bits.append(f"📅 Lắp {views.fmt_date(inst)}")
+    else:
+        bits.append("📅 Chưa hẹn ngày lắp")
+    return "  ".join(bits)
+
+
+def _digest_items(o: dict) -> list:
+    """Hạng mục lines — what to actually make. Doors carry kích thước + màu sắc
+    on their own lines; phụ kiện/generic lines still get a line each, so a
+    phụ-kiện-only đơn hàng never renders as a job with nothing in it. Orders
+    with no snapshot rows at all fall back to the order's own description.
+    Never prints a price — the group stays VND-free."""
+    lines = []
+    for i in store.order_items_for(o["id"]):
+        sl = i.get("so_luong") or 1
+        qty = f" ×{sl}" if sl > 1 else ""
+        if i.get("ngang_mm") and i.get("cao_mm"):
+            lines.append(f"🚪 {views._door_desc(i)}{qty}")
+            lines.append(f"     ↔ {i['ngang_mm']} × {i['cao_mm']}mm")
+            if i.get("mau_sac"):
+                lines.append(f"     🎨 Màu: {i['mau_sac']}")
+        else:
+            lines.append(f"🔧 {views._door_desc(i)}{qty}")
+        if i.get("ghi_chu"):
+            lines.append(f"     ✏️ {i['ghi_chu']}")
+    return lines or [f"🚪 {_job_desc(o)}"]
+
+
 def _digest_text(today: str) -> str:
-    """Numbered chờ-sản-xuất list for the Zalo group — every job still waiting
-    to be made, ngày lắp shown as a tag when it has one. Every call re-saves the
-    numbering (store.save_digest) so "xong <N>" always resolves against the
-    freshest message sent to the group."""
+    """Numbered chờ-sản-xuất list for the Zalo group. One visually separated
+    block per job carrying everything the xưởng needs to cut metal — kích
+    thước, màu sắc, ghi chú — so nobody has to open the CRM to start work.
+    Every call re-saves the numbering (store.save_digest) so "xong <N>" always
+    resolves against the freshest message sent to the group."""
     rows = store.orders_for_digest(today)
     store.save_digest(today, [o["id"] for o in rows])
     if not rows:
         return ""
-    lines = [f"🔨 CHỜ SẢN XUẤT {views.fmt_date(today)}"]
+    lines = [f"🔨 CHỜ SẢN XUẤT · {views.fmt_date(today)}",
+             f"{len(rows)} đơn cần làm"]
     for idx, o in enumerate(rows, 1):
-        inst = o.get("install_date")
-        if inst and inst < today:
-            tag = f"[QUÁ HẸN {views.fmt_date(inst)}] "
-        elif inst == today:
-            tag = "[Lắp hôm nay] "
-        elif inst:
-            tag = f"[Lắp {views.fmt_date(inst)}] "
-        else:
-            tag = ""
-        gap = "[GẤP] " if o.get("urgent") else ""
-        addr = f" — {o['address']}" if o.get("address") else ""
-        phone = f" — {o['phone']}" if o.get("phone") else ""
-        lines.append(f"{idx}. {gap}{tag}{o['customer_name']} — {_job_desc(o)}{addr}{phone}")
-    lines.append("Sản xuất xong nhắn: xong <số> · Xem lại: viec")
+        lines.append(_DIGEST_RULE)
+        lines.append(f"【{idx}】 {o['customer_name']}")
+        lines.append(_digest_when(o, today))
+        lines.extend(_digest_items(o))
+        if o.get("address"):
+            lines.append(f"📍 {o['address']}")
+        if o.get("phone"):
+            lines.append(f"📞 {o['phone']}")
+        if o.get("note"):
+            lines.append(f"📝 {o['note']}")
+    lines.append(_DIGEST_RULE)
+    lines.append("👉 Sản xuất xong nhắn: xong <số>")
     return "\n".join(lines)
 
 

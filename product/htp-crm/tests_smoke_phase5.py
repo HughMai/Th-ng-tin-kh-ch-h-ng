@@ -45,9 +45,26 @@ oid = store.create_order(cid, "cua_cuon", "Cửa cuốn khe thoáng", 15_000_000
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ Tùng", "text": "viec"}, headers=HDR)
 assert r.status_code == 200, r.text
 reply = r.json()["reply"]
-assert "Cô Lan" in reply and "1." in reply, f"digest missing order: {reply}"
+assert "Cô Lan" in reply and "【1】" in reply, f"digest missing order: {reply}"
 assert store.get_digest_order(TODAY, 1) == oid, "bot_digest not written for item 1"
 print("2. viec command OK")
+
+# ---- 2b. every job carries kích thước / màu sắc / ghi chú ----------------------
+# The digest used to be one line per job ending in "1 hạng mục", which told the
+# xưởng nothing about what to actually make — they had to open the CRM anyway.
+cid_d = store.create_customer("Anh Kích Thước", "0905999888", "KH")
+oid_d = store.create_order(cid_d, "cua_cuon", "", 20_000_000, TODAY, note="Hẻm nhỏ, gọi trước")
+store.set_order_urgent(oid_d, True)
+store.add_order_item(oid_d, product="cua_cuon", cong_nghe="Cửa cuốn công nghệ Đức",
+                     mau="KV 468 R", ngang_mm=3200, cao_mm=4500, mau_sac="kem",
+                     ghi_chu="khung nhôm dày", thanh_tien=20_000_000)
+reply = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "viec"},
+                    headers=HDR).json()["reply"]
+for needle in ("Anh Kích Thước", "3200 × 4500mm", "Màu: kem", "khung nhôm dày",
+               "Hẻm nhỏ, gọi trước", "KV 468 R", "⚡ GẤP"):
+    assert needle in reply, f"digest missing {needle!r}:\n{reply}"
+assert "₫" not in reply and "20.000.000" not in reply, f"price leaked into viec:\n{reply}"
+print("2b. viec carries kích thước / màu sắc / ghi chú OK")
 
 # ---- 3. "xong <N>" -> order dang_san_xuat, reply confirms ----------------------
 # No install_date and not urgent: "viec" lists every chờ-sản-xuất đơn hàng, so
