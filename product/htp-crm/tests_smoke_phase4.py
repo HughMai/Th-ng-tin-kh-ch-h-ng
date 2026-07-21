@@ -79,9 +79,23 @@ due_ids = [o["id"] for o in store.orders_debt_due()]
 assert oid_kh in due_ids, "KH unpaid order not in orders_debt_due"
 assert oid_dl not in due_ids, "DL order must NOT be in KH orders_debt_due (uses công nợ)"
 
+def _board_col(html: str, label: str) -> str:
+    """The one Hôm nay board column headed `label`. A khách can legitimately
+    appear in more than one column (a đại lý owes nothing on the KH ledger but
+    its cửa still has to be giao), so "name absent from the page" is too coarse
+    an assertion — scope it to the column under test."""
+    hits = [c for c in html.split('<div class="board-col ') if f">{label}<" in c]
+    assert len(hits) == 1, f"expected exactly one '{label}' column, found {len(hits)}"
+    return hits[0]
+
+
 r = client.get("/")
-assert "Khách lẻ còn nợ" in r.text and "Chị Nợ" in r.text, "KH debt section missing on Hôm nay"
-assert "Đại lý Nợ" not in r.text, "DL order leaked into Hôm nay KH debt section"
+assert "Khách lẻ còn nợ" in r.text, "KH debt section missing on Hôm nay"
+kh_col = _board_col(r.text, "Khách lẻ còn nợ")
+assert "Chị Nợ" in kh_col, "KH debt section missing the khách"
+assert "Đại lý Nợ" not in kh_col, "DL order leaked into Hôm nay KH debt section"
+# ...but the đại lý's cửa is 6 years past its ngày giao, so it IS overdue work.
+assert "Đại lý Nợ" in _board_col(r.text, "Lắp hôm nay"), "overdue DL order missing from Lắp hôm nay"
 print(f"4. Khach le con no surfaces OK (don #{oid_kh}, DL #{oid_dl} excluded)")
 
 # ---- 5. "Đã thu đủ" clears the balance and drops the section -------------------

@@ -377,6 +377,7 @@ def today_page(request: Request):
     today = store.today_vn()
     body = views.today_page(
         chase=store.quotes_to_chase(today),
+        installs=store.orders_install_due(today),
         checkins=store.orders_checkin_due(today),
         expiring=store.orders_expiring(today),
         debts=store.debts_overdue(today),
@@ -386,6 +387,7 @@ def today_page(request: Request):
         summary=store.open_quotes_summary(),
         debt_total=store.debt_outstanding_total(),
         bot_ready=bool(BOT_URL and BOT_TOKEN),
+        today=today,
     )
     return views.page("Hôm nay", body, active="/")
 
@@ -1003,7 +1005,8 @@ def order_toggle_urgent(request: Request, order_id: int, urgent: str = Form("1")
 
 
 @app.post("/don-hang/{order_id}/giai-doan")
-def order_set_stage(request: Request, order_id: int, stage: str = Form(...)):
+def order_set_stage(request: Request, order_id: int, stage: str = Form(...),
+                    next: str = Form("")):
     if r := _guard(request):
         return r
     if not store.get_order(order_id):
@@ -1012,7 +1015,7 @@ def order_set_stage(request: Request, order_id: int, stage: str = Form(...)):
         store.set_order_stage(order_id, stage)
     except ValueError:
         raise HTTPException(status_code=400, detail="Giai đoạn không hợp lệ")
-    return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
+    return RedirectResponse(_safe_next(next, f"/don-hang/{order_id}"), status_code=303)
 
 
 @app.post("/don-hang/{order_id}/ngay-lap")
@@ -1485,28 +1488,30 @@ def _production_text() -> str:
 
 
 def _digest_text(today: str) -> str:
-    """Numbered work list for the Zalo group — overdue/today/tomorrow/urgent
-    jobs. Every call re-saves the numbering (store.save_digest) so "xong <N>"
-    always resolves against the freshest message sent to the group."""
+    """Numbered chờ-sản-xuất list for the Zalo group — every job still waiting
+    to be made, ngày lắp shown as a tag when it has one. Every call re-saves the
+    numbering (store.save_digest) so "xong <N>" always resolves against the
+    freshest message sent to the group."""
     rows = store.orders_for_digest(today)
     store.save_digest(today, [o["id"] for o in rows])
     if not rows:
         return ""
-    lines = [f"🔨 CÔNG VIỆC {views.fmt_date(today)}"]
+    lines = [f"🔨 CHỜ SẢN XUẤT {views.fmt_date(today)}"]
     for idx, o in enumerate(rows, 1):
         inst = o.get("install_date")
         if inst and inst < today:
             tag = f"[QUÁ HẸN {views.fmt_date(inst)}] "
         elif inst == today:
-            tag = "[Hôm nay] "
+            tag = "[Lắp hôm nay] "
         elif inst:
-            tag = f"[{views.fmt_date(inst)}] "
+            tag = f"[Lắp {views.fmt_date(inst)}] "
         else:
             tag = ""
+        gap = "[GẤP] " if o.get("urgent") else ""
         addr = f" — {o['address']}" if o.get("address") else ""
         phone = f" — {o['phone']}" if o.get("phone") else ""
-        lines.append(f"{idx}. {tag}{o['customer_name']} — {_job_desc(o)}{addr}{phone}")
-    lines.append("Lắp xong nhắn: xong <số> · Xem việc: viec")
+        lines.append(f"{idx}. {gap}{tag}{o['customer_name']} — {_job_desc(o)}{addr}{phone}")
+    lines.append("Sản xuất xong nhắn: xong <số> · Xem lại: viec")
     return "\n".join(lines)
 
 
@@ -1593,19 +1598,20 @@ async def bot_inbound(request: Request):
         o = store.get_order(order_id) if order_id else None
         if not o:
             return {"reply": f"Không thấy số {m.group(1)} trong bảng hôm nay. Gõ: viec để xem bảng mới."}
-        if o["stage"] == "dang_lap":
-            return {"reply": f"{o['customer_name']} — đã xong rồi."}
-        store.set_order_stage(order_id, "dang_lap")
-        if not o.get("install_date"):
-            store.set_order_install(order_id, today)
+        # "xong <N>" closes the sản xuất step only — đã lắp đặt/đã giao stays a
+        # web-CRM action, so a stale digest number can never skip a stage.
+        if o["stage"] != "cho_san_xuat":
+            label = views.STAGE_LABELS.get(o["stage"], o["stage"])
+            return {"reply": f"{o['customer_name']} — đã xong rồi ({label})."}
+        store.set_order_stage(order_id, "dang_san_xuat")
         who = f" ({name} báo)" if name else ""
-        return {"reply": f"✅ {o['customer_name']} — {_job_desc(o)}: LẮP XONG{who}"}
+        return {"reply": f"✅ {o['customer_name']} — {_job_desc(o)}: SẢN XUẤT XONG{who}"}
 
     if text.lower() in ("cua", "cửa"):
         return {"reply": _production_text() or "Không có cửa nào đang sản xuất 🎉"}
 
     if text.lower() in ("viec", "việc"):
-        return {"reply": _digest_text(today) or "Hôm nay không có việc 🎉"}
+        return {"reply": _digest_text(today) or "Không có cửa nào chờ sản xuất 🎉"}
 
     if text.lower() in ("nhac", "nhắc"):
         replies = _care_replies(today)
@@ -1614,7 +1620,7 @@ async def bot_inbound(request: Request):
         return {"replies": replies}
 
     if text.lower().startswith("xong"):
-        return {"reply": "Gõ: xong <số> (số trong bảng công việc)"}
+        return {"reply": "Gõ: xong <số> (số trong bảng chờ sản xuất)"}
 
     return {}
 

@@ -1359,21 +1359,34 @@ def set_order_note(order_id: int, note: str) -> bool:
 # --------------------------------------------------- Zalo group bot digest
 
 def orders_for_digest(today: str = "") -> list:
-    """Unfinished orders worth putting in the Zalo group work list: overdue,
-    due today, due tomorrow, or flagged urgent regardless of date. Ordered
-    overdue-first so the most pressing jobs lead the numbered list."""
+    """Every đơn hàng still chờ sản xuất — the numbered "viec" list the xưởng
+    works off, and what "xong <N>" resolves against. Deliberately NOT gated on
+    install_date: a job with no ngày lắp yet still has to be made, and the old
+    "urgent or due within a day" filter meant those jobs never appeared in the
+    group at all. Urgent (gấp) pinned to the top, then soonest ngày lắp first
+    (undated last) so the make queue follows the deadline."""
+    today = today or today_vn()
+    with _connect() as db:
+        rows = db.execute(
+            _ORDER_SELECT + " WHERE o.stage = 'cho_san_xuat' "
+            "ORDER BY o.urgent DESC, o.install_date IS NULL, o.install_date ASC, o.id ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def orders_install_due(today: str = "") -> list:
+    """Hôm nay section H: jobs whose ngày lắp is today or already past and that
+    aren't đã lắp đặt yet. The Hôm nay board was built entirely from care/debt
+    follow-ups, so a đơn hàng scheduled to install today showed on /don-hang
+    under "HÔM NAY" while Hôm nay itself reported "không có việc cần làm".
+    Overdue first — a missed install is the most pressing thing on the page."""
     today = today or today_vn()
     with _connect() as db:
         rows = db.execute(
             _ORDER_SELECT + " WHERE o.stage != 'dang_lap' "
-            "AND (o.urgent = 1 OR (o.install_date IS NOT NULL AND o.install_date <= date(?, '+1 day'))) "
-            "ORDER BY "
-            "CASE WHEN o.install_date IS NOT NULL AND o.install_date < ? THEN 0 "
-            "     WHEN o.install_date = ? THEN 1 "
-            "     WHEN o.install_date IS NOT NULL AND o.install_date = date(?, '+1 day') THEN 2 "
-            "     ELSE 3 END, "
-            "o.urgent DESC, o.install_date ASC, o.id ASC",
-            (today, today, today, today),
+            "AND o.install_date IS NOT NULL AND o.install_date <= ? "
+            "ORDER BY o.install_date ASC, o.urgent DESC, o.id ASC",
+            (today,),
         ).fetchall()
     return [dict(r) for r in rows]
 

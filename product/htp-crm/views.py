@@ -482,8 +482,10 @@ def _board_html(columns: list, extra_class: str = "") -> str:
 
 def today_page(chase: list, checkins: list, expiring: list, debts: list,
                reminders: list, reviews: list, summary: dict, kh_debts: list = None,
-               debt_total: int = 0, bot_ready: bool = False) -> str:
+               debt_total: int = 0, bot_ready: bool = False,
+               installs: list = None, today: str = "") -> str:
     kh_debts = kh_debts or []
+    installs = installs or []
     # Stat-card row (GHL-style dashboard convention) — visible on all
     # viewports. The pipeline total reuses the already-existing
     # open_quotes_summary(); the task count is derived from the SAME lists
@@ -494,7 +496,7 @@ def today_page(chase: list, checkins: list, expiring: list, debts: list,
     # because those two lists are gated to "actionable today" — an order
     # that's unpaid but not yet past its nag grace period must still count
     # here, or the headline number quietly disagrees with /cong-no.
-    task_count = (len(chase) + len(checkins) + len(expiring) + len(debts)
+    task_count = (len(chase) + len(installs) + len(checkins) + len(expiring) + len(debts)
                   + len(reminders) + len(reviews) + len(kh_debts))
     stat_row = f"""
 <div class="stat-row">
@@ -514,6 +516,31 @@ def today_page(chase: list, checkins: list, expiring: list, debts: list,
     def col(label: str, accent: str, cards: list) -> None:
         if cards:
             cols.append({"label": label, "accent": accent, "cards": cards})
+
+    # Leads the board: a cửa due on the wall today outranks every follow-up.
+    # "Đã lắp xong" is the only button here that moves a production stage from
+    # this page — it walks the đơn hàng straight to đã lắp đặt/đã giao, which is
+    # what then feeds Xin đánh giá and Khách lẻ còn nợ.
+    install_cards = []
+    for o in installs:
+        label = PRODUCT_LABELS.get(o["product"], "sản phẩm")
+        overdue = bool(today and o["install_date"] < today)
+        when = (f'<span class="chip warn">Quá hẹn {fmt_date(o["install_date"])}</span>'
+                if overdue else '<span class="chip">Hôm nay</span>')
+        gap = '<span class="chip warn">Gấp</span>' if o.get("urgent") else ""
+        install_cards.append(f"""
+  <div class="name">{esc(o["customer_name"])} {when} {gap}</div>
+  <div class="sub">{esc(label.capitalize())} — {esc(STAGE_LABELS.get(o["stage"], o["stage"]))}{
+      f' — {esc(o["address"])}' if o.get("address") else ""}</div>
+  {contact_buttons(o["phone"], o["zalo_phone"], customer_id=o["customer_id"])}
+  <div class="row">
+    <form method="post" action="/don-hang/{o["id"]}/giai-doan" class="flex grow" data-ajax="remove">
+      <input type="hidden" name="stage" value="dang_lap">
+      <input type="hidden" name="next" value="/">
+      <button class="btn done w-full">Đã lắp xong</button></form>
+    <a class="btn done" href="/don-hang/{o["id"]}">Xem đơn</a>
+  </div>""")
+    col("Lắp hôm nay", "danger", install_cards)
 
     chase_cards = []
     for q in chase:

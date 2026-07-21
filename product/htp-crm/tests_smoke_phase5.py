@@ -49,20 +49,25 @@ assert "Cô Lan" in reply and "1." in reply, f"digest missing order: {reply}"
 assert store.get_digest_order(TODAY, 1) == oid, "bot_digest not written for item 1"
 print("2. viec command OK")
 
-# ---- 3. "xong <N>" -> order dang_lap, install_date backfilled, reply confirms
+# ---- 3. "xong <N>" -> order dang_san_xuat, reply confirms ----------------------
+# No install_date and not urgent: "viec" lists every chờ-sản-xuất đơn hàng, so
+# an undated job must still be numbered. The old digest gated on "urgent or due
+# within a day", which made jobs like this one invisible to the xưởng entirely.
 oid2 = store.create_order(cid, "cua_keo", "Cửa kéo 6zem", 8_000_000)  # no install_date
-store.set_order_urgent(oid2, True)  # so it appears in the digest despite no install_date
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ Tùng", "text": "viec"}, headers=HDR)
 assert r.status_code == 200, r.text
+assert "Cửa kéo 6zem" in r.json()["reply"], f"undated job missing from viec: {r.json()['reply']}"
 n2 = next(n for n in range(1, 10) if store.get_digest_order(TODAY, n) == oid2)
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ Tùng", "text": f"xong {n2}"}, headers=HDR)
 assert r.status_code == 200, r.text
 reply = r.json()["reply"]
-assert "LẮP XONG" in reply and "Thợ Tùng" in reply, f"unexpected reply: {reply}"
+assert "SẢN XUẤT XONG" in reply and "Thợ Tùng" in reply, f"unexpected reply: {reply}"
 o2 = store.get_order(oid2)
-assert o2["stage"] == "dang_lap", f"stage not flipped: {o2['stage']}"
-assert o2["install_date"] == TODAY, f"install_date not backfilled: {o2['install_date']}"
-print(f"3. xong <N> completes order OK (don #{oid2})")
+assert o2["stage"] == "dang_san_xuat", f"stage not flipped: {o2['stage']}"
+# "sản xuất xong" says nothing about when it goes on the wall — đã lắp đặt (and
+# the ngày lắp that comes with it) stays a web-CRM action.
+assert o2["install_date"] is None, f"install_date must not be backfilled: {o2['install_date']}"
+print(f"3. xong <N> finishes production OK (don #{oid2})")
 
 # ---- 4. wrong number -> help reply; chatter ignored; malformed xong -> help ----
 r = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "xong 99"}, headers=HDR)
@@ -74,9 +79,10 @@ assert "Gõ: xong" in r.json()["reply"], f"malformed xong should get help reply:
 print("4. wrong number / chatter / malformed xong OK")
 
 # ---- 5. "xong <N>" twice -> second reply says already done, stage unchanged ----
+# The job left chờ sản xuất, so a stale digest number can't walk it a stage further.
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ Tùng", "text": f"xong {n2}"}, headers=HDR)
 assert "đã xong rồi" in r.json()["reply"], f"unexpected: {r.json()}"
-assert store.get_order(oid2)["stage"] == "dang_lap"
+assert store.get_order(oid2)["stage"] == "dang_san_xuat"
 print("5. double xong is a no-op OK")
 
 # ---- 6. /bot/digest matches "viec"; no VND leaks into either reply -------------
@@ -99,10 +105,10 @@ r = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "cửa"}, 
 assert r.json()["reply"] == cua_reply, "cua/cửa should be equivalent"
 print("7. cua/cua-accented command OK")
 
-# ---- 8. /bot/digest combines production queue + lắp đặt work list -------------
+# ---- 8. /bot/digest combines production queue + chờ sản xuất work list --------
 r = client.get("/bot/digest", headers=HDR)
 combined = r.json()["text"]
-assert "ĐANG SẢN XUẤT" in combined and "CÔNG VIỆC" in combined, f"digest missing a section: {combined}"
+assert "ĐANG SẢN XUẤT" in combined and "CHỜ SẢN XUẤT" in combined, f"digest missing a section: {combined}"
 print("8. /bot/digest combines production + job list OK")
 
 # ---- 9. BOT_TOKEN unset -> /bot/inbound 403; rest of the app still works -------
