@@ -256,31 +256,37 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         return c
 
     # ── I. HẠNG MỤC CỬA ──────────────────────────────────────────────────
-    section(row, "I. HẠNG MỤC CỬA"); row += 1
-    for col, title in enumerate(_HEADERS, start=1):
-        header_cell(row, col, title)
-    row += 1
-
+    # Skipped entirely on a phụ-kiện-only báo giá (khóa, bình tích điện, chi phí
+    # khác — no cửa): printing the header with no rows under it looks broken on
+    # a document the customer actually receives.
     door_total = 0
-    for idx, item in enumerate(items, start=1):
-        d = _door_line(item, customer_type)
-        door_total += d["thanh_tien"]
-        cell(row, 1, idx)
-        cell(row, 2, d["desc"], align="left")
-        cell(row, 3, f'{_dim(d["ngang_m"])} x {_dim(d["cao_m"])}')
-        cell(row, 4, 1)
-        cell(row, 5, round(d["area"], 2))
-        money(row, 6, d["don_gia"])
-        money(row, 7, d["thanh_tien"])
-        cell(row, 8, d["ghi_chu"], align="left")
+    if items:
+        section(row, "I. HẠNG MỤC CỬA"); row += 1
+        for col, title in enumerate(_HEADERS, start=1):
+            header_cell(row, col, title)
         row += 1
-    row += 1
+
+        for idx, item in enumerate(items, start=1):
+            d = _door_line(item, customer_type)
+            door_total += d["thanh_tien"]
+            cell(row, 1, idx)
+            cell(row, 2, d["desc"], align="left")
+            cell(row, 3, f'{_dim(d["ngang_m"])} x {_dim(d["cao_m"])}')
+            cell(row, 4, 1)
+            cell(row, 5, round(d["area"], 2))
+            money(row, 6, d["don_gia"])
+            money(row, 7, d["thanh_tien"])
+            cell(row, 8, d["ghi_chu"], align="left")
+            row += 1
+        row += 1
 
     # ── II. PHỤ KIỆN ─────────────────────────────────────────────────────
     pk_items = pricing.phukien_line_items(quote.get("accessories") or "", items, customer_type)
     pk_total = pricing.calc_phukien(quote.get("accessories") or "", items, customer_type)
     if pk_items:
-        section(row, "II. PHỤ KIỆN"); row += 1
+        # Numbering follows whether the cửa table was drawn — a phụ-kiện-only
+        # quote shouldn't open at "II." with no "I." above it.
+        section(row, "II. PHỤ KIỆN" if items else "I. PHỤ KIỆN"); row += 1
         header_cell(row, 1, "STT")
         ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=3)
         header_cell(row, 2, "Nội dung")

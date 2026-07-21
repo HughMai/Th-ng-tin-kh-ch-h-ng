@@ -1370,7 +1370,7 @@ def _kanban_html(rows: list) -> str:
   <div class="acts">
     <a href="/bao-gia/{q['id']}" draggable="false">{"Xem báo giá" if q.get("order_id") else "Sửa thông tin"}</a>
     {'' if q.get("order_id") else f'<a href="/bao-gia/{q["id"]}/hang-muc/moi" draggable="false">+ Hạng mục</a>'}
-    {f'<a href="/bao-gia/{q["id"]}/xuat" draggable="false">Xuất</a>' if q.get("item_count") else ''}
+    {f'<a href="/bao-gia/{q["id"]}/xuat" draggable="false">Xuất</a>' if (q.get("item_count") or q.get("accessories")) else ''}
   </div>
   <div draggable="false">{_quote_pipeline_controls(q, next_url="/bao-gia")}</div>""")
         cols.append({
@@ -1610,10 +1610,14 @@ function toggleQty(cb, qtyId) {{
 }}
 </script>""" if not locked else ""
 
-    if items:
-        ctype = quote["customer_type"]
-        accessories = quote.get("accessories") or ""
-        pk_items = pricing.phukien_line_items(accessories, items, ctype)
+    # Phụ kiện alone is a real báo giá (khóa, bình tích điện, chi phí khác — no
+    # cửa), so it gets the same summary, Xuất Excel and "Xong, lưu báo giá" as any
+    # other. Gating this on `items` left those jobs with no way to save the đơn
+    # hàng or send the customer a quote.
+    ctype = quote["customer_type"]
+    accessories = quote.get("accessories") or ""
+    pk_items = pricing.phukien_line_items(accessories, items, ctype)
+    if items or pk_items:
         pk_total = pricing.calc_phukien(accessories, items, ctype)
         door_total = sum(i["thanh_tien"] for i in items)
         tong_cong = quote.get("value_vnd") or (door_total + pk_total)
@@ -1626,9 +1630,11 @@ function toggleQty(cb, qtyId) {{
         pk_block = (f'<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">'
                     f'<div class="sub strong">Phụ kiện</div>{pk_rows}</div>'
                     if pk_items else "")
+        door_line = (_line.format(name=f"Cửa ({len(items)} hạng mục)", val=fmt_vnd(door_total))
+                     if items else "")
         summary = f"""
 <div class="card">
-  {_line.format(name=f"Cửa ({len(items)} hạng mục)", val=fmt_vnd(door_total))}
+  {door_line}
   {pk_block}
   <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">
     {_line.format(name="Tổng cộng", val=fmt_vnd(tong_cong))}

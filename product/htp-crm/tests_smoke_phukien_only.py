@@ -73,6 +73,11 @@ assert "A.Của" in client.get("/bao-gia").text, "missing from /bao-gia"
 assert "A.Của" in client.get("/khach").text, "missing from /khach"
 assert client.get(f"/bao-gia/{qid}").status_code == 200, "quote page won't render"
 
+# ---- 3b. the save button exists while the quote is still open --------------
+# Checked before chốt, which locks the quote and legitimately hides it.
+assert "Xong, lưu báo giá" in client.get(f"/bao-gia/{qid}").text, \
+    "no 'Xong, lưu báo giá' button on an open phụ-kiện-only báo giá"
+
 # ---- 4. chốt works and bills the phụ kiện exactly once ----------------------
 r = client.post(f"/bao-gia/{qid}/trang-thai", data={"trang_thai": "won"},
                 follow_redirects=False)
@@ -90,6 +95,27 @@ assert sum(l["thanh_tien"] for l in lines) == expected, "invoice lines don't sum
 
 assert "A.Của" in client.get("/don-hang").text, "đơn hàng missing from /don-hang"
 assert client.get(f"/don-hang/{oid}").status_code == 200, "order page won't render"
+
+# ---- 4b. the page offers the same actions as any other báo giá -------------
+# Without these the family can record a phụ-kiện job but never save it as an
+# đơn hàng or send the customer a quote — the buttons were gated on cửa.
+page = client.get(f"/bao-gia/{qid}").text
+assert "Xuất Báo Giá (Excel)" in page, "no Excel export on a phụ-kiện-only báo giá"
+assert "Cửa (0 hạng mục)" not in page, "summary shows a bogus empty cửa line"
+assert "Bình Tích Điện" in page, "phụ kiện breakdown missing from the summary"
+board = client.get("/bao-gia").text
+assert f"/bao-gia/{qid}/xuat" in board, "no Xuất link on the board card"
+
+# ---- 4c. the export renders, and skips the empty cửa table -----------------
+r = client.get(f"/bao-gia/{qid}/xuat")
+assert r.status_code == 200, f"export blocked on a phụ-kiện-only quote: {r.status_code}"
+assert len(r.content) > 4000, "export produced a suspiciously small file"
+import io
+from openpyxl import load_workbook
+sections = [str(x) for row in load_workbook(io.BytesIO(r.content)).active.iter_rows(values_only=True)
+            for x in row if x and ("HẠNG MỤC CỬA" in str(x) or "PHỤ KIỆN" in str(x))]
+assert sections == ["I. PHỤ KIỆN"], \
+    f"phụ-kiện-only export should be one section numbered I., got {sections}"
 
 # ---- 5. cửa + phụ kiện is unchanged (no double count there either) ----------
 units = ('[{"product":"cua_cuon","cong_nghe":"Cửa cuốn công nghệ Úc",'

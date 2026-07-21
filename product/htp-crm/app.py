@@ -924,7 +924,9 @@ def quote_export(request: Request, quote_id: int):
     if not q:
         raise HTTPException(status_code=404)
     items = store.quote_items_for(quote_id)
-    if not items:
+    # Phụ kiện count as hạng mục — a job that's only khóa/bình tích điện/chi phí
+    # khác still needs a báo giá to send the customer. Block only a truly empty one.
+    if not items and not q.get("accessories"):
         raise HTTPException(status_code=400, detail="Chưa có hạng mục nào để xuất")
     customer = store.get_customer(q["customer_id"])
     data, filename = baogia.build_baogia_xlsx(q, customer, items, COMPANY)
