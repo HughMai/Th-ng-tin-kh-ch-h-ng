@@ -5,12 +5,17 @@
  * pages or API responses, so the family always sees fresh data — the only
  * offline behaviour is a friendly "mất mạng" fallback on navigations.
  *
- * Bump CACHE when any precached asset changes so old copies get evicted.
+ * The /sw.js route substitutes the placeholder below with a hash of app.css and
+ * app.js, so the cache name AND the precached URLs both change automatically
+ * whenever those files change — old copies get evicted and the fresh bytes are
+ * fetched under a URL neither the HTTP cache nor this cache has ever seen. No
+ * manual version bumping, and no way for a stale asset to survive a deploy.
  */
-const CACHE = 'htp-crm-v2';
+const ASSET_V = '__ASSET_V__';
+const CACHE = 'htp-crm-' + ASSET_V;
 const SHELL = [
-  '/static/app.css',
-  '/static/app.js',
+  '/static/app.css?v=' + ASSET_V,
+  '/static/app.js?v=' + ASSET_V,
   '/static/offline.html',
   '/static/icons/icon-192.png',
   '/static/icons/icon-512.png',

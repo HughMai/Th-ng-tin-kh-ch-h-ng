@@ -89,8 +89,21 @@ Hand the family these steps once:
 After install it opens standalone (no browser bar) and every deploy updates it
 automatically. The service worker caches only shell assets (CSS/JS/fonts/icons) —
 never CRM pages or data — so the family always sees fresh info; offline it shows a
-"mất mạng" card (`static/offline.html`). Bump `CACHE` in `sw.js` when a shell asset
-changes. Test install on the real HTTPS domain, not localhost.
+"mất mạng" card (`static/offline.html`). Test install on the real HTTPS domain,
+not localhost.
+
+**Cache busting is automatic — don't hand-bump anything.** `views.ASSET_V` is a
+hash of `app.css` + `app.js` computed at startup; pages link
+`/static/app.css?v=<hash>` and the `/sw.js` route substitutes the same hash into
+the worker's cache name and precache list. New bytes ship under a new URL, so
+neither the HTTP cache nor the service worker can serve a stale copy, and the
+page self-heals on first load rather than waiting for the worker to update.
+
+This replaced a manual "bump `CACHE` in `sw.js`" step, which could not actually
+work: the new worker re-fetched the bare `/static/app.css` and the browser
+answered from its own still-fresh HTTP cache (`max-age=86400`), repopulating the
+new cache with the old file. That shipped the board redesign against pre-board
+CSS on every phone but the one that happened to have a cold cache.
 
 ## Run locally
 

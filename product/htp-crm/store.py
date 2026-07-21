@@ -502,7 +502,12 @@ def _connect() -> Iterator[sqlite3.Connection]:
 
 def create_customer(name: str, phone: str, type_: str = "KH", source: str = "khac",
                     address: str = "", note: str = "", zalo_phone: str = "",
-                    stage: str = "lead", email: str = "") -> int:
+                    stage: str = "customer", email: str = "") -> int:
+    """stage defaults to 'customer': anyone the family types in by hand (Thêm
+    khách, or the tiếp-nhận wizard) is someone they're already dealing with, and
+    /khach lists khách chính by default — defaulting to 'lead' filed every manual
+    add somewhere with no link to it, so the row saved and then vanished. Only
+    add_web_lead(), where 'lead' is the actual meaning, still passes it."""
     with _connect() as db:
         cur = db.execute(
             "INSERT INTO customers (name, name_search, phone, zalo_phone, type, source, address, "

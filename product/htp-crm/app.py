@@ -75,13 +75,19 @@ app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
 @app.middleware("http")
 async def _static_cache_headers(request: Request, call_next):
-    """/static/* is content-hashed by nothing (plain filenames), but this is a
-    single-family app on a cheap VPS — a day of caching is enough to stop
-    app.css/app.js re-downloading on every page load without risking a stale
-    asset surviving a deploy for long."""
+    """Cache /static/* by whether the URL is fingerprinted.
+
+    A ?v=<hash> URL is safe to cache forever: new bytes ship under a new URL, so
+    a stale copy can never be served. Un-fingerprinted URLs (fonts, icons, and
+    any old link still pointing at bare /static/app.css) get a short TTL instead
+    — that's what let pre-board CSS survive a deploy for a day on the family's
+    phones, and a 5-minute window keeps the blast radius small if it recurs."""
     response = await call_next(request)
     if request.url.path.startswith("/static/"):
-        response.headers["Cache-Control"] = "max-age=86400"
+        if request.query_params.get("v"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "public, max-age=300"
     return response
 
 
@@ -99,8 +105,14 @@ async def pwa_manifest():
 
 @app.get("/sw.js", include_in_schema=False)
 async def pwa_service_worker():
-    return FileResponse(
-        HERE / "static" / "sw.js",
+    # Substitute the asset fingerprint so the worker's cache name and precache
+    # URLs track app.css/app.js content. The body changes whenever they do, which
+    # is also what makes the browser treat this as a new worker and re-install.
+    body = (HERE / "static" / "sw.js").read_text(encoding="utf-8").replace(
+        "__ASSET_V__", views.ASSET_V
+    )
+    return Response(
+        body,
         media_type="text/javascript",
         headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
     )

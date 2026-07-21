@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 import app
 import store
+import views
 
 client = TestClient(app.app)
 
@@ -30,15 +31,32 @@ r = client.post("/login", data={"password": "test-pass-123"}, follow_redirects=F
 assert r.status_code == 303, f"login failed: {r.status_code} {r.text}"
 assert "session" in client.cookies, "no session cookie set after login"
 
-# ---- static/app.css: 200 + cached ------------------------------------------
+# ---- static/app.css: 200, cached by whether the URL is fingerprinted --------
+# A bare URL must stay short-lived: the flat max-age=86400 this used to assert is
+# what let pre-board CSS outlive a deploy on the family's phones for a day.
 r = client.get("/static/app.css")
 assert r.status_code == 200, f"GET /static/app.css -> {r.status_code}"
-assert r.headers.get("cache-control") == "max-age=86400", \
-    f"unexpected Cache-Control on app.css: {r.headers.get('cache-control')!r}"
+assert r.headers.get("cache-control") == "public, max-age=300", \
+    f"unexpected Cache-Control on bare app.css: {r.headers.get('cache-control')!r}"
+
+r = client.get(f"/static/app.css?v={views.ASSET_V}")
+assert r.status_code == 200, f"GET fingerprinted app.css -> {r.status_code}"
+assert r.headers.get("cache-control") == "public, max-age=31536000, immutable", \
+    f"fingerprinted app.css should be immutable: {r.headers.get('cache-control')!r}"
 
 # ---- static/app.js: 200 -----------------------------------------------------
 r = client.get("/static/app.js")
 assert r.status_code == 200, f"GET /static/app.js -> {r.status_code}"
+
+# ---- pages link the fingerprinted URLs, and sw.js agrees on the hash --------
+# These moving together is the whole fix: new bytes => new URL => guaranteed miss
+# in both the HTTP cache and the service worker cache.
+r = client.get("/")
+assert f"/static/app.css?v={views.ASSET_V}" in r.text, "page does not link fingerprinted CSS"
+sw = client.get("/sw.js")
+assert sw.status_code == 200, f"GET /sw.js -> {sw.status_code}"
+assert "__ASSET_V__" not in sw.text, "sw.js placeholder was not substituted"
+assert f"'{views.ASSET_V}'" in sw.text, "sw.js does not carry the current asset hash"
 
 # ---- seed a customer + multi-item quote header ------------------------------
 cid = store.create_customer("Anh Test — Trần Phú", "0909999999", "KH", "khac", "1 Trần Phú")

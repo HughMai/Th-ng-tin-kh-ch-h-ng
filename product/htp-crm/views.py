@@ -2,11 +2,14 @@
 strings, no template engine). 100% Vietnamese, phone-first: single column,
 17px base, >=48px touch targets, fixed bottom nav, one-tap Zalo/gọi actions.
 """
+import hashlib
 import html
 import json
 import re
 from collections import Counter
 from itertools import groupby
+from pathlib import Path
+from urllib.parse import quote
 
 from templates_vi import (
     LOST_REASON_LABELS,
@@ -24,6 +27,34 @@ from store import bao_gia_so
 
 def esc(x) -> str:
     return html.escape(str(x if x is not None else ""))
+
+
+# ---- asset fingerprint ---------------------------------------------------------
+# app.css/app.js live at stable filenames, so a browser that cached them (HTTP
+# max-age) or a service worker that precached them keeps serving the old bytes
+# after a deploy — the family's phones rendered new board markup against stale
+# pre-board CSS. Bumping the SW's CACHE name alone can't fix that: the new worker
+# re-fetches /static/app.css and the browser answers from its own still-fresh HTTP
+# cache, so the new cache gets repopulated with the old file.
+#
+# Fingerprinting the URL is what actually breaks the tie: new bytes => new URL =>
+# guaranteed miss in both caches. Computed once at import from the file contents,
+# so a deploy is the only thing that can change it and nobody has to remember to
+# bump a version by hand.
+def _asset_fingerprint() -> str:
+    h = hashlib.sha256()
+    static = Path(__file__).parent / "static"
+    for name in ("app.css", "app.js"):
+        try:
+            h.update((static / name).read_bytes())
+        except OSError:  # missing file shouldn't take the app down
+            h.update(name.encode())
+    return h.hexdigest()[:10]
+
+
+ASSET_V = _asset_fingerprint()
+CSS_URL = f"/static/app.css?v={ASSET_V}"
+JS_URL = f"/static/app.js?v={ASSET_V}"
 
 
 # Inline SVG favicon (navy "H" monogram, brand #0f4c81) served as a data URI so
@@ -143,7 +174,7 @@ def page(title: str, body: str, active: str = "", show_nav: bool = True,
 <title>{esc(title)} — HTP</title>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/app.css">{FAVICON}{PWA_HEAD}</head>
+<link rel="stylesheet" href="{CSS_URL}">{FAVICON}{PWA_HEAD}</head>
 <body>
 {sidebar}
 <div class="top">{esc(title)}<a href="/logout" onclick="event.preventDefault();document.getElementById('lo').submit()">Thoát</a></div>
@@ -151,7 +182,7 @@ def page(title: str, body: str, active: str = "", show_nav: bool = True,
 <div class="wrap{(' ' + wrap_class) if wrap_class else ''}">{body}</div>
 {nav}
 <script>{_JS}</script>
-<script src="/static/app.js"></script>
+<script src="{JS_URL}"></script>
 </body></html>"""
 
 
@@ -174,7 +205,7 @@ def login_page(error: str = "") -> str:
 <title>Đăng nhập — HTP</title>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/app.css">{FAVICON}{PWA_HEAD}</head>
+<link rel="stylesheet" href="{CSS_URL}">{FAVICON}{PWA_HEAD}</head>
 <body><div class="wrap">{body}</div></body></html>"""
 
 
@@ -195,7 +226,7 @@ def _public_page(title: str, body: str) -> str:
 <title>{esc(title)} — Hưng Thành Phát Door</title>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/be-vietnam-pro-v12-latin_vietnamese-600.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/app.css">{FAVICON}{PWA_HEAD}</head>
+<link rel="stylesheet" href="{CSS_URL}">{FAVICON}{PWA_HEAD}</head>
 <body><div class="wrap">{body}</div></body></html>"""
 
 
@@ -593,7 +624,23 @@ def customers_page(rows: list, q: str = "", loai: str = "", stage: str = "custom
         '<div class="empty">Chưa có lead nào — thêm khi khách xin báo giá.</div>' if stage == "lead"
         else '<div class="empty">Chưa có khách chính nào. Chốt một báo giá để chuyển khách vào đây.</div>'
     )
+    # The stage filter had no control on the page, so leads (web form submissions,
+    # and every manual add back when those defaulted to 'lead') were reachable
+    # only by hand-editing the URL. Make both lists one tap apart.
+    def _tab(value: str, label: str) -> str:
+        # quote() first (URL context), esc() second (attribute context) — a search
+        # for "Anh A & B" would otherwise cut the query short at the ampersand.
+        qs = f"?giai_doan={value}"
+        if q:
+            qs += f"&q={quote(q)}"
+        if loai:
+            qs += f"&loai={quote(loai)}"
+        on = " active" if stage == value else ""
+        return f'<a class="seg-btn{on}" href="{esc("/khach" + qs)}">{label}</a>'
+
+    tabs = f'<div class="seg mt-0">{_tab("customer", "Khách chính")}{_tab("lead", "Lead")}</div>'
     return f"""
+{tabs}
 <form class="search" method="get" action="/khach">
   <input name="q" value="{esc(q)}" placeholder="Tìm tên, SĐT hoặc địa chỉ…">
   <input type="hidden" name="loai" value="{esc(loai)}">
