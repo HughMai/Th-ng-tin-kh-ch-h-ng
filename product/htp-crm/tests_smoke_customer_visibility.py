@@ -58,20 +58,23 @@ assert store.get_customer(wid)["stage"] == "customer", "wizard add must not be f
 r = client.get("/khach")
 assert "Cô Tám Wizard" in r.text, "wizard-added khách missing from the default /khach list"
 
-# ---- 3. web leads still record as leads, and the Lead tab reaches them ------
+# ---- 3. web leads still record as leads, but the list shows them too --------
+# The stage column still means something (add_web_lead uses it, and chốt promotes),
+# but /khach no longer filters on it — one list, everyone on it.
 store.add_web_lead("Anh Web Lead", "0912000333", "Bình Thủy", "Cửa cuốn mới")
 wl = store.find_customer_by_phone("0912000333")
 assert wl and wl["stage"] == "lead", f"web lead should stay a lead: {wl}"
 
 r = client.get("/khach")
-assert "Anh Web Lead" not in r.text, "a web lead should not sit in khách chính"
-r = client.get("/khach?giai_doan=lead")
-assert "Anh Web Lead" in r.text, "web lead unreachable on the Lead tab"
+assert "Anh Web Lead" in r.text, "web lead missing from /khach — the list must show everyone"
 
-# ---- 4. both tabs are linked from the page — no record is URL-only ----------
-r = client.get("/khach")
-assert 'href="/khach?giai_doan=lead"' in r.text, "no link to the Lead list (leads become invisible)"
-assert 'href="/khach?giai_doan=customer"' in r.text, "no link back to the khách chính list"
+# ---- 4. every customer in the DB is on the page, whatever its stage ---------
+missing = [c["name"] for c in store.list_customers() if c["name"] not in r.text]
+assert not missing, f"customers missing from /khach: {missing}"
 
-print("OK — tests_smoke_customer_visibility: manual adds land on the default list, "
-      "web leads stay leads and are reachable, both tabs linked")
+# ---- 5. search still works, and narrows ------------------------------------
+r = client.get("/khach?q=Wizard")
+assert "Cô Tám Wizard" in r.text and "Chú Bảy Thêm Tay" not in r.text, "search filter broken"
+
+print("OK — tests_smoke_customer_visibility: manual adds land on the list, "
+      "every customer is listed regardless of stage, web leads still record as leads")

@@ -9,7 +9,6 @@ import re
 from collections import Counter
 from itertools import groupby
 from pathlib import Path
-from urllib.parse import quote
 
 from templates_vi import (
     LOST_REASON_LABELS,
@@ -602,7 +601,10 @@ def today_page(chase: list, checkins: list, expiring: list, debts: list,
 
 # ---------------------------------------------------------------- customers
 
-def customers_page(rows: list, q: str = "", loai: str = "", stage: str = "customer") -> str:
+def customers_page(rows: list, q: str = "", loai: str = "") -> str:
+    """One list, everyone on it. The lead/khách-chính split only ever hid rows
+    the family had typed in themselves — they think in "khách", not pipeline
+    stages, so the page no longer filters by stage at all."""
     items = "".join(f"""
 <div class="card">
   <div class="row between mt-0" style="align-items:flex-start">
@@ -621,33 +623,15 @@ def customers_page(rows: list, q: str = "", loai: str = "", stage: str = "custom
     </form>
   </div>
 </div>""" for c in rows) or (
-        '<div class="empty">Chưa có lead nào — thêm khi khách xin báo giá.</div>' if stage == "lead"
-        else '<div class="empty">Chưa có khách chính nào. Chốt một báo giá để chuyển khách vào đây.</div>'
+        '<div class="empty">Chưa tìm thấy khách nào.</div>' if q
+        else '<div class="empty">Chưa có khách nào — bấm "Khách hàng mới" để thêm.</div>'
     )
-    # The stage filter had no control on the page, so leads (web form submissions,
-    # and every manual add back when those defaulted to 'lead') were reachable
-    # only by hand-editing the URL. Make both lists one tap apart.
-    def _tab(value: str, label: str) -> str:
-        # quote() first (URL context), esc() second (attribute context) — a search
-        # for "Anh A & B" would otherwise cut the query short at the ampersand.
-        qs = f"?giai_doan={value}"
-        if q:
-            qs += f"&q={quote(q)}"
-        if loai:
-            qs += f"&loai={quote(loai)}"
-        on = " active" if stage == value else ""
-        return f'<a class="seg-btn{on}" href="{esc("/khach" + qs)}">{label}</a>'
-
-    tabs = f'<div class="seg mt-0">{_tab("customer", "Khách chính")}{_tab("lead", "Lead")}</div>'
     return f"""
-{tabs}
 <form class="search" method="get" action="/khach">
   <input name="q" value="{esc(q)}" placeholder="Tìm tên, SĐT hoặc địa chỉ…">
-  <input type="hidden" name="loai" value="{esc(loai)}">
-  <input type="hidden" name="giai_doan" value="{esc(stage)}"><button>Tìm</button>
+  <input type="hidden" name="loai" value="{esc(loai)}"><button>Tìm</button>
 </form>
 <div class="cards-grid">{items}</div>
-<a class="btn done w-full mt-2" href="/zalo">Kết nối / gắn Zalo</a>
 <script>
 function toggleCardMenu(ev, btn) {{
   ev.stopPropagation();

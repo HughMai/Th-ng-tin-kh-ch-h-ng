@@ -392,12 +392,13 @@ def today_page(request: Request):
 
 # ---- khách hàng ----------------------------------------------------------------
 @app.get("/khach", response_class=HTMLResponse)
-def customers(request: Request, q: str = "", loai: str = "", giai_doan: str = "customer"):
+def customers(request: Request, q: str = "", loai: str = ""):
     if r := _guard(request):
         return r
-    stage = giai_doan if giai_doan in ("customer", "lead") else "customer"
-    rows = store.list_customers(q=q, type_filter=loai, stage_filter=stage)
-    return views.page("Khách hàng", views.customers_page(rows, q, loai, stage), active="/khach")
+    # No stage filter — the list shows every khách. Filtering by stage here is
+    # what made manually-added customers vanish from the only page that lists them.
+    rows = store.list_customers(q=q, type_filter=loai)
+    return views.page("Khách hàng", views.customers_page(rows, q, loai), active="/khach")
 
 
 @app.get("/khach/moi", response_class=HTMLResponse)
@@ -471,8 +472,15 @@ def intake_submit(request: Request, name: str = Form(...), phone: str = Form(...
             continue  # no table match and no manual price — skip junk
         priced.append((product, cong_nghe, mau, (u.get("mau_sac") or "").strip(),
                        (u.get("ghi_chu") or "").strip(), ngang, cao, thanh_tien, is_manual))
-    if priced:
-        qid = store.create_quote_header(cid, accessories, _parse_vnd(deposit), install_date, quote_note)
+    # Anything the family typed on step 3 is a real báo giá, even with no cửa —
+    # a phụ-kiện-only job (khóa, bình tích điện, chi phí khác) is ordinary work.
+    # Gating solely on `priced` silently dropped the phụ kiện, đặt cọc, ngày lắp
+    # and ghi chú, leaving a bare customer and no order anywhere.
+    deposit_vnd = _parse_vnd(deposit)
+    has_header_data = bool(accessories.strip() or deposit_vnd or install_date.strip()
+                           or quote_note.strip())
+    if priced or has_header_data:
+        qid = store.create_quote_header(cid, accessories, deposit_vnd, install_date, quote_note)
         for product, cong_nghe, mau, mau_sac, ghi_chu, ngang, cao, thanh_tien, is_manual in priced:
             store.add_quote_item(qid, product, cong_nghe, mau, ngang, cao,
                                  thanh_tien, is_manual, mau_sac, ghi_chu)

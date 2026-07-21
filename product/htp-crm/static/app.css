@@ -141,12 +141,6 @@ textarea{min-height:70px}
  font-weight:500;background:var(--surface);color:var(--ink-muted);
  transition:border-color var(--speed) ease-out,background var(--speed) ease-out}
 .seg input:checked+span{border-color:var(--brand);background:var(--brand);color:#fff;font-weight:600}
-/* link variant of the segmented control (nav between filtered lists, not a form input) */
-.seg-btn{flex:1;display:flex;align-items:center;justify-content:center;min-height:48px;
- border:1px solid var(--line-strong);border-radius:var(--r-md);font-size:15px;
- font-weight:500;background:var(--surface);color:var(--ink-muted);text-decoration:none;
- transition:border-color var(--speed) ease-out,background var(--speed) ease-out}
-.seg-btn.active{border-color:var(--brand);background:var(--brand);color:#fff;font-weight:600}
 .search{display:flex;gap:var(--sp-2);margin-bottom:var(--sp-3)}
 .search input{flex:1}
 .search button{min-width:64px;border:0;border-radius:var(--r-md);background:var(--brand);

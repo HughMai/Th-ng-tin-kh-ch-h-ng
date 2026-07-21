@@ -773,15 +773,23 @@ def quotes_for_customer(customer_id: int) -> list:
 def create_quote_header(customer_id: int, accessories: str = "", deposit_vnd: Optional[int] = None,
                         install_date: str = "", note: str = "") -> int:
     """Starts a multi-item báo giá: inserted immediately as status='sent',
-    product='khac', value_vnd=0. No draft state — items are added afterward
-    via add_quote_item(), which keeps value_vnd/product/description in sync."""
+    product='khac'. No draft state — items are added afterward via
+    add_quote_item(), which keeps value_vnd/product/description in sync.
+
+    Recomputes before returning so a phụ-kiện-only quote (no cửa, which is
+    ordinary work — khóa, bình tích điện, chi phí khác) carries its real total
+    instead of the 0đ the INSERT starts with. calc_phukien() prices non-motor
+    accessories fine with zero items; only motors need a cửa, since their tier
+    comes from the door's area."""
     with _connect() as db:
         cur = db.execute(
             "INSERT INTO quotes (customer_id, product, description, value_vnd, sent_date, "
             "accessories, deposit_vnd, install_date, note) VALUES (?, 'khac', NULL, 0, ?, ?, ?, ?, ?)",
             (customer_id, today_vn(), accessories or None, deposit_vnd, install_date or None, note or None),
         )
-        return cur.lastrowid
+        quote_id = cur.lastrowid
+    recompute_quote_derived_fields(quote_id)
+    return quote_id
 
 
 def add_quote_item(quote_id: int, product: str, cong_nghe: str, mau: str,
@@ -1154,7 +1162,11 @@ def snapshot_order_items_from_quote(order_id: int, quote_id: int) -> None:
                 (order_id, p["name"], p["qty"], p["unit_cost"], p["total"], sort),
             )
             sort += 1
-        if not items and q.get("value_vnd"):
+        if not items and not phukien and q.get("value_vnd"):
+            # Legacy quick quote: a lump value_vnd with nothing itemised. Must also
+            # check phukien — a phụ-kiện-only quote has no cửa but its value_vnd is
+            # exactly the phụ kiện just inserted above, so adding the lump line too
+            # billed the accessories twice (2.9tr -> 5.8tr, 6.38tr after VAT).
             db.execute(
                 "INSERT INTO order_items (order_id, product, description, so_luong, don_gia, "
                 "thanh_tien, is_manual_price, sort_order) VALUES (?, 'khac', ?, 1, ?, ?, 1, 0)",
