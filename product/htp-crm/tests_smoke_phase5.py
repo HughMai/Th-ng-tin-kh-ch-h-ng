@@ -112,21 +112,22 @@ inbound_text = r_inbound.json()["reply"]
 assert "₫" not in inbound_text, "viec reply must not contain VND"
 print("6. /bot/digest + no VND leakage OK")
 
-# ---- 7. "cua"/"cửa" -> production queue reply (chờ/đang sản xuất only) --------
-r = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "cua"}, headers=HDR)
-assert r.status_code == 200, r.text
-cua_reply = r.json()["reply"]
-assert "Cô Lan" in cua_reply and "Chờ sản xuất" in cua_reply, f"production list missing order: {cua_reply}"
-assert "₫" not in cua_reply, "cua reply must not contain VND"
-r = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "cửa"}, headers=HDR)
-assert r.json()["reply"] == cua_reply, "cua/cửa should be equivalent"
-print("7. cua/cua-accented command OK")
+# ---- 7. "cua"/"cửa" is retired — it must read as chatter, not a command -------
+# The list it printed duplicated "viec" once viec started carrying kích thước,
+# màu sắc and ghi chú per hạng mục. Two near-identical walls of text in the same
+# group is how the family stops reading either.
+for txt in ("cua", "cửa", "CUA", "Cửa"):
+    r = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": txt}, headers=HDR)
+    assert r.status_code == 200, r.text
+    assert r.json() == {}, f"retired 'cua' command still replies to {txt!r}: {r.json()}"
+print("7. retired cua/cửa command is silent OK")
 
-# ---- 8. /bot/digest combines production queue + chờ sản xuất work list --------
+# ---- 8. /bot/digest is the work list + chăm sóc khách, nothing else -----------
 r = client.get("/bot/digest", headers=HDR)
 combined = r.json()["text"]
-assert "ĐANG SẢN XUẤT" in combined and "CHỜ SẢN XUẤT" in combined, f"digest missing a section: {combined}"
-print("8. /bot/digest combines production + job list OK")
+assert "CHỜ SẢN XUẤT" in combined, f"digest missing the work list: {combined}"
+assert "ĐANG SẢN XUẤT" not in combined, f"retired production section still in digest: {combined}"
+print("8. /bot/digest carries the work list only OK")
 
 # ---- 9. BOT_TOKEN unset -> /bot/inbound 403; rest of the app still works -------
 app.BOT_TOKEN = ""

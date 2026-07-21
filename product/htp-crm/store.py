@@ -1296,23 +1296,11 @@ def orders_active() -> list:
     """Tiến độ (production) — orders not yet hoàn thành. Urgent (gấp) pinned to
     the top, then oldest chốt first (FIFO). The /don-hang view regroups these by
     ngày chốt and relies on this created_at-ASC order for within-day sequencing —
-    the make-by-deadline ordering lives in orders_in_production() instead."""
+    the make-by-deadline ordering lives in orders_for_digest() instead."""
     with _connect() as db:
         rows = db.execute(
             _ORDER_SELECT + " WHERE o.stage != 'dang_lap' "
             "ORDER BY o.urgent DESC, o.created_at ASC, o.id ASC"
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def orders_in_production() -> list:
-    """Cửa đang ở xưởng — chờ sản xuất or đang sản xuất. Same ordering
-    convention as orders_active(): urgent (gấp) pinned to the top, then soonest
-    ngày lắp first (undated last) so the make queue follows the deadline."""
-    with _connect() as db:
-        rows = db.execute(
-            _ORDER_SELECT + " WHERE o.stage IN ('cho_san_xuat', 'dang_san_xuat') "
-            "ORDER BY o.urgent DESC, o.install_date IS NULL, o.install_date ASC, o.id ASC"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1347,7 +1335,7 @@ def set_order_install(order_id: int, install_date: str) -> bool:
 def set_order_note(order_id: int, note: str) -> bool:
     """Ghi chú sản xuất/lắp đặt — free-text, editable any time (đ/c hẻm, gọi
     trước, yêu cầu riêng). Carried from the báo giá on chốt; shown on the đơn
-    hàng page and in the Zalo group 'cua' list."""
+    hàng page and in the Zalo group 'viec' work list."""
     with _connect() as db:
         cur = db.execute(
             "UPDATE orders SET note = ?, updated_at = datetime('now') WHERE id = ?",

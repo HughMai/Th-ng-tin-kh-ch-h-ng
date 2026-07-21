@@ -1462,31 +1462,6 @@ def _job_desc(o: dict) -> str:
     return o.get("description") or views.PRODUCT_LABELS.get(o["product"], "")
 
 
-def _production_text() -> str:
-    """Cửa đang ở xưởng — chờ sản xuất or đang sản xuất, ordered by soonest ngày
-    lắp. Each job lists its doors (kích thước + màu) and any ghi chú so the xưởng
-    sees exactly what to make. Not numbered/saved to bot_digest — "xong <N>" only
-    ever resolves against the lắp đặt work list from _digest_text."""
-    rows = store.orders_in_production()
-    if not rows:
-        return ""
-    lines = ["🧵 ĐANG SẢN XUẤT"]
-    for o in rows:
-        label = views.STAGE_LABELS.get(o["stage"], o["stage"])
-        phone = f" — {o['phone']}" if o.get("phone") else ""
-        inst = f" — lắp {views.fmt_date(o['install_date'])}" if o.get("install_date") else ""
-        lines.append(f"• {o['customer_name']} — {_job_desc(o)} — {label}{inst}{phone}")
-        for i in store.order_items_for(o["id"]):
-            if i.get("ngang_mm") and i.get("cao_mm"):
-                mau = f" · {i['mau_sac']}" if i.get("mau_sac") else ""
-                lines.append(f"   ‣ {views._door_desc(i)} {i['ngang_mm']}×{i['cao_mm']}mm{mau}")
-                if i.get("ghi_chu"):
-                    lines.append(f"     Ghi chú: {i['ghi_chu']}")
-        if o.get("note"):
-            lines.append(f"   Ghi chú: {o['note']}")
-    return "\n".join(lines)
-
-
 # Zalo group messages are plain text — no bold, no colour. Emoji prefixes and a
 # rule between jobs are the only tools for making a field scannable, so each
 # field the xưởng needs gets its own glyph and its own line.
@@ -1650,9 +1625,6 @@ async def bot_inbound(request: Request):
         who = f" ({name} báo)" if name else ""
         return {"reply": f"✅ {o['customer_name']} — {_job_desc(o)}: SẢN XUẤT XONG{who}"}
 
-    if text.lower() in ("cua", "cửa"):
-        return {"reply": _production_text() or "Không có cửa nào đang sản xuất 🎉"}
-
     if text.lower() in ("viec", "việc"):
         return {"reply": _digest_text(today) or "Không có cửa nào chờ sản xuất 🎉"}
 
@@ -1671,12 +1643,13 @@ async def bot_inbound(request: Request):
 @app.get("/bot/digest")
 def bot_digest_pull(request: Request):
     """Pulled once a day by the bot sidecar's morning schedule (DIGEST_HOUR/
-    DIGEST_MINUTE) — xưởng production queue + lắp đặt work list + chăm sóc
-    khách summary (quote nudges / review asks due)."""
+    DIGEST_MINUTE) — chờ-sản-xuất work list + chăm sóc khách summary (quote
+    nudges / review asks due). The work list carries kích thước/màu/ghi chú per
+    hạng mục, so the xưởng needs nothing else in the morning message."""
     _check_bot_token(request)
     today = store.today_vn()
     chase, reviews = _care_lists(today)
-    parts = [t for t in (_production_text(), _digest_text(today),
+    parts = [t for t in (_digest_text(today),
                          _care_summary_text(chase, reviews, hint=True)) if t]
     return {"text": "\n\n".join(parts)}
 
