@@ -1557,3 +1557,23 @@ Committed together with two unrelated pending changes already sitting in the wor
 **Deploy:** pre-deploy backup `data/htp-backup-pre-addbar.db`; scp app.py/views.py/static, `docker compose up -d --build` clean. Live: /health 200, app.css serves `.addbar`, wizard renders the bar + quickAdd buttons. **crm.hungthanhphat.vn/khach/tiep-nhan** step 2 is the new flow.
 
 **Owner:** agent (build, tests, headed-browser QA, deploy, verify); Hughie (use it on the next multi-item quote)
+
+## 2026-07-23 — Báo giá: bigger print, chữ ký block, VietQR scan-to-pay (30% tạm ứng) — shipped live
+
+**Decision:** Three rounds of work on the báo giá .xlsx export (`baogia.py`), all driven by Hughie printing real quotes.
+
+*Legibility.* The printed text was small and the fix was not the font size — on A4 with fit-to-1-page-wide, on-paper text size is set by **total column units across the page**, not by point size. The grid was 9.4" wide against a 7.67" printable band, so Excel silently shrank everything to 82%. Trimmed the columns and margins so the sheet fills the page at ~98–100% instead, and raised the body font 11 → 14pt. Net on paper: **9.0pt → 13.8pt**. Row heights, section headers and the header block scaled to match. Locked the terms and "Bằng chữ" lines at 10.5/11pt on purpose — they are full-width merged bands, which never auto-fit, so following `_SZ` would clip the longest payment term.
+
+*Customer block spacing.* Labels sat in column A while values sat in column C — a full 36-char column of dead space after "Kính gửi:". Label and value now share one merged cell via openpyxl rich text (label bold, value regular), with the row height computed so a long địa chỉ wraps to 2 lines instead of clipping.
+
+*Chữ ký.* Added a "NGƯỜI BÁO GIÁ / (Ký, ghi rõ họ tên)" block bottom-right mirroring the wet-signed paper form. `COMPANY["signer"]` defaults to blank — signed by hand, not pre-printed (Hughie's call after seeing "Mai Văn Trung" printed).
+
+*VietQR.* Quotes now carry a scan-to-pay QR for the **30% tạm ứng**, matching the existing payment term. Built **locally** (EMVCo TLV + CRC-16/CCITT-FALSE, `qrcode` + `pillow` added to requirements) rather than via img.vietqr.io — no network call in the export path, so a VietQR outage can never break a quote. Amount is **30% of TỔNG CỘNG including VAT**; transfer memo is the **customer's phone + "chuyen tien"** so payments reconcile to a customer. Sits top-right in column H, replacing the orange "HTP" wordmark (deleted, along with the now-unused `_ORANGE`). Deliberately shows **only** the caption "Quét mã thanh toán — Tạm ứng 30%" — no STK/holder/amount lines, since the QR carries them and the customer's own banking app displays them on scan. Known trade-off: anyone who cannot scan has no account number to type; the QR is the only payment path on the sheet.
+
+Bank config lives in `COMPANY` (env-overridable): Vietcombank, BIN **970436**, account **0111000327986**, holder Phan Thi Hong. The account **number** is used, not the VCB nickname `PTH972` — nicknames are not part of the VietQR standard and do not resolve.
+
+**Verification:** CRC-16 implementation checked against the standard `123456789 -> 29B1` vector; payload parsed back field-by-field; QR **decoded out of the generated .xlsx with OpenCV** and confirmed to resolve to 970436 / 0111000327986 / correct amount / correct memo. Print fit measured across four quote shapes (2-door, 8-door, a 143-triệu line, phụ-kiện-only) — all one page, no money cell clipping to ####. Widening H for the QR also fixed pre-existing Ghi chú clipping (7.3 → 9.5 chars/line). Full 20-file smoke suite green. **Hughie scanned the live QR with his own banking app and confirmed the account details return correctly** — the one check that could not be automated.
+
+**Deploy:** scp app.py/baogia.py/requirements.txt, `docker compose up -d --build`. Post-deploy verified *inside* the container (new deps were involved, so a clean build was not assumed): `qrcode`/`PIL` import, CRC self-test, and a real end-to-end export producing `xl/media/image1.png`. /health 200.
+
+**Owner:** agent (build, tests, deploy, verify); Hughie (scan-verified the bank details, chose column H placement)

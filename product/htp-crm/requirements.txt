@@ -5,3 +5,5 @@ python-multipart
 tzdata
 requests
 openpyxl
+qrcode
+pillow

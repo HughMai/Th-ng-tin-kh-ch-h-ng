@@ -63,6 +63,14 @@ COMPANY = {
     "address": os.environ.get("COMPANY_ADDRESS", "235 - 237 (281 Cũ) Võ Văn Kiệt, Bình Thủy, Cần Thơ"),
     "email": os.environ.get("COMPANY_EMAIL", "hungthanhphat6688@gmail.com"),
     "website": os.environ.get("COMPANY_WEBSITE", "hungthanhphat.vn"),
+    "signer": os.environ.get("COMPANY_SIGNER", ""),  # "Người báo giá" — printed name, blank = sign by hand
+    # VietQR scan-to-pay on the báo giá. bank_bin is the NAPAS code (Vietcombank
+    # = 970436) and bank_account must be the real account number — bank
+    # nicknames/aliases aren't part of the VietQR standard and won't resolve.
+    "bank_name": os.environ.get("COMPANY_BANK_NAME", "Vietcombank"),
+    "bank_bin": os.environ.get("COMPANY_BANK_BIN", "970436"),
+    "bank_account": os.environ.get("COMPANY_BANK_ACCOUNT", "0111000327986"),
+    "bank_holder": os.environ.get("COMPANY_BANK_HOLDER", "Phan Thi Hong"),
 }
 
 store.configure(DB_PATH)

@@ -12,12 +12,19 @@ IV. CAM KẾT & ĐIỀU KHOẢN. Door lines with a table price are recomputed he
 so the sheet is internally consistent; manual-priced lines use the stored value.
 """
 import io
+import math
 import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import qrcode
+from qrcode.image.pil import PilImage
 from openpyxl import Workbook
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
+from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.properties import PageSetupProperties
 
@@ -26,10 +33,9 @@ from store import bao_gia_so
 
 _TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-# Palette echoes the branded template: navy headers, orange logo, red total.
+# Palette echoes the branded template: navy headers, red total.
 _INK = "FF212121"
 _NAVY = "FF1A365D"
-_ORANGE = "FFE8722A"
 _RED = "FFD9534F"
 _GREY = "FF666666"
 _WHITE = "FFFFFFFF"
@@ -37,11 +43,19 @@ _LINE = Side(style="thin", color="FFBDBDBD")
 _BORDER = Border(_LINE, _LINE, _LINE, _LINE)
 _FONT = "Arial"
 
-_COL_WIDTHS = {"A": 5, "B": 35, "C": 15, "D": 8, "E": 12, "F": 15, "G": 18, "H": 15}
+# On A4 with fit-to-1-page-wide, printed text size is set by total column
+# UNITS across the page, not the point size — so the grid is kept near the 7.87"
+# printable width (≈104 units) and the body font prints close to full size. The
+# wide money columns (F/G) hold the largest realistic đơn giá / tổng cộng
+# ("143.400.000 ₫" ≈ 13 chars) without clipping to ####. H is wide enough to sit
+# under the top-right QR and to give Ghi chú room to wrap.
+_COL_WIDTHS = {"A": 4, "B": 26, "C": 11, "D": 5, "E": 10, "F": 16, "G": 19, "H": 13}
 _VND = '#,##0" ₫"'
 _HEADERS = ["STT", "Nội dung", "Kích thước (m)", "SL", "Diện tích (m²)",
             "Đơn giá", "Thành tiền", "Ghi chú"]
 _HIEU_LUC = "15 ngày"  # quote validity shown in the customer block
+_SZ = 14  # base body size; table cells and customer fields
+_DEPOSIT_PCT = 0.30  # keep in step with the "Tạm ứng 30%" payment term below
 
 _DIGITS = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
 _SCALE = ["", "nghìn", "triệu"]  # within one 'tỷ' block (10^0 / 10^3 / 10^6)
@@ -159,6 +173,61 @@ def _dim(m: float) -> str:
     return f"{m:g}"
 
 
+def _tlv(tag: str, value: str) -> str:
+    """EMVCo tag-length-value chunk: 2-char tag + 2-digit length + value."""
+    return f"{tag}{len(value):02d}{value}"
+
+
+def _crc16(s: str) -> str:
+    """CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection/final xor) —
+    the checksum NAPAS requires as the closing field of a VietQR payload. A wrong
+    CRC makes every banking app reject the code, so this is covered by a known
+    test vector: crc16('123456789') == '29B1'."""
+    crc = 0xFFFF
+    for byte in s.encode("utf-8"):
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return f"{crc:04X}"
+
+
+def vietqr_payload(bank_bin: str, account: str, amount: int, info: str) -> str:
+    """A dynamic VietQR (NAPAS 247) string — scannable by any Vietnamese banking
+    app, with the amount and transfer memo pre-filled.
+
+    ``bank_bin`` is the NAPAS bank code (Vietcombank = 970436), ``account`` the
+    real account number (bank nicknames/aliases are not part of the standard and
+    will not resolve), ``amount`` is đồng, ``info`` the memo — ASCII only, since
+    banks mangle Vietnamese diacritics in the transfer description.
+    """
+    beneficiary = _tlv("00", bank_bin) + _tlv("01", account)
+    merchant = (_tlv("00", "A000000727")      # NAPAS GUID
+                + _tlv("01", beneficiary)
+                + _tlv("02", "QRIBFTTA"))     # transfer to account number
+    body = (_tlv("00", "01")                  # payload format indicator
+            + _tlv("01", "12")                # 12 = dynamic (carries an amount)
+            + _tlv("38", merchant)
+            + _tlv("53", "704")               # VND
+            + _tlv("54", str(int(amount)))
+            + _tlv("58", "VN")
+            + _tlv("62", _tlv("08", info)))   # 62-08 = purpose of transaction
+    return body + "6304" + _crc16(body + "6304")
+
+
+def _qr_png(payload: str) -> io.BytesIO:
+    """VietQR payload -> PNG bytes, ready to drop into the sheet. The Pillow
+    factory is pinned explicitly: qrcode silently falls back to a pure-python
+    backend when it can't import Pillow, and that one takes no ``format``."""
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=1)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    buf = io.BytesIO()
+    img = qr.make_image(image_factory=PilImage, fill_color="black", back_color="white")
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
 def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -> tuple[bytes, str]:
     """Return (xlsx_bytes, filename) for a báo giá. ``quote`` is a store.get_quote
     row (carries customer_name / customer_type / accessories), ``items`` are its
@@ -174,84 +243,109 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     for col, width in _COL_WIDTHS.items():
         ws.column_dimensions[col].width = width
 
-    def band(row, text, *, size=11, bold=False, italic=False, color=_INK,
-             align="left", first=1, last=8):
+    def band(row, text, *, size=_SZ, bold=False, italic=False, color=_INK,
+             align="left", first=1, last=8, height=None):
         ws.merge_cells(start_row=row, start_column=first, end_row=row, end_column=last)
         c = ws.cell(row=row, column=first, value=text)
         c.font = Font(name=_FONT, size=size, bold=bold, italic=italic, color=color)
         c.alignment = Alignment(horizontal=align, vertical="center", wrap_text=True)
+        if height:
+            ws.row_dimensions[row].height = height
         return c
 
+    def spacer(row, height=6):
+        """A blank separator row. Explicitly short — at the default height every
+        gap costs ~20px of vertical scale-to-fit budget, which shrinks the type."""
+        ws.row_dimensions[row].height = height
+
     # ── Company header ───────────────────────────────────────────────────
-    band(1, (company.get("name") or "").upper(), size=18, bold=True, color=_NAVY,
-         first=1, last=6)
-    logo = ws.cell(row=1, column=7, value="HTP")
-    logo.font = Font(name=_FONT, size=18, bold=True, color=_ORANGE)
-    logo.alignment = Alignment(horizontal="right", vertical="center")
-    ws.merge_cells("G1:H1")
+    # Company text is capped at column F so columns G–H stay clear for the
+    # VietQR block, which takes the top-right corner the "HTP" logo used to hold.
+    band(1, (company.get("name") or "").upper(), size=20, bold=True, color=_NAVY,
+         first=1, last=6, height=30)
 
     row = 2
     if company.get("tagline"):
-        band(row, f'Chuyên: {company["tagline"]}', size=10, color=_GREY); row += 1
+        band(row, f'Chuyên: {company["tagline"]}', size=11, color=_GREY, height=15,
+             last=6); row += 1
     if company.get("address"):
-        band(row, f'Địa chỉ: {company["address"]}', size=10, color=_GREY); row += 1
+        band(row, f'Địa chỉ: {company["address"]}', size=11, color=_GREY, height=15,
+             last=6); row += 1
     if company.get("phone"):
-        band(row, f'Hotline: {company["phone"]}', size=10, color=_GREY); row += 1
+        band(row, f'Hotline: {company["phone"]}', size=11, color=_GREY, height=15,
+             last=6); row += 1
     contact = " | ".join(p for p in (
         (f'Email: {company["email"]}' if company.get("email") else ""),
         (f'Website: {company["website"]}' if company.get("website") else ""),
     ) if p)
     if contact:
-        band(row, contact, size=10, color=_GREY); row += 1
+        band(row, contact, size=11, color=_GREY, height=15, last=6); row += 1
+    # The QR is drawn once the total is known (further down) but anchors here —
+    # its caption sits on the last company-info line, level with the code above.
+    qr_caption_row = max(2, row - 1)
     # thin rule under the header block
     for col in range(1, 9):
         ws.cell(row=row, column=col).border = Border(bottom=Side(style="thin", color=_NAVY))
+    ws.row_dimensions[row].height = 5
     row += 1
 
-    band(row, "BẢNG BÁO GIÁ", size=16, bold=True, color=_NAVY, align="center"); row += 2
+    band(row, "BẢNG BÁO GIÁ", size=18, bold=True, color=_NAVY, align="center",
+         height=26); row += 1
+    spacer(row); row += 1
 
     # ── Customer block (two label/value columns) ─────────────────────────
-    def field(r, label, value, *, lcol, vfirst, vlast):
-        lc = ws.cell(row=r, column=lcol, value=label)
-        lc.font = Font(name=_FONT, size=11, bold=True, color=_INK)
-        lc.alignment = Alignment(horizontal="left", vertical="center")
-        ws.merge_cells(start_row=r, start_column=vfirst, end_row=r, end_column=vlast)
-        vc = ws.cell(row=r, column=vfirst, value=value)
-        vc.font = Font(name=_FONT, size=11, color=_INK)
-        vc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    def field(r, label, value, *, first, last):
+        """Label and value in one merged cell — 'Kính gửi: ANH CỬA'. They used to
+        sit in separate cells a whole column apart, which stranded the value ~3cm
+        to the right of its label; inline also frees the full width for long
+        addresses. Label is bolded via rich text, value stays regular."""
+        ws.merge_cells(start_row=r, start_column=first, end_row=r, end_column=last)
+        c = ws.cell(row=r, column=first)
+        c.value = CellRichText(
+            TextBlock(InlineFont(rFont=_FONT, sz=_SZ, b=True, color=_INK[2:]), f"{label} "),
+            TextBlock(InlineFont(rFont=_FONT, sz=_SZ, color=_INK[2:]), str(value)),
+        )
+        c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        # Merged cells never auto-fit, so a long address would be clipped at one
+        # line. Width in char-units ≈ chars × (13pt Arial / 11pt Calibri) = 1.18.
+        avail = sum(_COL_WIDTHS[get_column_letter(i)] for i in range(first, last + 1))
+        lines = max(1, math.ceil(len(f"{label} {value}") * 1.18 / avail))
+        ws.row_dimensions[r].height = max(ws.row_dimensions[r].height or 0, 21 * lines)
 
     cust_name = quote.get("customer_name") or customer.get("name") or "—"
     phone = quote.get("phone") or customer.get("phone") or "—"
-    field(row, "Kính gửi:", cust_name.upper(), lcol=1, vfirst=3, vlast=4)
-    field(row, "Số báo giá:", so, lcol=5, vfirst=7, vlast=8); row += 1
-    field(row, "Địa chỉ:", customer.get("address") or "—", lcol=1, vfirst=3, vlast=4)
-    field(row, "Ngày lập:", today.strftime("%d/%m/%Y"), lcol=5, vfirst=7, vlast=8); row += 1
-    field(row, "Điện thoại:", phone, lcol=1, vfirst=3, vlast=4)
-    field(row, "Hiệu lực:", _HIEU_LUC, lcol=5, vfirst=7, vlast=8); row += 2
+    field(row, "Kính gửi:", cust_name.upper(), first=1, last=4)
+    field(row, "Số báo giá:", so, first=5, last=8); row += 1
+    field(row, "Địa chỉ:", customer.get("address") or "—", first=1, last=4)
+    field(row, "Ngày lập:", today.strftime("%d/%m/%Y"), first=5, last=8); row += 1
+    field(row, "Điện thoại:", phone, first=1, last=4)
+    field(row, "Hiệu lực:", _HIEU_LUC, first=5, last=8); row += 1
+    spacer(row); row += 1
 
     def section(r, text):
-        band(r, text, bold=True, color=_NAVY)
+        band(r, text, size=15, bold=True, color=_NAVY, height=22)
 
     def header_cell(r, col, text):
         c = ws.cell(row=r, column=col, value=text)
-        c.font = Font(name=_FONT, size=11, bold=True, color=_WHITE)
+        c.font = Font(name=_FONT, size=_SZ, bold=True, color=_WHITE)
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.fill = PatternFill("solid", fgColor=_NAVY)
         c.border = _BORDER
+        ws.row_dimensions[r].height = 32
         return c
 
     def money(r, col, value):
         c = ws.cell(row=r, column=col, value=value)
         c.number_format = _VND
         c.alignment = Alignment(horizontal="right", vertical="center")
-        c.font = Font(name=_FONT, size=11, color=_INK)
+        c.font = Font(name=_FONT, size=_SZ, color=_INK)
         c.border = _BORDER
         return c
 
     def cell(r, col, value, *, align="center"):
         c = ws.cell(row=r, column=col, value=value)
         c.alignment = Alignment(horizontal=align, vertical="center", wrap_text=(col in (2, 8)))
-        c.font = Font(name=_FONT, size=11, color=_INK)
+        c.font = Font(name=_FONT, size=_SZ, color=_INK)
         c.border = _BORDER
         return c
 
@@ -277,8 +371,9 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
             money(row, 6, d["don_gia"])
             money(row, 7, d["thanh_tien"])
             cell(row, 8, d["ghi_chu"], align="left")
+            ws.row_dimensions[row].height = 24
             row += 1
-        row += 1
+        spacer(row); row += 1
 
     # ── II. PHỤ KIỆN ─────────────────────────────────────────────────────
     pk_items = pricing.phukien_line_items(quote.get("accessories") or "", items, customer_type)
@@ -307,17 +402,18 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
             cell(row, 8, "")
             for col in (3, 5, 6):
                 ws.cell(row=row, column=col).border = _BORDER
+            ws.row_dimensions[row].height = 24
             row += 1
-        row += 1
+        spacer(row); row += 1
 
     # ── Summary ──────────────────────────────────────────────────────────
     tong_cong = door_total + pk_total
     vat = round(tong_cong * 0.1)
     tong_tien = tong_cong + vat
     summary = [
-        ("Cộng tiền hàng:", tong_cong, _INK, 11),
-        ("Thuế VAT (10%):", vat, _INK, 11),
-        ("TỔNG CỘNG:", tong_tien, _RED, 12),
+        ("Cộng tiền hàng:", tong_cong, _INK, _SZ),
+        ("Thuế VAT (10%):", vat, _INK, _SZ),
+        ("TỔNG CỘNG:", tong_tien, _RED, 15),
     ]
     for label, value, color, size in summary:
         ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=6)
@@ -331,11 +427,15 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         vc.font = Font(name=_FONT, size=size, bold=True, color=color)
         vc.alignment = Alignment(horizontal="right", vertical="center")
         vc.border = _BORDER
+        ws.row_dimensions[row].height = 24
         row += 1
-    row += 1
+    spacer(row); row += 1
 
-    band(row, f"(Bằng chữ: {doc_so_tien(tong_tien)})", italic=True, color=_INK,
-         align="right"); row += 2
+    # 11pt, not _SZ: a large total spells out to ~90 chars and this row is a
+    # merged band, which never auto-fits — at 13pt it would clip.
+    band(row, f"(Bằng chữ: {doc_so_tien(tong_tien)})", size=11, italic=True,
+         color=_INK, align="right", height=19); row += 1
+    spacer(row); row += 1
 
     # ── IV. CAM KẾT & ĐIỀU KHOẢN ─────────────────────────────────────────
     section(row, "IV. CAM KẾT & ĐIỀU KHOẢN"); row += 1
@@ -345,7 +445,49 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         "- Bảo hành: Sản phẩm được bảo hành chính hãng [XX] tháng kể từ ngày bàn giao.",
         "- Lắp đặt: Có mặt khảo sát trong ngày. Lắp xong, chạy thử, nghiệm thu hài lòng mới thanh toán.",
     ):
-        band(row, line, size=10, color=_INK); row += 1
+        # Same one-line constraint: the longest term runs 98 chars across the
+        # 102-unit band, so it stays at 10.5pt rather than following _SZ.
+        band(row, line, size=10.5, color=_INK, height=17); row += 1
+
+    # ── Signature block ──────────────────────────────────────────────────
+    # Sits bottom-right like the wet-signed paper báo giá: title, "ký ghi rõ
+    # họ tên", blank height for the signature and stamp, then the signer name.
+    spacer(row); row += 1
+    band(row, "NGƯỜI BÁO GIÁ", size=_SZ, bold=True, color=_INK, align="center",
+         first=6, last=8, height=21); row += 1
+    band(row, "(Ký, ghi rõ họ tên)", size=10, italic=True, color=_GREY,
+         align="center", first=6, last=8, height=16); row += 1
+    ws.merge_cells(start_row=row, start_column=6, end_row=row + 2, end_column=8)
+    for r in range(row, row + 3):
+        ws.row_dimensions[r].height = 24  # room to sign and stamp
+    row += 3
+    band(row, company.get("signer") or "", size=_SZ, bold=True, color=_INK,
+         align="center", first=6, last=8, height=21); row += 1
+
+    # ── VietQR: scan-to-pay the 30% deposit ──────────────────────────────
+    # Anchored top-right (cols G–H, row 1) where the "HTP" logo used to sit. It
+    # is written last because the amount needs the final total, but an image
+    # anchor is positional, not sequential — it still lands in the header. The
+    # bank name / STK / holder / amount stay out of the sheet on purpose: the QR
+    # already carries them, and the customer's own app shows them on scan.
+    # Skipped when the bank isn't configured or the quote totals nothing.
+    deposit = round(tong_tien * _DEPOSIT_PCT)
+    if company.get("bank_account") and deposit > 0:
+        digits = "".join(c for c in str(phone) if c.isdigit())
+        memo = f"{digits} chuyen tien".strip()
+        qr_buf = _qr_png(vietqr_payload(company.get("bank_bin") or "",
+                                        company["bank_account"], deposit, memo))
+        img = XLImage(qr_buf)
+        # 92px ≈ 2.4cm printed (41 modules ≈ 0.59mm each — comfortably scannable)
+        # and sits inside column H's 96px, so it never spills past the print area.
+        img.width = img.height = 92
+        ws.add_image(img, "H1")
+        ws.merge_cells(start_row=qr_caption_row, start_column=7,
+                       end_row=qr_caption_row, end_column=8)
+        cap = ws.cell(row=qr_caption_row, column=7,
+                      value=f"Quét mã thanh toán — Tạm ứng {int(_DEPOSIT_PCT * 100)}%")
+        cap.font = Font(name=_FONT, size=8, bold=True, color=_NAVY)
+        cap.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     # ── Print setup: one A4 page ─────────────────────────────────────────
     # Without this, Excel prints with its default page setup and the 8 columns
@@ -357,8 +499,11 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 1
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-    ws.page_margins = PageMargins(left=0.3, right=0.3, top=0.4, bottom=0.4,
-                                  header=0.2, footer=0.2)
+    # Narrow side margins widen the printable band to ~7.87", which the trimmed
+    # 102-unit grid fills at ~100% — no fit-to-width shrink, so the body font
+    # prints at its full 14pt instead of being scaled down.
+    ws.page_margins = PageMargins(left=0.2, right=0.2, top=0.35, bottom=0.35,
+                                  header=0.15, footer=0.15)
 
     buf = io.BytesIO()
     wb.save(buf)
