@@ -223,7 +223,10 @@ def _qr_png(payload: str) -> io.BytesIO:
     qr.make(fit=True)
     buf = io.BytesIO()
     img = qr.make_image(image_factory=PilImage, fill_color="black", back_color="white")
-    img.save(buf, format="PNG")
+    # qrcode hands back a 1-bit ("mode 1") image. Some mobile PNG decoders skip
+    # bit-depth-1 files without erroring, leaving a blank gap where the QR should
+    # be. RGB costs ~600 bytes and decodes everywhere.
+    img.get_image().convert("RGB").save(buf, format="PNG")
     buf.seek(0)
     return buf
 
@@ -294,23 +297,26 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     spacer(row); row += 1
 
     # ── Customer block (two label/value columns) ─────────────────────────
-    def field(r, label, value, *, first, last):
+    def field(r, label, value, *, first, last, size=_SZ):
         """Label and value in one merged cell — 'Kính gửi: ANH CỬA'. They used to
         sit in separate cells a whole column apart, which stranded the value ~3cm
         to the right of its label; inline also frees the full width for long
-        addresses. Label is bolded via rich text, value stays regular."""
+        addresses. Label is bolded via rich text, value stays regular. ``size``
+        drops below _SZ for secondary blocks that sit next to smaller body text."""
         ws.merge_cells(start_row=r, start_column=first, end_row=r, end_column=last)
         c = ws.cell(row=r, column=first)
         c.value = CellRichText(
-            TextBlock(InlineFont(rFont=_FONT, sz=_SZ, b=True, color=_INK[2:]), f"{label} "),
-            TextBlock(InlineFont(rFont=_FONT, sz=_SZ, color=_INK[2:]), str(value)),
+            TextBlock(InlineFont(rFont=_FONT, sz=size, b=True, color=_INK[2:]), f"{label} "),
+            TextBlock(InlineFont(rFont=_FONT, sz=size, color=_INK[2:]), str(value)),
         )
         c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
         # Merged cells never auto-fit, so a long address would be clipped at one
-        # line. Width in char-units ≈ chars × (13pt Arial / 11pt Calibri) = 1.18.
+        # line. Width in char-units ≈ chars × (13pt Arial / 11pt Calibri) = 1.18,
+        # scaled by size/_SZ so a smaller block gets the wrap budget it earns.
         avail = sum(_COL_WIDTHS[get_column_letter(i)] for i in range(first, last + 1))
-        lines = max(1, math.ceil(len(f"{label} {value}") * 1.18 / avail))
-        ws.row_dimensions[r].height = max(ws.row_dimensions[r].height or 0, 21 * lines)
+        lines = max(1, math.ceil(len(f"{label} {value}") * 1.18 * size / _SZ / avail))
+        ws.row_dimensions[r].height = max(ws.row_dimensions[r].height or 0,
+                                          21 * size / _SZ * lines)
 
     cust_name = quote.get("customer_name") or customer.get("name") or "—"
     phone = quote.get("phone") or customer.get("phone") or "—"
@@ -453,6 +459,9 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     # Sits bottom-right like the wet-signed paper báo giá: title, "ký ghi rõ
     # họ tên", blank height for the signature and stamp, then the signer name.
     spacer(row); row += 1
+    # Bank details fill columns A–E across these same rows (written further down,
+    # with the QR, since both need the final total).
+    pay_row = row
     band(row, "NGƯỜI BÁO GIÁ", size=_SZ, bold=True, color=_INK, align="center",
          first=6, last=8, height=21); row += 1
     band(row, "(Ký, ghi rõ họ tên)", size=10, italic=True, color=_GREY,
@@ -467,14 +476,36 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     # ── VietQR: scan-to-pay the 30% deposit ──────────────────────────────
     # Anchored top-right (cols G–H, row 1) where the "HTP" logo used to sit. It
     # is written last because the amount needs the final total, but an image
-    # anchor is positional, not sequential — it still lands in the header. The
-    # bank name / STK / holder / amount stay out of the sheet on purpose: the QR
-    # already carries them, and the customer's own app shows them on scan.
+    # anchor is positional, not sequential — it still lands in the header.
     # Skipped when the bank isn't configured or the quote totals nothing.
     deposit = round(tong_tien * _DEPOSIT_PCT)
     if company.get("bank_account") and deposit > 0:
         digits = "".join(c for c in str(phone) if c.isdigit())
         memo = f"{digits} chuyen tien".strip()
+
+        # The typed-out twin of the QR, in A–E beside the signature block. These
+        # details used to be left off on purpose — "the QR already carries them"
+        # — but the QR is a *floating image*, and Google Sheets mobile and Zalo's
+        # in-app file preview drop floating images entirely. A customer reading
+        # the báo giá on a phone was left with no account number at all. Plain
+        # cells render in every viewer, so payment never depends on the QR.
+        pay_lines = [(lab, val) for lab, val in (
+            ("Ngân hàng:", company.get("bank_name") or ""),
+            ("Số tài khoản:", company["bank_account"]),
+            ("Chủ tài khoản:", (company.get("bank_holder") or "").upper()),
+            (f"Tạm ứng {int(_DEPOSIT_PCT * 100)}%:",
+             f"{deposit:,.0f} ₫".replace(",", ".")),
+            ("Nội dung CK:", memo),
+        ) if val]
+        # 11pt heading over 10.5pt lines — the same weights as the CAM KẾT terms
+        # directly above, so the block reads as part of the document rather than
+        # a bolt-on. height stays 21: these rows are shared with the signature
+        # block on the right, and band() would otherwise shrink its title row.
+        band(pay_row, "THÔNG TIN CHUYỂN KHOẢN", size=11, bold=True, color=_NAVY,
+             first=1, last=5, height=21)
+        for i, (label, value) in enumerate(pay_lines, start=1):
+            field(pay_row + i, label, value, first=1, last=5, size=10.5)
+
         qr_buf = _qr_png(vietqr_payload(company.get("bank_bin") or "",
                                         company["bank_account"], deposit, memo))
         img = XLImage(qr_buf)
