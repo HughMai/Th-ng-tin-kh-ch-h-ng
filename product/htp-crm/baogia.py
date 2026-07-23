@@ -23,8 +23,10 @@ from openpyxl import Workbook
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.units import pixels_to_EMU
 from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.properties import PageSetupProperties
 
@@ -268,24 +270,33 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
          first=1, last=6, height=30)
 
     row = 2
+    # 19px, not the old 15 — the extra 4px/line (16px across the 4 lines) gives
+    # the enlarged QR below enough header height to grow into without spilling
+    # into the "BẢNG BÁO GIÁ" band underneath it.
     if company.get("tagline"):
-        band(row, f'Chuyên: {company["tagline"]}', size=11, color=_GREY, height=15,
+        band(row, f'Chuyên: {company["tagline"]}', size=11, color=_GREY, height=19,
              last=6); row += 1
     if company.get("address"):
-        band(row, f'Địa chỉ: {company["address"]}', size=11, color=_GREY, height=15,
+        band(row, f'Địa chỉ: {company["address"]}', size=11, color=_GREY, height=19,
              last=6); row += 1
     if company.get("phone"):
-        band(row, f'Hotline: {company["phone"]}', size=11, color=_GREY, height=15,
+        band(row, f'Hotline: {company["phone"]}', size=11, color=_GREY, height=19,
              last=6); row += 1
     contact = " | ".join(p for p in (
         (f'Email: {company["email"]}' if company.get("email") else ""),
         (f'Website: {company["website"]}' if company.get("website") else ""),
     ) if p)
     if contact:
-        band(row, contact, size=11, color=_GREY, height=15, last=6); row += 1
+        band(row, contact, size=11, color=_GREY, height=19, last=6); row += 1
     # The QR is drawn once the total is known (further down) but anchors here —
     # its caption sits on the last company-info line, level with the code above.
     qr_caption_row = max(2, row - 1)
+    # Row heights above the rule (name band, then each present 19px info line,
+    # then the 5px rule itself) — captured now, while they're still in scope, so
+    # the QR anchor below can size itself to exactly fill this header without
+    # spilling into "BẢNG BÁO GIÁ" underneath. `row - 2` is however many of the
+    # four optional lines actually got printed above (0 if the company has none).
+    _hdr_row_px = [30] + [19] * (row - 2) + [5]
     # thin rule under the header block
     for col in range(1, 9):
         ws.cell(row=row, column=col).border = Border(bottom=Side(style="thin", color=_NAVY))
@@ -497,22 +508,50 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
              f"{deposit:,.0f} ₫".replace(",", ".")),
             ("Nội dung CK:", memo),
         ) if val]
-        # 11pt heading over 10.5pt lines — the same weights as the CAM KẾT terms
-        # directly above, so the block reads as part of the document rather than
-        # a bolt-on. height stays 21: these rows are shared with the signature
-        # block on the right, and band() would otherwise shrink its title row.
-        band(pay_row, "THÔNG TIN CHUYỂN KHOẢN", size=11, bold=True, color=_NAVY,
+        # 10.5pt heading over 10pt lines — a notch below the CAM KẾT terms above
+        # (10.5pt), landing on the same size as the "(Ký, ghi rõ họ tên)" caption
+        # by the signature — the document's established size for small supporting
+        # text, which is exactly this block's role. height stays 21: these rows
+        # are shared with the signature block on the right, and band() would
+        # otherwise shrink its title row.
+        band(pay_row, "THÔNG TIN CHUYỂN KHOẢN", size=10.5, bold=True, color=_NAVY,
              first=1, last=5, height=21)
         for i, (label, value) in enumerate(pay_lines, start=1):
-            field(pay_row + i, label, value, first=1, last=5, size=10.5)
+            field(pay_row + i, label, value, first=1, last=5, size=10)
 
         qr_buf = _qr_png(vietqr_payload(company.get("bank_bin") or "",
                                         company["bank_account"], deposit, memo))
         img = XLImage(qr_buf)
-        # 92px ≈ 2.4cm printed (41 modules ≈ 0.59mm each — comfortably scannable)
-        # and sits inside column H's 96px, so it never spills past the print area.
-        img.width = img.height = 92
-        ws.add_image(img, "H1")
+        # Up from the original 92px for an easier scan — capped to whatever the
+        # header actually has room for (_hdr_row_px), so a company with fewer
+        # info lines still gets a QR that fits instead of one that overlaps
+        # "BẢNG BÁO GIÁ" underneath it. 2px kept as a bottom margin.
+        qr_px = min(108, sum(_hdr_row_px) - 2)
+        g_px = _COL_WIDTHS["G"] * 7 + 5
+        h_px = _COL_WIDTHS["H"] * 7 + 5
+        img.width = img.height = qr_px
+        if qr_px <= h_px:
+            ws.add_image(img, "H1")
+        else:
+            # Wider than column H alone, so it can't anchor at H1 without
+            # spilling off the page (H is the last column, the print boundary).
+            # Company text stops at column F specifically so G–H stay clear for
+            # this block — start the anchor inside G instead, offset so the
+            # image's right edge still lands flush on H's right edge, matching
+            # where the "HTP" logo used to sit. TwoCellAnchor derives its size
+            # from the from/to box, not img.width/height, so the "to" marker is
+            # walked out row-by-row against the real header heights above.
+            off_px = g_px + h_px - qr_px
+            frm = AnchorMarker(col=6, colOff=pixels_to_EMU(off_px), row=0, rowOff=0)
+            cum = 0
+            for idx, h in enumerate(_hdr_row_px):
+                if cum + h >= qr_px:
+                    to = AnchorMarker(col=7, colOff=pixels_to_EMU(h_px),
+                                      row=idx, rowOff=pixels_to_EMU(qr_px - cum))
+                    break
+                cum += h
+            img.anchor = TwoCellAnchor(editAs="oneCell", _from=frm, to=to)
+            ws.add_image(img)
         ws.merge_cells(start_row=qr_caption_row, start_column=7,
                        end_row=qr_caption_row, end_column=8)
         cap = ws.cell(row=qr_caption_row, column=7,
