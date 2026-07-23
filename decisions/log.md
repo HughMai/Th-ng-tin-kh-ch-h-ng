@@ -1577,3 +1577,19 @@ Bank config lives in `COMPANY` (env-overridable): Vietcombank, BIN **970436**, a
 **Deploy:** scp app.py/baogia.py/requirements.txt, `docker compose up -d --build`. Post-deploy verified *inside* the container (new deps were involved, so a clean build was not assumed): `qrcode`/`PIL` import, CRC self-test, and a real end-to-end export producing `xl/media/image1.png`. /health 200.
 
 **Owner:** agent (build, tests, deploy, verify); Hughie (scan-verified the bank details, chose column H placement)
+
+## 2026-07-23 — Zalo bot moved off the test group onto the real production group
+
+**Decision:** Hughie added the bot to the real family/work group **"Hưng Thành Phát" (7 người)** and asked to mirror the old group's setup with nothing posted until the 7:30 sáng digest. Discovery turned up more than a rename: the bot's account is a member of **exactly one** group, and it was not the one it was pointed at. The configured `GROUP_THREAD_ID=2570276458928647904` was the **test group** — now abandoned — so the live bot had been aiming at a thread it could no longer reach, and every morning digest, chốt ping and web-lead ping was going nowhere. Pointed it at the production thread **`888013944186599449`**. This is a single-group swap, not a second group, so no multi-group support was built. `DIGEST_MINUTE=30` had never been set on the box and was relying on the code default; pinned it explicitly now that 7:30 is a real commitment to real people. The audience is now the actual family and staff, so the locked **no-VND-in-the-group** rule stops being a test-time nicety.
+
+**Second find — the digest fix was committed but never deployed:** the container was still running the 2026-07-18 `bot.js`, i.e. the version *before* `0fc0653` ("morning digest fires once a day, not once per bot restart"), which holds `lastDigestDate` in memory only and therefore re-sends the work list on **every** container start after 07:30. Since changing groups requires a restart, that version would have fired into the new production group immediately — exactly what Hughie asked not to happen. Deployed the fix as part of this change, and seeded `data-bot/last-digest.txt` to `2026-07-23` **before** touching the container so today counted as already-sent.
+
+**New endpoint:** token-gated read-only `GET /groups` on the bot sidecar (zca-js `getAllGroups` + `getGroupInfo` → id, name, member count, and which one is currently targeted). `onMessage` drops every thread except `GROUP_THREAD_ID`, so a group the bot was just added to stays invisible until its id is already known — the only prior discovery path was blanking `GROUP_THREAD_ID` and waiting for someone to talk, which means breaking the live group in order to find a new one.
+
+**Verification:** bot relogged from saved `creds.json` — **no QR rescan needed**; `loggedIn=true`, listener connected. Binding confirmed: `[TARGET] 7 members 888013944186599449 Hưng Thành Phát`. Digest content pulled over the read-only route (`GET /bot/digest` → 200, 232 chars, tomorrow's real job — VŨ / Trần Ngọc Quế, lắp 24/07); the admin send-now route at `app.py:1682` was deliberately left untouched. Guard file still `2026-07-23`, container clock `Thu Jul 23 22:19 +07`. **Nothing was posted to any group.**
+
+**Deploy:** `.env` backed up on the box to `.env.bak-20260723-151845`; scp `zalo-bot/bot.js`, `docker compose up -d --build bot`, then `up -d bot` again after the `.env` edit — `env_file` changes need a container recreate, not a restart.
+
+**Open risk:** nothing alerts when the bot is removed from, or loses access to, its group. That is exactly how the test-group pointer went stale unnoticed; the same thing can happen to the production group and the family would simply see the morning digest quietly stop arriving.
+
+**Owner:** agent (discovery, endpoint, deploy, verify); Hughie (added the bot to the group, confirmed test → production)

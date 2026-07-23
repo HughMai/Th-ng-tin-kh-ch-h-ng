@@ -271,6 +271,43 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    // Read-only group list — which threadId is which Zalo group, and how many
+    // people are in it. Needed when pointing the bot at a new group: onMessage
+    // drops every thread except GROUP_THREAD_ID, so a group the bot was just
+    // added to stays invisible until someone already knows its id.
+    if (url.pathname === "/groups" && req.method === "GET") {
+        const token = req.headers["x-bot-token"] || "";
+        if (!BOT_TOKEN || token !== BOT_TOKEN) {
+            res.writeHead(403);
+            res.end();
+            return;
+        }
+        if (!state.loggedIn) {
+            res.writeHead(503);
+            res.end(JSON.stringify({ error: "bot chưa đăng nhập" }));
+            return;
+        }
+        (async () => {
+            try {
+                const all = await api.getAllGroups();
+                const ids = Object.keys(all.gridVerMap || {});
+                const info = ids.length ? await api.getGroupInfo(ids) : { gridInfoMap: {} };
+                const groups = Object.values(info.gridInfoMap || {}).map((g) => ({
+                    id: g.groupId,
+                    name: g.name,
+                    members: g.totalMember,
+                    current: g.groupId === GROUP_THREAD_ID,
+                }));
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify(groups));
+            } catch (e) {
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: e.message }));
+            }
+        })();
+        return;
+    }
+
     if (url.pathname === "/send" && req.method === "POST") {
         const token = req.headers["x-bot-token"] || "";
         if (!BOT_TOKEN || token !== BOT_TOKEN) {
