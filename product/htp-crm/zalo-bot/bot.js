@@ -18,6 +18,7 @@ import { Zalo, ThreadType, LoginQRCallbackEventType } from "zca-js";
 const DATA_DIR = process.env.DATA_DIR || "/app/data";
 const CREDS_PATH = path.join(DATA_DIR, "creds.json");
 const QR_PATH = path.join(DATA_DIR, "qr.png");
+const DIGEST_PATH = path.join(DATA_DIR, "last-digest.txt");
 const PORT = Number(process.env.PORT || 8100);
 const CRM_URL = process.env.CRM_URL || "http://htp-crm-app:8000";
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
@@ -35,7 +36,7 @@ const state = {
 };
 
 let api = null;
-let lastDigestDate = null;
+let lastDigestDate = loadLastDigestDate();
 let reconnectTimer = null;
 
 function log(...args) {
@@ -74,6 +75,27 @@ function clearCredentials() {
         fs.unlinkSync(CREDS_PATH);
     } catch {
         // nothing to clean up
+    }
+}
+
+// "Already sent today's digest" has to outlive the process, next to creds.json
+// on the same volume. Held in memory only, every container start after
+// DIGEST_HOUR:DIGEST_MINUTE sent the family a second copy of the work list —
+// so every redeploy did — while a bot that died at 07:25 skipped the day and
+// came back thinking it had already sent.
+function loadLastDigestDate() {
+    try {
+        return fs.readFileSync(DIGEST_PATH, "utf-8").trim() || null;
+    } catch {
+        return null;
+    }
+}
+
+function saveLastDigestDate(dateStr) {
+    try {
+        fs.writeFileSync(DIGEST_PATH, dateStr, "utf-8");
+    } catch (e) {
+        log("could not persist digest date:", e.message);
     }
 }
 
@@ -152,6 +174,7 @@ async function digestTick() {
             await api.sendMessage({ msg: text }, GROUP_THREAD_ID, ThreadType.Group);
         }
         lastDigestDate = todayStr;
+        saveLastDigestDate(todayStr);
     } catch (e) {
         log("digest send failed:", e.message);
     }
