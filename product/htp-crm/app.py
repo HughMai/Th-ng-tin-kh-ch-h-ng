@@ -53,6 +53,9 @@ BOT_URL = os.environ.get("BOT_URL", "")
 # Shared secret for the hungthanhphat.vn website's form → /api/yeu-cau forward.
 # Blank = the JSON endpoint is disabled (503); the HTML /yeu-cau form is unaffected.
 WEB_LEAD_TOKEN = os.environ.get("WEB_LEAD_TOKEN", "")
+# Shared secret for Sổ Thu Chi's read-only money-in pull (/api/thu).
+# Blank = the endpoint is disabled (403), like every other token API here.
+THUCHI_TOKEN = os.environ.get("THUCHI_TOKEN", "")
 # Company header printed on the exported Báo Giá. Defaults are HTP's real brand
 # details (from the quote template); any field can be overridden via env, and a
 # field left blank is simply omitted from the sheet.
@@ -1419,6 +1422,7 @@ def customer_send_zalo(request: Request, customer_id: int, text: str = Form(...)
 # HTTP API, authenticated with a shared secret (X-Bot-Token). A dead/unconfigured
 # bot must never break a CRM request, so every outbound call is best-effort.
 _XONG_RE = re.compile(r"(?i)^\s*xong\s+(\d+)\s*$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _bot_send(text: str) -> None:
@@ -1662,6 +1666,19 @@ def bot_digest_pull(request: Request):
     parts = [t for t in (_digest_text(today),
                          _care_summary_text(chase, reviews, hint=True)) if t]
     return {"text": "\n\n".join(parts)}
+
+
+@app.get("/api/thu")
+def api_thu(request: Request, tu: str = "", den: str = ""):
+    """Money-in feed for Sổ Thu Chi (server-to-server, X-Thuchi-Token). Read-only:
+    the Thu app shows these rows badged 'CRM' and never edits them — công nợ
+    corrections stay a CRM action, and this is fetched live so they show up at once."""
+    token = request.headers.get("x-thuchi-token", "")
+    if not THUCHI_TOKEN or not secrets.compare_digest(token, THUCHI_TOKEN):
+        raise HTTPException(status_code=403)
+    if not (_DATE_RE.match(tu) and _DATE_RE.match(den)):
+        raise HTTPException(status_code=400, detail="tu/den phải là YYYY-MM-DD")
+    return {"thu": store.thu_between(tu, den)}
 
 
 @app.get("/zalo/bot/qr")

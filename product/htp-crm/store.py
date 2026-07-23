@@ -1794,6 +1794,28 @@ def monthly_report(month: str = "") -> dict:
     }
 
 
+def thu_between(start: str, end: str) -> list:
+    """Every đồng received between two VN dates (inclusive) — the money-in feed
+    consumed by Sổ Thu Chi over /api/thu. Same two sources and the same c.type
+    gate as daily_report(): KH order_payments (cọc + thanh toán) plus ĐL công nợ
+    payments, so a dealer cọc carried onto an order can't count twice."""
+    with _connect() as db:
+        kh = db.execute(
+            "SELECT p.pay_date AS date, c.name, p.kind, p.method, p.amount_vnd "
+            "FROM order_payments p JOIN orders o ON o.id = p.order_id "
+            "JOIN customers c ON c.id = o.customer_id "
+            "WHERE c.type = 'KH' AND p.pay_date BETWEEN ? AND ?", (start, end),
+        ).fetchall()
+        dl = db.execute(
+            "SELECT e.entry_date AS date, c.name, 'thanh_toan' AS kind, e.method, e.amount_vnd "
+            "FROM debt_entries e JOIN customers c ON c.id = e.customer_id "
+            "WHERE e.entry_type = 'payment' AND e.entry_date BETWEEN ? AND ?", (start, end),
+        ).fetchall()
+    rows = [dict(r) for r in kh] + [dict(r) for r in dl]
+    rows.sort(key=lambda r: (r["date"], -r["amount_vnd"]))
+    return rows
+
+
 def daily_report(day: str = "") -> dict:
     """Read-time metrics for a single VN calendar day — the end-of-day
     reconciliation view for /bao-cao. Tiền thu (money in) is dated by

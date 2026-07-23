@@ -1593,3 +1593,82 @@ Bank config lives in `COMPANY` (env-overridable): Vietcombank, BIN **970436**, a
 **Open risk:** nothing alerts when the bot is removed from, or loses access to, its group. That is exactly how the test-group pointer went stale unnoticed; the same thing can happen to the production group and the family would simply see the morning digest quietly stop arriving.
 
 **Owner:** agent (discovery, endpoint, deploy, verify); Hughie (added the bot to the group, confirmed test → production)
+
+## 2026-07-23 — Sổ Thu Chi: a separate daily thu/chi app, reading công nợ live from the CRM
+
+**Decision:** Built `product/htp-thuchi/` — a second FastAPI/SQLite/server-rendered app for the family's daily money book. Manual Thu/Chi entry with day and month views, plus every đồng customers pay into the CRM appearing automatically as Thu on the day it was received. Deployed as its own stack at `/opt/htp-thuchi` behind the shared speed-to-lead Caddy.
+
+**Why separate from the CRM rather than a tab inside it:** the kế toán is an outsider and must not hold the CRM password, which is one shared family password by locked decision. Splitting the app was cheaper than retrofitting per-user auth into the CRM and safer than handing out its password.
+
+**The eight calls Hughie made (D1–D8):**
+
+1. **Per-person logins**, not one shared password — `USERS="Tên:mật-khẩu;…"`, and every entry stamps `created_by`/`updated_by`. This deliberately contradicts the CRM's locked "one shared family password" rule; a money book needs to say who wrote each line. Noted in the new app's CLAUDE.md so nobody "aligns" the two later.
+2. **All CRM money-in flows in**, not just công nợ payoffs — cọc + thanh toán + ĐL công nợ payments. Excluding deposits would have made the day's Thu disagree with the cash actually in hand, and the kế toán would chase a phantom difference every time a customer put money down.
+3. **Edit/delete allowed on manual rows, with stamps.** CRM-sourced rows are read-only here by design: corrections happen in the CRM and the read is live, so the fix shows up on the next refresh.
+4. **No categories.** Date, nội dung, số tiền, hình thức. Costs the month view a breakdown (vật tư vs nhân công vs xăng xe); bought entry speed, which is the whole point.
+5. **No running balance / số dư.** Totals and net per day and per month only. A cumulative balance needs perfect entry discipline from day one or the number on screen becomes fiction.
+6. **`START_DATE` hides older CRM money.** Months before launch have Thu but no Chi, so backfilling would have read as profit that never existed.
+7. **Design inherits htp-crm's "Quiet Ledger" wholesale**, changing exactly one thing: the brand ramp goes teal (`#0e6866`, 6.6:1 on white) so the two icons are tellable apart on a phone home screen. Teal specifically because green and red already carry money meaning here (Thu green, Chi red) — a green brand would make every screen read as "money in".
+8. **North star "nhập 10 giây".** The quick-entry form is the top of the day view, autofocused on the amount, defaulting to Chi + Tiền mặt + today, so a typical entry is amount → save. Chi is the default because Thu mostly arrives from the CRM on its own.
+
+**Architecture — a read API, not a shared database.** The CRM gained `store.thu_between(start, end)` and a token-gated `GET /api/thu` (`X-Thuchi-Token`, mirroring the existing `_check_bot_token` pattern); +43 lines across three CRM files, nothing else touched. Rejected mounting the CRM's SQLite file read-only into the second container: it runs WAL, cross-container WAL reads are fragile, and duplicating the Thu SQL in a second codebase drifts the moment a CRM migration runs. The Thu app fetches live on every render over `caddy_shared`, stores none of it, and degrades to an inline "chưa lấy được tiền đã thu bên CRM" notice when the CRM is unreachable — manual entry keeps working through a CRM outage.
+
+**The subtle bug that was guarded, not discovered late:** `thu_between` gates order payments on `c.type = 'KH'`, exactly as `daily_report()` does. Without that gate a dealer's cọc carried onto an order counts twice — once from `order_payments`, once from `debt_entries`. `tests_smoke_api_thu.py` asserts a dealer's own order payment never appears in the feed.
+
+**Verification:** new `tests_smoke_api_thu.py` (CRM) and `tests_smoke.py` (Thu Chi, 40+ assertions incl. the accented-password case — `secrets.compare_digest` rejects non-ASCII `str`, so passwords are compared as bytes or a dấu in a password 500s the login). Full 21-file CRM suite still green. End-to-end on real HTTP with both apps running against a throwaway CRM db: a cọc, a thanh toán and an ĐL công nợ payment all landed as badged read-only Thu rows; day totals 41.000.000 / 1.700.000 / 39.300.000 matched by hand; **live-read proved by deleting the 15tr debt entry in the CRM and watching Thu drop to 26tr on refresh, then restoring it.** Reviewed at 390×844 in a real browser, which caught a genuine bug the tests could not: three totals cards of full VND overflowed the viewport and pushed "Còn lại" off screen. Fixed to Thu | Chi two-up with Còn lại full-width beneath — better hierarchy anyway, since Còn lại is the answer to "how did today go".
+
+**Not deployed.** Code, tests, docs and runbook are done; the VPS stack, the `THUCHI_TOKEN` on both sides, the Caddy site block, the `thuchi` DNS record, and adding `thuchi.db` to the backup job are all still to do — full sequence in `product/htp-thuchi/README.md`.
+
+**Owner:** agent (build, tests, e2e, docs); Hughie (D1–D8, and the deploy + DNS when he's ready)
+
+## 2026-07-23 — Báo giá prints the bank details as text; the VietQR is invisible on iPhone
+
+**Decision:** Reversed the "no STK/holder/amount lines on the sheet" call made earlier the same day. That entry logged the trade-off explicitly — *"anyone who cannot scan has no account number to type; the QR is the only payment path on the sheet"* — and the trade-off came due immediately: Hughie sent BG20260019 (VŨ / Trần Ngọc Quế) and the QR was simply not there on the phone. The báo giá now carries a **THÔNG TIN CHUYỂN KHOẢN** block — ngân hàng, số tài khoản, chủ tài khoản, số tiền tạm ứng, nội dung CK — as plain cells. `bank_name` and `bank_holder` already existed in `COMPANY`; they had just never been printed.
+
+**Root cause, and what it rules out:** **iOS Quick Look renders an .xlsx's cell grid and text but discards every floating image.** Quick Look is the default path on iOS — Safari download → Files → tap — so most customers never open the file in Numbers or Excel at all. Three hypotheses were tested and all three are dead:
+
+1. *1-bit PNG.* `qrcode`'s Pillow factory emits mode `"1"`; some decoders skip bit-depth-1 files silently. Not the cause.
+2. *Absolute relationship target.* openpyxl writes `/xl/media/image1.png` where Excel writes `../media/image1.png`. Not reached — hypothesis 3 killed the whole class.
+3. *Anchor type.* `oneCellAnchor` vs `twoCellAnchor`.
+
+A three-variant probe workbook (1-bit/oneCell, RGB/oneCell, RGB/twoCell, each labelled) opened on Hughie's iPhone rendered **none** of them, while every text label rendered fine. So **no change inside the .xlsx can bring the QR back on iOS** — not encoding, not anchoring, not the rels path. The QR was kept anyway: it still renders on desktop and on paper, where the family and the print path live.
+
+The RGB conversion was kept too (`img.get_image().convert("RGB")`, ~600 bytes) — it does nothing for Quick Look but removes a real decode risk in other viewers, and costs nothing.
+
+**Layout:** the block sits in columns **A–E sharing rows with the signature block in F–H**, so it adds **zero rows** and the báo giá still fits one A4 page (`print_area A1:H34`). First pass used `field()`'s default 14pt and read as a bolt-on; Hughie called it — now **10.5pt lines, matching the CAM KẾT terms directly above exactly**, under an 11pt bold navy heading, left edge at column A like every other body line. `field()` gained a `size=` kwarg defaulting to `_SZ`, so the customer block up top is untouched; the wrap-budget and row-height maths scale by `size/_SZ`. Row heights use `max()`, so the signature block's 24-unit signing space survives.
+
+**Verification:** three-variant iOS probe (the decisive test — Hughie ran it on his own phone and screenshotted the result). Generated báo giá inspected cell-by-cell: no merge collision between A29:E34 and F29:H34, print area unchanged, deposit amount **3.880.800 ₫** agreeing with the QR payload. Rich-text sizes read back out of the saved file to confirm 10.5pt on the lines and 11pt on the heading against 10.5pt on the CAM KẾT terms. Six smoke tests green (`khac` — the only one touching the export — plus base, `phukien_only`, `manual_price`, `phase12`, `board`).
+
+**Deploy:** `scp baogia.py`, `docker compose up -d --build`. `htp-crm-app` and `htp-crm-bot` both up; `/health` and `/login` 200. SHA256 `eb6f5b5b…` verified identical across local → VPS → **inside the container**. Committed as `ec11cfb`, `baogia.py` only.
+
+**Deferred — the QR on mobile.** The only path back is a **PDF export**; PDF renders images correctly in Quick Look and is printable and Zalo-previewable besides. Two routes, not chosen yet: LibreOffice headless converting the existing .xlsx (no layout rewrite, pixel-identical to the tuned print sheet, but ~150MB → ~700MB on the Docker image and 2–4s per export), or rebuilding the layout in fpdf2 (tiny image, instant, but ~300 lines against a new API plus a woff2 → TTF conversion of Be Vietnam Pro, and real risk of drifting from the print output the family knows). Hughie parked it: the text block means customers can pay today, so this buys back convenience, not function.
+
+**Open risk:** nothing in the export path knows a viewer dropped the QR. The same silence would hide any future regression in the image — the text block is now the only thing guaranteeing a customer can pay, and nothing tests that it renders where customers actually read.
+
+**Owner:** agent (diagnosis, probe, fix, tests, deploy, verify); Hughie (ran the iOS probe, called the sizing, parked the PDF)
+
+## 2026-07-23 — Sổ Thu Chi deployed live; discovered the VPS had no backups at all
+
+**Decision:** Shipped Sổ Thu Chi to production and turned on the CRM feed that powers it. Live at **https://thuchi.187-77-133-39.sslip.io**, installable to a phone home screen as a PWA. Deployed in dependency order — CRM first (it owns the data), then the new app — so the feed was never pointing at an endpoint that didn't exist yet.
+
+**What went out:**
+
+1. **CRM** (`/opt/htp-crm`): `app.py` + `store.py` with the read-only `GET /api/thu`, and a generated `THUCHI_TOKEN` appended to its `.env`. Backed up `app.py`/`store.py`/`.env` to `/opt/htp-crm/.bak/20260723-160637` first. Rebuilt, then verified the live family CRM before touching anything else — `/health` 200, `/login` 200, `/api/thu` 403 without a token and 200 with one, returning real payments (A.Hùng 23.240.470đ, E Sánh 10.100.112đ…).
+2. **New stack** `/opt/htp-thuchi`: source + static, own `.env` (`chmod 600`), `docker-compose.yml` on the external `caddy_shared` network, `restart: unless-stopped`. Container `thuchi-app`, no published ports.
+3. **Caddy**: appended `thuchi.187-77-133-39.sslip.io` and `thuchi.hungthanhphat.vn` blocks to the shared `/opt/speed-to-lead/Caddyfile` (backed up first), `caddy validate` clean, then the **explicit `docker exec … caddy reload`** — `compose up -d` does not reload a bind-mounted Caddyfile. Cert issued and the site answered 200 within 4 seconds. Re-checked the three pre-existing sites afterwards: all still 200.
+
+**Production settings chosen:** `START_DATE=2026-07-23`, so the sổ starts clean today — the CRM holds payments back to 18/07 but nobody was recording Chi then, and showing them would read as profit that never existed. Secure cookies on. Three logins created (`Ba Mẹ`, `Kế toán`, `Hughie`), Vietnamese names verified intact through SSH → `.env` → dotenv → the running app.
+
+**"Downloadable app" = PWA, verified rather than assumed.** In a real browser against production: HTTPS, service worker registered *and active* at scope `/`, manifest served as `application/manifest+json` with `display: standalone`, all three icons 200, plus the iOS `apple-mobile-web-app-*` tags. So Android gets "Install app" and iPhone gets Share → Add to Home Screen. No store, no APK. The service worker deliberately caches **only** shell assets — pages are always network-fetched, because a money book showing cached numbers is worse than one showing an error.
+
+**The unplanned find — the box had no backups whatsoever.** The plan said "extend the existing off-box backup". There was no existing backup: no cron, no systemd timer, no `/opt/htp-crm/scripts/`, no `/opt/htp-crm/backups/`. `BACKUP-RUNBOOK.md` and `scripts/backup.sh` exist in the repo but were **never installed on the VPS**. The family's entire customer book has been running unbacked since 2026-07-12. That script needs an authorised rclone/Google Drive remote, which needs Hughie's OAuth and so could not be finished here.
+
+Installed a working stopgap instead — `/opt/backup-local.sh` (`product/htp-thuchi/scripts/backup-local.sh`), daily 02:00 via `/etc/cron.d/htp-backup`, snapshotting **both** databases with SQLite `VACUUM INTO` (WAL-safe, no downtime), gzipped to `/opt/backups`, 30-day retention. Ran it immediately and **verified a restore**, not just that a file appeared: gunzip → `PRAGMA integrity_check` → `ok`, 7 customers / 7 orders / 4 payments readable. Used `/etc/cron.d` after `crontab -` installed silently and `crontab -l` came back empty.
+
+> **Still open, and it matters:** these snapshots sit on the same disk as the data. They cover app bugs, bad writes and accidental deletes — **not** losing the VPS. Off-box backup remains unsolved and is now the single largest risk to both apps.
+
+**Also outstanding:** the A record `thuchi -> 187.77.133.39` at tenten.vn. The Caddy block for `thuchi.hungthanhphat.vn` is already in place, so the pretty domain starts working the moment DNS lands with no further deploy; until then Caddy will periodically retry (and fail) certificate issuance for it. Three logins were set in `/opt/htp-thuchi/.env` (`USERS=`) and handed to Hughie out of band — **not recorded here, since this file is git-tracked** (same policy as the root password). Rotate the kế toán one when handing it over; that person is outside the family. Changing any password = edit `.env` then `docker compose up -d` (a `restart` does not re-read `env_file`).
+
+**Verification summary:** all four sites 200 (thuchi, crm pretty + fallback, speed-to-lead); guarded route redirects to `/login`; login as Kế toán issues a Secure cookie; today's live day view read **Thu 2.860.000đ / Chi 0đ / Còn lại 2.860.000đ** straight from real CRM payments with no error banner; reviewed at 390×844.
+
+**Owner:** agent (deploy, Caddy, backups, verification); Hughie (DNS record, rclone/off-box backup, password rotation for the accountant)

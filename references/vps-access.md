@@ -49,7 +49,10 @@ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
 |---|---|---|
 | `hermes-agent-5c1k-hermes-agent-1` | `ghcr.io/hostinger/hvps-hermes-agent:latest` | Hermes agent |
 | `speed-to-lead-app-1` | `speed-to-lead-app` | Speed-to-lead demo (FastAPI) |
-| `speed-to-lead-caddy-1` | `caddy:2` | Reverse proxy / TLS |
+| `speed-to-lead-caddy-1` | `caddy:2` | Reverse proxy / TLS — fronts both speed-to-lead AND htp-crm (shared, see below) |
+| `htp-crm-app` | `htp-crm-app` | HTP CRM (FastAPI), `/opt/htp-crm`, deployed 2026-07-12 |
+| `htp-crm-bot` | `htp-crm-bot` | Zalo group bot sidecar (zca-js), `/opt/htp-crm/zalo-bot` |
+| `thuchi-app` | `htp-thuchi-app` | Sổ Thu Chi (FastAPI), `/opt/htp-thuchi`, deployed 2026-07-23 |
 
 ### Hermes data dir (on HOST, bind-mounted into the container)
 **`/docker/hermes-agent-5c1k/data/`** — this is the real path; the
@@ -163,6 +166,86 @@ ssh root@187.77.133.39 'cd /opt/speed-to-lead && docker compose up -d --build ap
 - Container is `speed-to-lead-app-1`; secrets are read from `/opt/speed-to-lead/.env` via compose `env_file`.
 - Quick health from inside the container: `docker compose exec -T app python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/health').read())"`. Deepgram check (no call): `GET /voice/probe?key=$DASHBOARD_TOKEN` — a working connection shows `Welcome` + `SettingsApplied` + audio even though the JSON `ok` field reads false (the probe greps for a `Ready` event this API version doesn't send).
 - *Future improvement:* make `/opt/speed-to-lead` a sparse/real git checkout of `AIS-OS` so deploys become `git pull && docker compose up -d --build`.
+
+## Deploying htp-crm
+
+Live at `https://crm.hungthanhphat.vn` (memorable domain, added 2026-07-18;
+DNS is an A record `crm -> 187.77.133.39` managed at tenten.vn, TLS via Caddy/
+ZeroSSL). Old `https://crm.187-77-133-39.sslip.io` still works as a fallback —
+both site blocks are in the shared Caddyfile. Same pattern as speed-to-lead:
+**`/opt/htp-crm` is a plain scp copy, not a git checkout** — `git pull` does
+nothing there.
+
+```bash
+scp product/htp-crm/{app.py,store.py,views.py,templates_vi.py,pricing.py,baogia.py,zalo_client.py,requirements.txt,Dockerfile,docker-compose.yml} \
+    root@187.77.133.39:/opt/htp-crm/
+ssh root@187.77.133.39 'cd /opt/htp-crm && docker compose up -d --build'
+```
+
+- Its `.env` on the box is production-specific (NOT the local dev `.env` — that
+  has `FAMILY_PASSWORD=test123`/`dev-secret`/`COOKIE_INSECURE=1` for local
+  testing only). Production kept `FAMILY_PASSWORD=test123` too (Hughie's call,
+  2026-07-12 — low-stakes family app) but got a real random `SESSION_SECRET`
+  and `COOKIE_INSECURE=` unset.
+- Shares the speed-to-lead Caddy container via the external `caddy_shared`
+  Docker network (created once: `docker network create caddy_shared`).
+  `/opt/speed-to-lead/Caddyfile` has two added site blocks pointing at
+  `htp-crm-app:8000`: `crm.hungthanhphat.vn` (primary) and
+  `crm.187-77-133-39.sslip.io` (fallback), and
+  `/opt/speed-to-lead/docker-compose.yml`'s `caddy` service has
+  `networks: [default, caddy_shared]`. Editing the Caddyfile requires a
+  `docker exec speed-to-lead-caddy-1 caddy reload --config /etc/caddy/Caddyfile`
+  to actually apply — `docker compose up -d` alone does NOT reload it since the
+  Caddyfile is bind-mounted and compose sees no config change (learned
+  2026-07-18: `up -d` silently no-opped, had to reload explicitly inside the
+  container).
+- Zalo OA API creds (`ZALO_APP_ID`, `ZALO_APP_SECRET`, `ZALO_WEBHOOK_TOKEN`)
+  live in `/opt/htp-crm/.env`. OAuth access/refresh tokens are NOT in `.env` —
+  written to `/opt/htp-crm/data/zalo_tokens.json` by the `/zalo/oauth/start`
+  flow (run once, logged in as the OA admin, from `/zalo` in the CRM).
+- Domain-ownership verification for developers.zalo.me is served statically
+  at `/zalo/oauth/callback/zalo_verifier...html` (hardcoded in `app.py`).
+
+## Deploying Sổ Thu Chi (htp-thuchi)
+
+Live at `https://thuchi.187-77-133-39.sslip.io` (deployed 2026-07-23).
+`thuchi.hungthanhphat.vn` has a Caddy site block but **no DNS record yet** — add an
+A record `thuchi -> 187.77.133.39` at tenten.vn to activate it. Same pattern as the
+others: **`/opt/htp-thuchi` is a plain scp copy, not a git checkout.**
+
+```bash
+scp product/htp-thuchi/{app.py,store.py,views.py} root@187.77.133.39:/opt/htp-thuchi/
+scp -r product/htp-thuchi/static root@187.77.133.39:/opt/htp-thuchi/   # only if CSS/JS/icons changed
+ssh root@187.77.133.39 'cd /opt/htp-thuchi && docker compose up -d --build'
+```
+
+- Reads money-in from the CRM over `GET /api/thu` on the internal `caddy_shared`
+  network (`http://htp-crm-app:8000`), authenticated with `X-Thuchi-Token`.
+  **`THUCHI_TOKEN` must be identical in `/opt/htp-crm/.env` and `/opt/htp-thuchi/.env`** —
+  they were generated together; rotating one without the other silently kills the
+  Thu feed (the app degrades to a "chưa lấy được tiền đã thu bên CRM" banner and
+  keeps working for manual entry, so it fails quietly, not loudly).
+- Auth is **one password per person** (`USERS="Tên:mật-khẩu;…"` in its `.env`),
+  unlike the CRM's single shared family password — the kế toán is an outsider.
+  Changing a password = edit `.env` then `docker compose up -d` (a `restart` does
+  **not** re-read `env_file`).
+- `START_DATE=2026-07-23` hides CRM money-in from before launch (those months have
+  Thu but no Chi recorded, so they'd read as pure profit).
+
+## Backups (added 2026-07-23 — there were NONE before)
+
+`/opt/backup-local.sh`, daily 02:00 via `/etc/cron.d/htp-backup`. Snapshots **both**
+`htp.db` and `thuchi.db` (SQLite `VACUUM INTO`, WAL-safe) gzipped into `/opt/backups`,
+30-day retention. Verified by restoring a snapshot: `PRAGMA integrity_check` ok.
+
+```bash
+ls -lh /opt/backups && tail /var/log/htp-backup.log      # check it's running
+```
+
+> ⚠️ **On-box only.** Protects against app bugs and bad writes, **not** loss of the VPS.
+> The off-box half (`/opt/htp-crm/scripts/backup.sh` → Google Drive via rclone) is
+> **still not set up** — it needs an authorised rclone remote. Until then a dead box
+> means a dead customer book and a dead money book.
 
 ## Safety notes
 - Default to **read-only** commands. Confirm with Hughie before editing config or restarting.

@@ -1,0 +1,32 @@
+# Sổ Thu Chi — app service only.
+#
+# Same shape as product/htp-crm/docker-compose.yml: the speed-to-lead Caddy owns
+# ports 80/443 on Hermes, so this app just joins the external `caddy_shared`
+# network and the STL Caddyfile gains a site block:
+#
+#   thuchi.hungthanhphat.vn, thuchi.187-77-133-39.sslip.io {
+#       reverse_proxy thuchi-app:8000
+#   }
+#
+# Reloading that Caddyfile needs an explicit:
+#   docker exec speed-to-lead-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+#
+# Being on caddy_shared is also how this app reaches the CRM at
+# http://htp-crm-app:8000 for the /api/thu money-in pull — no ports published.
+
+services:
+  app:
+    build: .
+    container_name: thuchi-app
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8000"
+    networks:
+      - caddy_shared
+
+networks:
+  caddy_shared:
+    external: true
