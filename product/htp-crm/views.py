@@ -368,9 +368,10 @@ def bo_cua_html(items: list) -> str:
 
 
 def production_message_no_price(order: dict, items: list) -> str:
-    """Plain-text bộ-cửa work-order stripped of every VND figure — used for the
-    Zalo group auto-ping on chốt (money never goes to the group,
-    see ZALO-BOT-PLAN.md)."""
+    """Plain-text work-order stripped of every VND figure — used for the Zalo
+    group auto-ping on chốt (money never goes to the group, see
+    ZALO-BOT-PLAN.md). Every hạng mục rides along: lines without kích thước
+    (phụ kiện, generic invoice lines) print mô tả ×SL, same as bo_cua_html."""
     L = []
     if order.get("urgent"):
         L.append("🔥 GẤP — ưu tiên làm trước")
@@ -382,10 +383,14 @@ def production_message_no_price(order: dict, items: list) -> str:
         L.append(f"Địa chỉ: {order['address']}")
     if order.get("install_date"):
         L.append(f"Ngày lắp: {fmt_date(order['install_date'])}")
-    L.append("— Bộ cửa —")
+    L.append("— Bộ cửa —" if any(i.get("ngang_mm") and i.get("cao_mm") for i in items)
+             else "— Hạng mục —")
     for idx, i in enumerate(items, 1):
-        extra = f" · {i['mau_sac']}" if i.get("mau_sac") else ""
-        L.append(f"{idx}. {_door_desc(i)} — {i['ngang_mm']}×{i['cao_mm']}mm{extra}")
+        kich = (f" — {i['ngang_mm']}×{i['cao_mm']}mm"
+                if i.get("ngang_mm") and i.get("cao_mm") else "")
+        mau_sac = f" · {i['mau_sac']}" if i.get("mau_sac") else ""
+        qty = f" ×{i['so_luong']}" if (i.get("so_luong") or 1) > 1 else ""
+        L.append(f"{idx}. {_door_desc(i)}{kich}{mau_sac}{qty}")
         if i.get("ghi_chu"):
             L.append(f"   Ghi chú: {i['ghi_chu']}")
     if order.get("note"):

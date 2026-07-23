@@ -14,6 +14,10 @@ chi phí khác — no cửa) is ordinary work, and three separate things broke o
 Also pins the two neighbours that must NOT change: a quote with cửa + phụ kiện,
 and a legacy quick quote (lump value_vnd, nothing itemised).
 
+Later addition: chốt's instant Zalo-group ping filtered items on kích thước, so
+all three shapes above chốt silently unless they contained a cửa. Every chốt now
+pings, and each section below pins its own ping.
+
 Runs against a throwaway temp SQLite DB — never touches data/htp.db. Env vars
 must be set BEFORE `import app`.
 
@@ -33,6 +37,11 @@ from fastapi.testclient import TestClient
 
 import app
 import store
+
+# Capture the Zalo group ping chốt fires — the real _bot_send is a no-op without
+# BOT_URL, which is exactly how it went unnoticed that non-cửa jobs sent nothing.
+pings = []
+app._bot_send = lambda text: pings.append(text)
 
 VAT = 0.1
 client = TestClient(app.app)
@@ -117,6 +126,16 @@ sections = [str(x) for row in load_workbook(io.BytesIO(r.content)).active.iter_r
 assert sections == ["I. PHỤ KIỆN"], \
     f"phụ-kiện-only export should be one section numbered I., got {sections}"
 
+# ---- 4d. chốt pinged the Zalo group, phụ kiện and all ----------------------
+# The ping used to filter on kích thước, so a phụ-kiện-only job chốt in total
+# silence and the xưởng only ever heard about it from the morning digest.
+assert len(pings) == 1, f"phụ-kiện-only chốt sent {len(pings)} group pings, want 1"
+assert "A.Của" in pings[0], f"ping names no khách: {pings[0]}"
+assert "Khóa ngang (tole) ×2" in pings[0], f"phụ kiện missing from ping: {pings[0]}"
+assert "Bình Tích Điện" in pings[0], f"phụ kiện missing from ping: {pings[0]}"
+assert "₫" not in pings[0] and "700.000" not in pings[0], \
+    f"chốt ping leaked money into the group: {pings[0]}"
+
 # ---- 5. cửa + phụ kiện is unchanged (no double count there either) ----------
 units = ('[{"product":"cua_cuon","cong_nghe":"Cửa cuốn công nghệ Úc",'
          '"mau":"Tole màu 5.2 zem","mau_sac":"xanh","ngang":3000,"cao":2200}]')
@@ -128,18 +147,28 @@ o2 = store.get_order(store.get_quote(qid2)["order_id"])
 assert o2["value_vnd"] == q2["value_vnd"] + round(q2["value_vnd"] * VAT), \
     f"cửa+phụ kiện order {o2['value_vnd']} != quote {q2['value_vnd']} + VAT"
 
+# ---- 5b. its ping carries the cửa (kích thước) AND the phụ kiện ------------
+assert len(pings) == 2, f"cửa+phụ kiện chốt sent {len(pings) - 1} pings, want 1"
+assert "3000×2200mm" in pings[1], f"kích thước missing from ping: {pings[1]}"
+assert "Bình Tích Điện" in pings[1], f"phụ kiện dropped from a cửa ping: {pings[1]}"
+
 # ---- 6. legacy quick quote (lump value, nothing itemised) still lumps -------
 cid = store.create_customer("Khách Gộp", "0900333444", "KH")
 qid3 = store.create_quote(cid, "cua_cuon", "Đơn gộp", 5_000_000)
-store.set_quote_status(qid3, "won")
-oid3 = store.create_order_from_quote(qid3)
+r = client.post(f"/bao-gia/{qid3}/trang-thai", data={"trang_thai": "won"},
+                follow_redirects=False)
+assert r.status_code == 303, f"chốt blocked on a legacy lump quote: {r.status_code}"
+oid3 = store.get_quote(qid3)["order_id"]
 o3 = store.get_order(oid3)
 assert o3["value_vnd"] == 5_500_000, f"legacy lump order broke: {o3['value_vnd']}"
 assert len(store.order_items_for(oid3)) == 1, "legacy lump should stay one generic line"
+assert len(pings) == 3 and "Đơn gộp" in pings[2], \
+    f"legacy lump chốt sent no usable group ping: {pings[2:]}"
 
 # ---- 7. a truly empty intake still makes no junk 0đ quote ------------------
 loc4 = intake("Khách Trống", "0900555666")
 assert loc4.startswith("/khach/"), f"empty intake created a junk báo giá: {loc4}"
 
 print("OK — tests_smoke_phukien_only: phụ-kiện-only intake keeps every field, prices, "
-      "chốts into an đơn hàng billed once; cửa+phụ kiện, legacy lump and empty intake unchanged")
+      "chốts into an đơn hàng billed once and pings the Zalo group; cửa+phụ kiện, "
+      "legacy lump and empty intake unchanged")

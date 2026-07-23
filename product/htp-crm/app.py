@@ -1583,15 +1583,17 @@ def _care_replies(today: str) -> list:
 
 
 def _new_order_ping(order_id: int) -> None:
-    # Doors only, same filter as the order page's copy-to-Zalo handoff —
-    # phụ kiện/generic lines have no kích thước.
+    """Instant group heads-up the moment a báo giá is chốt, so the xưởng sees the
+    new job without waiting for the morning digest. Every hạng mục goes in, not
+    just cửa — a phụ-kiện-only job (khóa, bình tích điện) and a legacy lump quote
+    are ordinary work, and filtering on kích thước made both chốt in silence."""
     o = store.get_order(order_id)
     if not o:
         return
-    door_items = [i for i in store.order_items_for(order_id) if i.get("ngang_mm") and i.get("cao_mm")]
-    if not door_items:
+    items = store.order_items_for(order_id)
+    if not items:
         return
-    _bot_send(views.production_message_no_price(o, door_items))
+    _bot_send(views.production_message_no_price(o, items))
 
 
 def _check_bot_token(request: Request) -> None:
