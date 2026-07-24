@@ -55,6 +55,7 @@ def intake(name, phone, units="[]", acc="", deposit="", install="", note=""):
     r = client.post("/khach/tiep-nhan", data={
         "name": name, "phone": phone, "type": "KH", "source": "khac", "units": units,
         "accessories": acc, "deposit": deposit, "install_date": install, "quote_note": note,
+        "apply_vat": "1",  # the wizard's VAT box is default-checked in the UI
     }, follow_redirects=False)
     assert r.status_code == 303, f"intake -> {r.status_code}"
     return r.headers["location"]

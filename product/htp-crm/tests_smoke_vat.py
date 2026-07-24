@@ -123,6 +123,24 @@ assert "VAT 10%" in inv_on, "VAT order's hóa đơn must show the tax row"
 assert "VAT 10%" not in inv_off, "no-VAT order's hóa đơn must omit the tax row"
 print("8. hóa đơn omits the tax row for a không-VAT đơn hàng OK")
 
+# 8b. toggling VAT on the đơn hàng syncs the báo giá — its xlsx re-export follows
+from openpyxl import load_workbook
+import io as _io
+def _xlsx_has_vat(qid):
+    q = store.get_quote(qid)
+    data, _ = baogia.build_baogia_xlsx(q, store.get_customer(q["customer_id"]),
+                                       store.quote_items_for(qid), {"name": "HTP", "tagline": "t"})
+    wb = load_workbook(_io.BytesIO(data))
+    return any(isinstance(c, str) and "VAT" in c
+               for row in wb.active.iter_rows(values_only=True) for c in row)
+sync_cid, sync_qid, _ = make_quote(apply_vat=True, name="Sync Test")
+sync_oid = store.create_order_from_quote(sync_qid)
+assert _xlsx_has_vat(sync_qid), "báo giá xlsx must start with a VAT row"
+client.post(f"/don-hang/{sync_oid}/vat", data={}, follow_redirects=False)  # VAT off on the order
+assert store.get_quote(sync_qid)["apply_vat"] == 0, "order VAT toggle must sync quotes.apply_vat"
+assert not _xlsx_has_vat(sync_qid), "báo giá xlsx must drop the VAT row after the order toggles off"
+print("8b. đơn hàng VAT toggle syncs the báo giá xlsx OK")
+
 # 9. the Excel export follows the flag ------------------------------------------
 company = {"name": "HTP", "tagline": "t", "phone": "0900", "address": "a",
            "email": "e@e.vn", "website": "w"}
@@ -154,5 +172,56 @@ assert r.status_code == 303, f"header form POST returned {r.status_code}"
 new_qid = int(r.headers["location"].rsplit("/", 1)[1])
 assert store.get_quote(new_qid)["apply_vat"] == 0, "unticked checkbox = không VAT"
 print("11. 'Thông tin chung' form posts to a live route and carries the toggle OK")
+
+# 11b. the đơn hàng door editor: add + re-spec a door line via the calculator ----
+door_cid, door_qid, door_sub = make_quote(apply_vat=True, name="Order Door Edit")
+door_oid = store.create_order_from_quote(door_qid)
+door_line = [i for i in store.order_items_for(door_oid) if i["product"] != "khac"][0]
+# the đơn hàng detail page links each door line to the calculator, not a flat input
+det = client.get(f"/don-hang/{door_oid}").text
+assert f"/don-hang/{door_oid}/hang-muc/{door_line['id']}/sua-cua" in det, \
+    "door line must link to the calculator editor"
+assert f"/don-hang/{door_oid}/hang-muc/cua-moi" in det, "must offer + Thêm cửa"
+# the edit page renders the calculator prefilled for this order item
+form = client.get(f"/don-hang/{door_oid}/hang-muc/{door_line['id']}/sua-cua").text
+assert 'name="loai_cua"' in form and f"/hang-muc/{door_line['id']}/sua-cua" in form, \
+    "order door edit page must post back to sua-cua"
+# re-spec the door to a bigger size → price must change and value recompute
+new_price = pricing.line_total(
+    pricing.get_price("cua_cuon", "Cửa cuốn công nghệ Đức", "KV 380", "KH"),
+    3000, 2500,
+    *pricing.get_surcharges("cua_cuon", "Cửa cuốn công nghệ Đức", pricing.area_m2(3000, 2500)))
+r = client.post(f"/don-hang/{door_oid}/hang-muc/{door_line['id']}/sua-cua",
+                data={"loai_cua": "cua_cuon", "cong_nghe": "Cửa cuốn công nghệ Đức",
+                      "mau": "KV 380", "ngang": "3000", "cao": "2500"}, follow_redirects=False)
+assert r.status_code == 303, f"door edit POST returned {r.status_code}"
+edited = store.get_order_item(door_line["id"])
+assert edited["thanh_tien"] == new_price and edited["cao_mm"] == 2500, \
+    f"door re-spec didn't reprice: {edited['thanh_tien']} != {new_price}"
+assert store.get_order(door_oid)["value_vnd"] == new_price + round(new_price * 0.1), \
+    "order value must recompute (with VAT) after a door re-spec"
+# add a second door via the calculator
+before_n = len(store.order_items_for(door_oid))
+r = client.post(f"/don-hang/{door_oid}/hang-muc/cua-moi",
+                data={"loai_cua": "cua_keo", "cong_nghe": "Có lá", "mau": "6zem",
+                      "ngang": "2000", "cao": "2000"}, follow_redirects=False)
+assert r.status_code == 303, f"door add POST returned {r.status_code}"
+assert len(store.order_items_for(door_oid)) == before_n + 1, "+ Thêm cửa didn't add a line"
+print("11b. đơn hàng door add + re-spec via the calculator OK")
+
+# 12. the "Khách hàng mới" intake wizard carries the VAT toggle ------------------
+wiz_page = client.get("/khach/tiep-nhan").text
+assert 'name="apply_vat"' in wiz_page, "intake wizard must offer the VAT toggle"
+# ticked → quote billed with VAT
+r = client.post("/khach/tiep-nhan", data={"name": "Wizard VAT", "phone": "0912000001",
+                "type": "KH", "deposit": "1.000.000", "apply_vat": "1"}, follow_redirects=False)
+wiz_qid = int(r.headers["location"].rsplit("/", 1)[1])
+assert store.get_quote(wiz_qid)["apply_vat"] == 1, "intake wizard must honour a ticked VAT box"
+# unticked → không VAT
+r = client.post("/khach/tiep-nhan", data={"name": "Wizard NoVAT", "phone": "0912000002",
+                "type": "KH", "deposit": "1.000.000"}, follow_redirects=False)
+wiz_qid2 = int(r.headers["location"].rsplit("/", 1)[1])
+assert store.get_quote(wiz_qid2)["apply_vat"] == 0, "intake wizard must honour an unticked VAT box"
+print("12. 'Khách hàng mới' intake wizard carries the VAT toggle OK")
 
 print("\nAll VAT smoke tests passed.")

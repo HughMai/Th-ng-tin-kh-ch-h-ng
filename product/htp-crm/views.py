@@ -1105,6 +1105,8 @@ def intake_wizard_page(today: str) -> str:
       {acc_rows}
       <div id="extra-acc-container"></div>
       <button type="button" class="btn done" onclick="addExtraAccRow()">+ Thêm phụ kiện khác</button>
+      <label class="mt-3">Thuế</label>
+      {_vat_toggle()}
       <div class="field-grid mt-3">
         <div class="fld"><label>Đã đặt cọc (VND)</label>
           <input id="deposit" name="deposit" inputmode="numeric" oninput="fmtMoney(this)" placeholder="VD: 2.000.000"></div>
@@ -1741,12 +1743,19 @@ function toggleQty(cb, qtyId) {{
 <a class="btn done w-full mt-2" href="/bao-gia">Quay lại danh sách</a>"""
 
 
-def _quote_item_form_body(quote: dict, item: dict = None) -> str:
+def _quote_item_form_body(quote: dict, item: dict = None, *,
+                          add_action: str = None, edit_action: str = None) -> str:
     """Loại cửa radios + dynamic fields + kích thước/giá form — the add/edit
     hạng mục form, without the customer-name card header. Shared by the
     standalone add/edit page (quote_item_form_page) and the "+ Thêm cửa"
     collapsible on quote_build_page, so adding an item doesn't require
-    navigating away from the build page first."""
+    navigating away from the build page first.
+
+    add_action/edit_action override the /bao-gia POST targets so the đơn hàng
+    can reuse the same calculator (order_item_form_page). ``quote`` only needs
+    id + customer_type, so an order dict works there too. Renders one <script>
+    with global consts/IDs, so keep it to ONE instance per page (both surfaces
+    edit on a dedicated page, never inline-repeated)."""
     customer_type = quote["customer_type"]
     # "khac" = free-form item (custom name in cong_nghe, always manual-priced);
     # the wizard can create these, so this form must round-trip them too.
@@ -1887,11 +1896,11 @@ document.addEventListener('DOMContentLoaded', updatePreview);
     is_manual: {1 if item["is_manual_price"] else 0}, dongia: {_dongia}
   }});
 }});</script>"""
-        form_action = f'/bao-gia/{quote["id"]}/hang-muc/{item["id"]}/sua'
+        form_action = edit_action or f'/bao-gia/{quote["id"]}/hang-muc/{item["id"]}/sua'
         submit_label = "Lưu thay đổi"
     else:
         prefill = ""
-        form_action = f'/bao-gia/{quote["id"]}/hang-muc/moi'
+        form_action = add_action or f'/bao-gia/{quote["id"]}/hang-muc/moi'
         submit_label = "Thêm hạng mục"
 
     return f"""
@@ -1929,6 +1938,23 @@ def quote_item_form_page(quote: dict, item: dict = None) -> str:
         f'<div class="card"><div class="name">{esc(quote["customer_name"])} '
         f'{type_chip(quote["customer_type"])}</div></div>'
         + _quote_item_form_body(quote, item)
+    )
+
+
+def order_item_form_page(o: dict, item: dict = None) -> str:
+    """The báo giá door calculator, retargeted at an đơn hàng so a chốt order's
+    door lines can be re-spec'd (loại/mẫu/kích thước → giá) instead of only
+    label/qty/price. Its own page, like quote_item_form_page — one form, no ID
+    clashes."""
+    return (
+        f'<div class="card"><div class="name">{esc(o["customer_name"])} '
+        f'{type_chip(o["customer_type"])}</div>'
+        f'<div class="sub">Đơn hàng #{o["id"]}</div></div>'
+        + _quote_item_form_body(
+            o, item,
+            add_action=f'/don-hang/{o["id"]}/hang-muc/cua-moi',
+            edit_action=(f'/don-hang/{o["id"]}/hang-muc/{item["id"]}/sua-cua' if item else None))
+        + f'<a class="btn done w-full mt-2" href="/don-hang/{o["id"]}">← Về đơn hàng</a>'
     )
 
 
@@ -2096,21 +2122,42 @@ def order_detail_page(o: dict, calls: list, today: str,
     is_order_items = bool(items) and "order_id" in items[0]
     edit_rows = ""
     if is_order_items:
-        edit_rows = "".join(f"""
-<form method="post" action="/don-hang/{o["id"]}/hang-muc/{i["id"]}/sua" class="row mt-2">
-  <input name="description" value="{esc(i.get("description") or _door_desc(i))}" class="grow-3">
-  <input name="so_luong" type="number" min="1" value="{i.get("so_luong", 1)}" style="flex:0 0 56px">
-  <input name="thanh_tien" inputmode="numeric" value="{i["thanh_tien"]}" class="grow-2">
-  <button class="btn done" style="flex:0 0 60px">Lưu</button>
-</form>
-<form method="post" action="/don-hang/{o["id"]}/hang-muc/{i["id"]}/xoa" class="row mt-1">
-  <button class="btn danger w-full" style="font-size:12px">Xóa dòng trên</button>
-</form>""" for i in items)
+        parts = []
+        for i in items:
+            xoa = (f'<form method="post" action="/don-hang/{o["id"]}/hang-muc/{i["id"]}/xoa" class="row mt-1">'
+                   f'<button class="btn danger w-full" style="font-size:12px">Xóa dòng trên</button></form>')
+            if i["product"] != "khac":
+                # Door line → re-spec with the full calculator on its own page
+                # (loại/mẫu/kích thước → giá), not just a flat label/qty/price.
+                kich = (f' · {i["ngang_mm"]}×{i["cao_mm"]}mm'
+                        if i.get("ngang_mm") and i.get("cao_mm") else "")
+                mau_sac = f' · {esc(i["mau_sac"])}' if i.get("mau_sac") else ""
+                parts.append(
+                    f'<div class="row mt-2" style="align-items:center;gap:8px">'
+                    f'<div class="grow"><b>{esc(_door_desc(i))}</b><span class="sub">{kich}{mau_sac}</span>'
+                    f'<br><span class="amt">{fmt_vnd(i["thanh_tien"])}</span></div>'
+                    f'<a class="btn done" style="flex:0 0 auto" '
+                    f'href="/don-hang/{o["id"]}/hang-muc/{i["id"]}/sua-cua">Sửa cửa</a></div>'
+                    + xoa)
+            else:
+                # Free / phụ kiện line → simple label·SL·giá inline edit.
+                parts.append(
+                    f'<form method="post" action="/don-hang/{o["id"]}/hang-muc/{i["id"]}/sua" class="row mt-2">'
+                    f'<input name="description" value="{esc(i.get("description") or _door_desc(i))}" class="grow-3">'
+                    f'<input name="so_luong" type="number" min="1" value="{i.get("so_luong", 1)}" style="flex:0 0 56px">'
+                    f'<input name="thanh_tien" inputmode="numeric" value="{i["thanh_tien"]}" class="grow-2">'
+                    f'<button class="btn done" style="flex:0 0 60px">Lưu</button></form>'
+                    + xoa)
+        edit_rows = "".join(parts)
     item_editor = f"""
 <details class="card"><summary>Sửa hạng mục / thêm dòng</summary>
 {edit_rows}
-<form method="post" action="/don-hang/{o["id"]}/hang-muc/moi" style="margin-top:12px;border-top:1px solid var(--line);padding-top:8px">
-  <label>Nội dung dòng mới</label><input name="description" required placeholder="VD: Phí vận chuyển, Motor YH 300kg">
+<div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+  <a class="btn add w-full" href="/don-hang/{o["id"]}/hang-muc/cua-moi">+ Thêm cửa (tính giá chi tiết)</a>
+</div>
+<form method="post" action="/don-hang/{o["id"]}/hang-muc/moi" style="margin-top:10px">
+  <label>Hoặc thêm dòng tự do (phụ kiện, chi phí khác)</label>
+  <input name="description" required placeholder="VD: Phí vận chuyển, Motor YH 300kg">
   <div class="row">
     <div class="grow"><label>SL</label><input name="so_luong" type="number" min="1" value="1"></div>
     <div class="grow-2"><label>Thành tiền (VND)</label><input name="thanh_tien" required inputmode="numeric" placeholder="VD: 500.000"></div>

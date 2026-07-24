@@ -450,7 +450,7 @@ def intake_submit(request: Request, name: str = Form(...), phone: str = Form(...
                   address: str = Form(""), note: str = Form(""), zalo_phone: str = Form(""),
                   email: str = Form(""), units: str = Form("[]"), accessories: str = Form(""),
                   deposit: str = Form(""), install_date: str = Form(""),
-                  quote_note: str = Form("")):
+                  quote_note: str = Form(""), apply_vat: str = Form("")):
     if r := _guard(request):
         return r
     cid = store.create_customer(name, phone, type, source, address, note, zalo_phone, email=email)
@@ -493,7 +493,8 @@ def intake_submit(request: Request, name: str = Form(...), phone: str = Form(...
     has_header_data = bool(accessories.strip() or deposit_vnd or install_date.strip()
                            or quote_note.strip())
     if priced or has_header_data:
-        qid = store.create_quote_header(cid, accessories, deposit_vnd, install_date, quote_note)
+        qid = store.create_quote_header(cid, accessories, deposit_vnd, install_date, quote_note,
+                                        apply_vat=apply_vat == "1")
         for product, cong_nghe, mau, mau_sac, ghi_chu, ngang, cao, thanh_tien, is_manual in priced:
             store.add_quote_item(qid, product, cong_nghe, mau, ngang, cao,
                                  thanh_tien, is_manual, mau_sac, ghi_chu)
@@ -1165,6 +1166,70 @@ def order_item_delete(request: Request, order_id: int, item_id: int):
     if r := _guard(request):
         return r
     store.delete_order_item(item_id)
+    return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
+
+
+# ---- hạng mục cửa (full calculator on the đơn hàng, parity with báo giá) --------
+# "cua-moi" / "sua-cua" are distinct literals from the flat "moi" / "sua" routes
+# above, so they never collide (and the door paths reprice via the calculator).
+@app.get("/don-hang/{order_id}/hang-muc/cua-moi", response_class=HTMLResponse)
+def order_item_door_new_form(request: Request, order_id: int):
+    if r := _guard(request):
+        return r
+    o = store.get_order(order_id)
+    if not o:
+        raise HTTPException(status_code=404)
+    return views.page("Thêm cửa", views.order_item_form_page(o), active="/don-hang")
+
+
+@app.post("/don-hang/{order_id}/hang-muc/cua-moi")
+def order_item_door_new(request: Request, order_id: int, loai_cua: str = Form(...),
+                        cong_nghe: str = Form(""), mau: str = Form(""),
+                        ngang: str = Form(...), cao: str = Form(...),
+                        gia_thu_cong: str = Form(""), ghi_chu: str = Form(""),
+                        manual: str = Form("")):
+    if r := _guard(request):
+        return r
+    o = store.get_order(order_id)
+    if not o:
+        raise HTTPException(status_code=404)
+    ngang_mm, cao_mm = _parse_dim(ngang, cao)
+    thanh_tien, is_manual = _price_quote_item(loai_cua, cong_nghe, mau, ngang_mm, cao_mm,
+                                              o["customer_type"], gia_thu_cong, bool(manual))
+    store.add_order_item(order_id, product=loai_cua, cong_nghe=cong_nghe, mau=mau,
+                         ngang_mm=ngang_mm, cao_mm=cao_mm, thanh_tien=thanh_tien,
+                         is_manual_price=is_manual, ghi_chu=ghi_chu)
+    return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
+
+
+@app.get("/don-hang/{order_id}/hang-muc/{item_id}/sua-cua", response_class=HTMLResponse)
+def order_item_door_edit_form(request: Request, order_id: int, item_id: int):
+    if r := _guard(request):
+        return r
+    o = store.get_order(order_id)
+    item = store.get_order_item(item_id)
+    if not o or not item or item["order_id"] != order_id:
+        raise HTTPException(status_code=404)
+    return views.page("Sửa cửa", views.order_item_form_page(o, item), active="/don-hang")
+
+
+@app.post("/don-hang/{order_id}/hang-muc/{item_id}/sua-cua")
+def order_item_door_edit(request: Request, order_id: int, item_id: int, loai_cua: str = Form(...),
+                         cong_nghe: str = Form(""), mau: str = Form(""),
+                         ngang: str = Form(...), cao: str = Form(...),
+                         gia_thu_cong: str = Form(""), ghi_chu: str = Form(""),
+                         manual: str = Form("")):
+    if r := _guard(request):
+        return r
+    o = store.get_order(order_id)
+    item = store.get_order_item(item_id)
+    if not o or not item or item["order_id"] != order_id:
+        raise HTTPException(status_code=404)
+    ngang_mm, cao_mm = _parse_dim(ngang, cao)
+    thanh_tien, is_manual = _price_quote_item(loai_cua, cong_nghe, mau, ngang_mm, cao_mm,
+                                              o["customer_type"], gia_thu_cong, bool(manual))
+    store.update_order_item_door(item_id, loai_cua, cong_nghe, mau, ngang_mm, cao_mm,
+                                 thanh_tien, is_manual, ghi_chu=ghi_chu)
     return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
 
 

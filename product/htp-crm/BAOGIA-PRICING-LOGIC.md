@@ -306,11 +306,13 @@ TỔNG CỘNG        = Cộng tiền hàng + Thuế VAT
 Không phải đơn nào cũng xuất hoá đơn VAT (khách lẻ hay xin "giá không VAT"), nên
 VAT là **tuỳ chọn từng báo giá**:
 
-- Bật/tắt ở ô **"Xuất hóa đơn VAT (10%)"** trên trang **Thông tin chung** (bước
-  đầu khi lập báo giá nhiều hạng mục). Mặc định **BẬT**.
+- Bật/tắt ở ô **"Xuất hóa đơn VAT (10%)"** khi lập báo giá — cả trên trang
+  **Thông tin chung** (báo giá nhiều hạng mục) lẫn **bước 3 của "Khách hàng
+  mới"** (tiếp nhận khách). Mặc định **BẬT**.
 - Sửa lại lúc nào cũng được ở thẻ **"Thuế"** trên trang báo giá — **trước khi
   chốt**. Sau khi chốt báo giá bị khoá, đổi thuế ở mục **"Sửa thuế (VAT)"** trên
-  trang đơn hàng.
+  trang đơn hàng — thao tác này **đồng bộ ngược** cờ VAT về báo giá gốc, nên file
+  Excel xuất lại từ báo giá cũng khớp (không còn lệch).
 - Khi tắt: dòng VAT **biến mất hẳn** khỏi bảng tổng kết, file Excel và hoá đơn
   (không in "0đ" — in 0đ chỉ làm khách thắc mắc).
 

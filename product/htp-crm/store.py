@@ -1099,6 +1099,38 @@ def add_order_item(order_id: int, description: str = "", thanh_tien: int = 0, so
     return item_id
 
 
+def get_order_item(item_id: int) -> Optional[dict]:
+    with _connect() as db:
+        r = db.execute("SELECT * FROM order_items WHERE id = ?", (item_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def update_order_item_door(item_id: int, product: str, cong_nghe: str, mau: str,
+                           ngang_mm: int, cao_mm: int, thanh_tien: int,
+                           is_manual_price: bool, ghi_chu: str = "") -> bool:
+    """Re-spec a door line on an đơn hàng with the full calculator (loại cửa,
+    mẫu, kích thước → giá), mirroring update_quote_item for order_items. Door
+    lines are one unit each, so so_luong=1 and don_gia=thành tiền (keeps the
+    hóa đơn's per-unit column right). Reprices the order via recompute_order_value.
+    Leaves description NULL so the door spec (not a free-text label) drives the
+    row — matches how chốt snapshots door lines."""
+    with _connect() as db:
+        r = db.execute("SELECT order_id FROM order_items WHERE id = ?", (item_id,)).fetchone()
+        if not r:
+            return False
+        order_id = r["order_id"]
+        db.execute(
+            "UPDATE order_items SET product=?, cong_nghe=?, mau=?, ngang_mm=?, cao_mm=?, "
+            "ghi_chu=?, description=NULL, so_luong=1, don_gia=?, thanh_tien=?, is_manual_price=? "
+            "WHERE id=?",
+            (product, cong_nghe or None, mau or None, ngang_mm, cao_mm,
+             (ghi_chu or "").strip() or None, thanh_tien, thanh_tien,
+             1 if is_manual_price else 0, item_id),
+        )
+    recompute_order_value(order_id)
+    return True
+
+
 def update_order_item(item_id: int, description: str, so_luong: int, thanh_tien: int,
                       don_gia: Optional[int] = None) -> bool:
     """Invoice-line edit: label/qty/price only. Door spec columns (product,
@@ -1386,6 +1418,14 @@ def set_order_vat(order_id: int, apply_vat: bool) -> bool:
             "UPDATE orders SET apply_vat = ?, updated_at = datetime('now') WHERE id = ?",
             (1 if apply_vat else 0, order_id),
         )
+        # Keep the originating báo giá in sync — its Xuất Excel re-export reads
+        # quotes.apply_vat, so without this a chốt order toggled to không-VAT
+        # still prints VAT on the báo giá xlsx (they'd disagree).
+        if o.get("quote_id"):
+            db.execute(
+                "UPDATE quotes SET apply_vat = ?, updated_at = datetime('now') WHERE id = ?",
+                (1 if apply_vat else 0, o["quote_id"]),
+            )
     recompute_order_value(order_id)
     after = (get_order(order_id) or {}).get("value_vnd") or 0
     delta = after - before
