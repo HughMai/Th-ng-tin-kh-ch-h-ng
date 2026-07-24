@@ -222,7 +222,9 @@ def login_form(error: str = ""):
 def login_submit(request: Request, password: str = Form(...)):
     ip = request.client.host if request.client else "?"
     if _rate_check(f"login:{ip}", 5, 60):  # max 5 failed attempts / minute / IP
-        raise HTTPException(status_code=429, detail="Thử lại sau một phút nhé.")
+        # Back to the login page with a Vietnamese message, not a raw JSON 429 —
+        # a parent who mistyped five times needs a way forward, not an error dump.
+        return RedirectResponse("/login?error=cho", status_code=303)
     # Constant-time compare against every configured password so a wrong guess
     # can't be timed to learn which person's password it nearly matched. Compared
     # as bytes because compare_digest rejects non-ASCII str, and a family password

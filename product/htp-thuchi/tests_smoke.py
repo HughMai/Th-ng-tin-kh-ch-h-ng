@@ -62,6 +62,22 @@ r = client.post("/login", data={"password": "sai-mật-khẩu"}, follow_redirect
 assert r.status_code == 303 and "error=1" in r.headers["location"], \
     "an accented wrong password should bounce, not 500"
 
+# the login field must not let a phone keyboard "help" — a Vietnamese IME
+# autocapitalising the first letter is indistinguishable from a wrong password
+r = client.get("/login")
+for attr in ('type="password"', 'autocapitalize="none"', 'autocorrect="off"',
+             'spellcheck="false"', 'autocomplete="current-password"'):
+    assert attr in r.text, f"login input is missing {attr}"
+
+# too many wrong tries -> a Vietnamese "wait a minute" page, never a raw JSON 429
+for _ in range(6):
+    r = client.post("/login", data={"password": "sai"}, follow_redirects=False)
+assert r.status_code == 303 and "error=cho" in r.headers["location"], \
+    "throttled login should redirect with a readable message, not raise 429"
+assert "đợi một phút" in client.get("/login?error=cho").text, \
+    "the throttle message should render in Vietnamese on the login page"
+app._buckets.clear()  # reset the throttle for the tests that follow
+
 # every configured person can get in, and lands as themselves
 for pw, who in (("pw-bame", "Ba Mẹ"), ("pw-ketoan", "Kế toán"), ("pw-hughie", "Hughie"),
                 ("mật-khẩu-có-dấu", "Bà Nội")):

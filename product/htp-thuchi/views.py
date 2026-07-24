@@ -129,7 +129,16 @@ def page(title: str, body: str, active: str = "", user: str = "", doc_title: str
 
 
 def login_page(error: str = "") -> str:
-    err = '<div class="callout callout-danger">Sai mật khẩu, thử lại nhé.</div>' if error else ""
+    """Đăng nhập. The password field turns off every keyboard "helper" on purpose:
+    the family types on phones with a Vietnamese IME, and autocapitalize/autocorrect
+    silently mangling the first character is indistinguishable from a wrong password.
+    autocomplete=current-password lets the phone remember it so they stop retyping."""
+    messages = {
+        "1": "Sai mật khẩu, thử lại nhé.",
+        "cho": "Sai nhiều lần quá — đợi một phút rồi thử lại nhé.",
+    }
+    msg = messages.get(error, "")
+    err = f'<div class="callout callout-danger">{msg}</div>' if msg else ""
     body = f"""
 <div class="card login-card">
   <div class="login-brand">Hưng Thành Phát</div>
@@ -137,7 +146,9 @@ def login_page(error: str = "") -> str:
   {err}
   <form method="post" action="/login">
     <label>Mật khẩu của bạn</label>
-    <input name="password" type="password" autofocus>
+    <input name="password" type="password" autofocus
+           autocapitalize="none" autocorrect="off" spellcheck="false"
+           autocomplete="current-password">
     <button class="btn big mt-4">Đăng nhập</button>
   </form>
 </div>"""
