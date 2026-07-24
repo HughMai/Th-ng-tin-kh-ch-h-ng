@@ -180,6 +180,19 @@ def manual_line_total(dongia_per_m2: int, ngang_mm: int, cao_mm: int) -> int:
     return (dongia_per_m2 or 0) * (ngang_mm or 0) * (cao_mm or 0) // 1_000_000
 
 
+# VAT on the Cộng tiền hàng. Not every job is billed with tax — khách lẻ often
+# want the giá không VAT — so it's opt-out per báo giá (quotes.apply_vat) and per
+# đơn hàng (orders.apply_vat). Every place that shows tax goes through
+# vat_amount(): the báo giá summary, the xlsx, the hóa đơn, and
+# store.recompute_order_value.
+VAT_RATE = 0.1
+
+
+def vat_amount(subtotal: int, apply_vat: bool = True) -> int:
+    """Thuế VAT for a pre-VAT subtotal — 0đ when the quote/order opted out."""
+    return round(subtotal * VAT_RATE) if apply_vat else 0
+
+
 # ── Phụ kiện (accessories) — priced, ported from the Apps Script calculator ──
 # Catalog shared by the quote forms (views.py) and the price math below. Keys are
 # form-field-safe; labels are the exact strings stored in ``quotes.accessories``

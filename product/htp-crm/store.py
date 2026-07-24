@@ -357,8 +357,9 @@ def _backfill_order_items() -> None:
 def _recompute_order_values_with_vat() -> None:
     """Re-derive every order's value_vnd from its (pre-VAT) invoice lines so orders
     created before value_vnd became VAT-inclusive pick up the tax. Idempotent —
-    recompute_order_value reads the line items and re-applies the rate each run,
-    so this is safe to run on every startup (same contract as the backfills)."""
+    recompute_order_value reads the line items and re-applies the rate each run
+    (honouring orders.apply_vat), so this is safe to run on every startup (same
+    contract as the backfills)."""
     with _connect() as db:
         ids = [r["order_id"] for r in
                db.execute("SELECT DISTINCT order_id FROM order_items").fetchall()]
@@ -396,6 +397,7 @@ def _migrate_quotes_columns(db: sqlite3.Connection) -> None:
         ("deposit_vnd", "INTEGER"),
         ("install_date", "TEXT"),     # desired install date AT QUOTING TIME — distinct from orders.install_date
         ("note", "TEXT"),             # free-text notes; description is overwritten by recompute_quote_derived_fields
+        ("apply_vat", "INTEGER NOT NULL DEFAULT 1"),  # bill this báo giá with VAT? copied onto the order at chốt
     ):
         if col not in existing:
             db.execute(f"ALTER TABLE quotes ADD COLUMN {col} {coltype}")
@@ -410,6 +412,7 @@ def _migrate_orders_columns(db: sqlite3.Connection) -> None:
         ("urgent", "INTEGER NOT NULL DEFAULT 0"),
         ("urgent_at", "TEXT"),  # when it was flagged gấp (for the notify message)
         ("note", "TEXT"),  # ghi chú sản xuất/lắp đặt — carried from the báo giá on chốt, editable after
+        ("apply_vat", "INTEGER NOT NULL DEFAULT 1"),  # from the báo giá at chốt; editable after (set_order_vat)
     ):
         if col not in existing:
             db.execute(f"ALTER TABLE orders ADD COLUMN {col} {coltype}")
@@ -771,7 +774,7 @@ def quotes_for_customer(customer_id: int) -> list:
 # ---------------------------------------------------------------- multi-item quotes
 
 def create_quote_header(customer_id: int, accessories: str = "", deposit_vnd: Optional[int] = None,
-                        install_date: str = "", note: str = "") -> int:
+                        install_date: str = "", note: str = "", apply_vat: bool = True) -> int:
     """Starts a multi-item báo giá: inserted immediately as status='sent',
     product='khac'. No draft state — items are added afterward via
     add_quote_item(), which keeps value_vnd/product/description in sync.
@@ -784,8 +787,10 @@ def create_quote_header(customer_id: int, accessories: str = "", deposit_vnd: Op
     with _connect() as db:
         cur = db.execute(
             "INSERT INTO quotes (customer_id, product, description, value_vnd, sent_date, "
-            "accessories, deposit_vnd, install_date, note) VALUES (?, 'khac', NULL, 0, ?, ?, ?, ?, ?)",
-            (customer_id, today_vn(), accessories or None, deposit_vnd, install_date or None, note or None),
+            "accessories, deposit_vnd, install_date, note, apply_vat) "
+            "VALUES (?, 'khac', NULL, 0, ?, ?, ?, ?, ?, ?)",
+            (customer_id, today_vn(), accessories or None, deposit_vnd, install_date or None,
+             note or None, 1 if apply_vat else 0),
         )
         quote_id = cur.lastrowid
     recompute_quote_derived_fields(quote_id)
@@ -953,6 +958,19 @@ def set_quote_deposit(quote_id: int, deposit_vnd: Optional[int]) -> bool:
         return cur.rowcount > 0
 
 
+def set_quote_vat(quote_id: int, apply_vat: bool) -> bool:
+    """Có/không xuất VAT is adjustable any time before chốt, same as đặt cọc.
+    Nothing to recompute — quotes.value_vnd is the pre-VAT Cộng tiền hàng either
+    way; the flag only decides whether the summary/xlsx add the tax line, and
+    what the order inherits at chốt."""
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE quotes SET apply_vat = ?, updated_at = datetime('now') WHERE id = ?",
+            (1 if apply_vat else 0, quote_id),
+        )
+        return cur.rowcount > 0
+
+
 def link_quote_order(quote_id: int, order_id: int) -> bool:
     with _connect() as db:
         cur = db.execute(
@@ -989,13 +1007,17 @@ def quotes_to_chase(today: str = "") -> list:
 def create_order(customer_id: int, product: str, description: str = "",
                  value_vnd: Optional[int] = None, install_date: str = "",
                  warranty_months: int = 24, quote_id: Optional[int] = None,
-                 note: str = "") -> int:
+                 note: str = "", apply_vat: bool = True) -> int:
+    # apply_vat is set on the INSERT, not patched afterwards: the generic invoice
+    # line below recomputes value_vnd immediately, and so does the chốt path's
+    # snapshot — both read orders.apply_vat, so it has to be right from row one.
     with _connect() as db:
         cur = db.execute(
             "INSERT INTO orders (customer_id, quote_id, product, description, value_vnd, "
-            "install_date, warranty_months, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "install_date, warranty_months, note, apply_vat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (customer_id, quote_id, product, description.strip() or None, value_vnd,
-             install_date or None, warranty_months, (note or "").strip() or None),
+             install_date or None, warranty_months, (note or "").strip() or None,
+             1 if apply_vat else 0),
         )
         order_id = cur.lastrowid
     if value_vnd:
@@ -1024,7 +1046,7 @@ def create_order_from_quote(quote_id: int) -> Optional[int]:
     product = q["product"] if q["product"] in ("nhom_kinh", "cua_cuon", "cua_keo") else "khac"
     oid = create_order(q["customer_id"], product, q.get("description") or "",
                        q.get("value_vnd"), q.get("install_date") or "", 24, quote_id,
-                       note=q.get("note") or "")
+                       note=q.get("note") or "", apply_vat=bool(q.get("apply_vat", 1)))
     link_quote_order(quote_id, oid)
     snapshot_order_items_from_quote(oid, quote_id)
     if q.get("deposit_vnd") and q.get("customer_type") != "DL":
@@ -1105,26 +1127,28 @@ def delete_order_item(item_id: int) -> None:
 
 
 # VAT applied to order totals. Quotes stay pre-VAT (recompute_quote_derived_fields);
-# an order's value_vnd is the VAT-inclusive amount the customer actually owes — it
-# matches the báo giá's TỔNG CỘNG and the hóa đơn's Tổng tiền, so the đơn hàng price
-# and còn nợ (both derived from value_vnd) already include VAT.
-VAT_RATE = 0.1
+# an order's value_vnd is the amount the customer actually owes — it matches the
+# báo giá's TỔNG CỘNG and the hóa đơn's Tổng tiền, so the đơn hàng price and còn nợ
+# (both derived from value_vnd) already include VAT — unless the job was billed
+# không VAT (orders.apply_vat = 0), in which case value_vnd is the bare subtotal.
+# The rate itself lives in pricing.vat_amount().
 
 
 def recompute_order_value(order_id: int) -> None:
-    """Once an order has invoice lines, value_vnd = SUM(thanh_tien) + VAT — the
-    VAT-inclusive total the customer owes (mirrors the báo giá TỔNG CỘNG and the
-    hóa đơn Tổng tiền; per-line thanh_tien stay pre-VAT). Zero items =
-    legacy/lump order — leave value_vnd untouched."""
+    """Once an order has invoice lines, value_vnd = SUM(thanh_tien) + VAT (0đ of
+    it when apply_vat is off) — the total the customer owes (mirrors the báo giá
+    TỔNG CỘNG and the hóa đơn Tổng tiền; per-line thanh_tien stay pre-VAT). Zero
+    items = legacy/lump order — leave value_vnd untouched."""
     with _connect() as db:
         r = db.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(thanh_tien), 0) AS total "
-            "FROM order_items WHERE order_id = ?",
-            (order_id,),
+            "SELECT COUNT(*) AS n, COALESCE(SUM(i.thanh_tien), 0) AS total, "
+            "(SELECT apply_vat FROM orders WHERE id = ?) AS apply_vat "
+            "FROM order_items i WHERE i.order_id = ?",
+            (order_id, order_id),
         ).fetchone()
         if r["n"]:
             subtotal = r["total"]
-            value = subtotal + round(subtotal * VAT_RATE)
+            value = subtotal + pricing.vat_amount(subtotal, bool(r["apply_vat"]))
             db.execute(
                 "UPDATE orders SET value_vnd = ?, updated_at = datetime('now') WHERE id = ?",
                 (value, order_id),
@@ -1342,6 +1366,33 @@ def set_order_note(order_id: int, note: str) -> bool:
             ((note or "").strip() or None, order_id),
         )
         return cur.rowcount > 0
+
+
+def set_order_vat(order_id: int, apply_vat: bool) -> bool:
+    """Flip có/không xuất VAT after chốt. value_vnd is re-derived from the invoice
+    lines, so còn nợ (KH) moves with it automatically.
+
+    Đại lý are the delicate case: their sổ nợ was already charged the old
+    VAT-inclusive value at chốt. debt_entries is append-only (a paper ledger),
+    so the difference is corrected with an offsetting entry rather than editing
+    the original charge — dropping VAT posts a 'payment', adding it posts a
+    'charge'. Returns False when the flag is already at the requested value."""
+    o = get_order(order_id)
+    if not o or bool(o.get("apply_vat", 1)) == bool(apply_vat):
+        return False
+    before = o.get("value_vnd") or 0
+    with _connect() as db:
+        db.execute(
+            "UPDATE orders SET apply_vat = ?, updated_at = datetime('now') WHERE id = ?",
+            (1 if apply_vat else 0, order_id),
+        )
+    recompute_order_value(order_id)
+    after = (get_order(order_id) or {}).get("value_vnd") or 0
+    delta = after - before
+    if o["customer_type"] == "DL" and delta:
+        add_debt_entry(o["customer_id"], "charge" if delta > 0 else "payment", abs(delta),
+                       note=f"Điều chỉnh VAT đơn hàng #{order_id}", order_id=order_id)
+    return True
 
 
 # --------------------------------------------------- Zalo group bot digest

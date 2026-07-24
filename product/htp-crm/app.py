@@ -785,7 +785,9 @@ async def quote_multi_new(request: Request, customer_id: int = Form(...),
         return r
     form = await request.form()
     accessories = _accessories_from_form(form)
-    quote_id = store.create_quote_header(customer_id, accessories, _parse_vnd(deposit), install_date, note)
+    quote_id = store.create_quote_header(customer_id, accessories, _parse_vnd(deposit),
+                                         install_date, note,
+                                         apply_vat=form.get("apply_vat") == "1")
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
 
 
@@ -899,6 +901,20 @@ def quote_set_deposit(request: Request, quote_id: int, deposit: str = Form("")):
         raise HTTPException(status_code=404)
     _reject_if_ordered(q)
     store.set_quote_deposit(quote_id, _parse_vnd(deposit))
+    return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
+
+
+@app.post("/bao-gia/{quote_id}/vat")
+def quote_set_vat(request: Request, quote_id: int, apply_vat: str = Form("")):
+    """Có/không xuất VAT. Unticked checkboxes aren't submitted, so an empty
+    apply_vat means "không VAT" — same convention as the phụ kiện checkboxes."""
+    if r := _guard(request):
+        return r
+    q = store.get_quote(quote_id)
+    if not q:
+        raise HTTPException(status_code=404)
+    _reject_if_ordered(q)  # đã chốt -> đổi trên đơn hàng (/don-hang/{id}/vat)
+    store.set_quote_vat(quote_id, apply_vat == "1")
     return RedirectResponse(f"/bao-gia/{quote_id}", status_code=303)
 
 
@@ -1044,6 +1060,18 @@ def order_set_note(request: Request, order_id: int, note: str = Form("")):
     if not store.get_order(order_id):
         raise HTTPException(status_code=404)
     store.set_order_note(order_id, note)
+    return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
+
+
+@app.post("/don-hang/{order_id}/vat")
+def order_set_vat(request: Request, order_id: int, apply_vat: str = Form("")):
+    """Đổi thuế sau khi chốt — recomputes value_vnd from the invoice lines and,
+    for ĐL, posts the offsetting sổ nợ entry (see store.set_order_vat)."""
+    if r := _guard(request):
+        return r
+    if not store.get_order(order_id):
+        raise HTTPException(status_code=404)
+    store.set_order_vat(order_id, apply_vat == "1")
     return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
 
 

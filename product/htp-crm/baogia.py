@@ -425,11 +425,14 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
 
     # ── Summary ──────────────────────────────────────────────────────────
     tong_cong = door_total + pk_total
-    vat = round(tong_cong * 0.1)
+    apply_vat = bool(quote.get("apply_vat", 1))
+    vat = pricing.vat_amount(tong_cong, apply_vat)
     tong_tien = tong_cong + vat
+    # Báo giá không xuất VAT: omit the tax row rather than showing 0đ — this file
+    # goes straight to the customer, same reasoning as the hóa đơn.
     summary = [
         ("Cộng tiền hàng:", tong_cong, _INK, _SZ),
-        ("Thuế VAT (10%):", vat, _INK, _SZ),
+        *([("Thuế VAT (10%):", vat, _INK, _SZ)] if apply_vat else []),
         ("TỔNG CỘNG:", tong_tien, _RED, 15),
     ]
     for label, value, color, size in summary:

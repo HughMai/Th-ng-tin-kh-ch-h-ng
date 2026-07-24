@@ -297,9 +297,37 @@ Sửa trong `pricing.py`:
 
 ```
 Cộng tiền hàng   = Tổng "Thành tiền" các cửa  +  Tổng phụ kiện
-Thuế VAT (10%)   = round(Cộng tiền hàng × 0.10)
+Thuế VAT (10%)   = round(Cộng tiền hàng × 0.10)   ← 0đ nếu báo giá chọn "không VAT"
 TỔNG CỘNG        = Cộng tiền hàng + Thuế VAT
 ```
+
+### 7.1 Có / không xuất VAT
+
+Không phải đơn nào cũng xuất hoá đơn VAT (khách lẻ hay xin "giá không VAT"), nên
+VAT là **tuỳ chọn từng báo giá**:
+
+- Bật/tắt ở ô **"Xuất hóa đơn VAT (10%)"** trên trang **Thông tin chung** (bước
+  đầu khi lập báo giá nhiều hạng mục). Mặc định **BẬT**.
+- Sửa lại lúc nào cũng được ở thẻ **"Thuế"** trên trang báo giá — **trước khi
+  chốt**. Sau khi chốt báo giá bị khoá, đổi thuế ở mục **"Sửa thuế (VAT)"** trên
+  trang đơn hàng.
+- Khi tắt: dòng VAT **biến mất hẳn** khỏi bảng tổng kết, file Excel và hoá đơn
+  (không in "0đ" — in 0đ chỉ làm khách thắc mắc).
+
+Luồng dữ liệu:
+
+| Nơi lưu | Ý nghĩa |
+|---|---|
+| `quotes.apply_vat` | 1/0 — mặc định 1. `quotes.value_vnd` **luôn là giá trước VAT**, không đổi theo cờ này. |
+| `orders.apply_vat` | Sao chép từ báo giá lúc chốt. `orders.value_vnd` = tiền khách thật sự nợ → **đã gồm VAT** nếu cờ bật, **bằng đúng tiền hàng** nếu tắt. |
+
+Đổi thuế trên đơn hàng sẽ tính lại `orders.value_vnd` (nên **còn nợ** của khách lẻ
+tự động chạy theo). Với **đại lý**, sổ nợ đã bị ghi nợ số tiền gồm VAT lúc chốt —
+`debt_entries` là sổ ghi-thêm-only (như sổ giấy), nên hệ thống **ghi thêm 1 dòng
+điều chỉnh** ("Điều chỉnh VAT đơn hàng #N") chứ không sửa dòng ghi nợ cũ.
+
+Các báo giá / đơn hàng có từ trước khi thêm tính năng này đều mặc định `apply_vat = 1`
+— không có gì thay đổi so với trước.
 
 Số tiền cũng được đọc thành **chữ tiếng Việt** ở cuối báo giá (ví dụ
 "Mười ba triệu, bốn trăm bốn mươi hai nghìn đồng chẵn") — hàm `doc_so_tien()`.
@@ -321,6 +349,7 @@ hiển thị = Thành tiền / Diện tích (chỉ để hiển thị, không d�
 2. Cộng phụ kiện (mục 6) — motor theo từng cửa cuốn, phụ kiện khác 1 lần.
 
 3. Tổng cộng = (Tổng thành tiền cửa + Tổng phụ kiện) × 1.10 (VAT)
+               — × 1.00 nếu báo giá chọn "không xuất VAT" (mục 7.1)
 ```
 
 ---
@@ -329,7 +358,7 @@ hiển thị = Thành tiền / Diện tích (chỉ để hiển thị, không d�
 
 | File | Vai trò |
 |---|---|
-| `pricing.py` | Bảng giá + toàn bộ công thức (single source of truth) |
+| `pricing.py` | Bảng giá + toàn bộ công thức (single source of truth), gồm `VAT_RATE` và `vat_amount()` |
 | `baogia.py` | Xuất báo giá ra file Excel (.xlsx), gọi lại các hàm trong `pricing.py` |
 | `app.py` | Tính giá khi lưu báo giá qua form (dòng ~343, ~670) |
 | `views.py` | Hiển thị form chọn loại cửa / mẫu / phụ kiện |

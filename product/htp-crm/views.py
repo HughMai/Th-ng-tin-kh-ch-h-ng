@@ -1515,6 +1515,14 @@ def _phukien_rows(checked: dict = None) -> str:
 </div>""" for key, label in _ACCESSORIES)
 
 
+def _vat_toggle(checked: bool = True) -> str:
+    """Có/không xuất VAT — same checkbox idiom as 'Giá đặc biệt (nhập tay)'.
+    Shared by the báo giá header form, the báo giá detail card and the đơn hàng
+    card; all three post apply_vat=1 when ticked and omit the field when not."""
+    return (f'<label class="u-manual-toggle"><input type="checkbox" name="apply_vat" '
+            f'value="1"{" checked" if checked else ""}> Xuất hóa đơn VAT (10%)</label>')
+
+
 def _parse_accessories_to_keys(accessories: str) -> dict:
     """'Moto + rmoc x2, Khóa ngang (tole) x1' -> {'moto_rmoc': 2, 'khoa_tole': 1}.
     Reverses the "{label} x{qty}" join built by app.py's quote_multi_new /
@@ -1550,8 +1558,10 @@ def quote_header_form_page(customer: dict, today: str) -> str:
     return f"""
 <div class="card"><div class="name">{esc(customer["name"])} {type_chip(customer["type"])}</div>
 <div class="sub">{esc(customer["phone"] or "")}</div></div>
-<form method="post" action="/bao-gia/nhieu-hang-muc/moi">
+<form method="post" action="/bao-gia/nhieu-hang-muc">
   <input type="hidden" name="customer_id" value="{customer["id"]}">
+  <label class="mt-0">Thuế</label>
+  {_vat_toggle()}
   <label>Phụ kiện</label>
   {rows}
   <label>{_EXTRAS_HINT}</label>
@@ -1617,6 +1627,15 @@ def quote_build_page(quote: dict, items: list) -> str:
   <div class="sub mt-2">Còn lại: <b class="amt">{fmt_vnd((quote.get("value_vnd") or 0) - dep)}</b></div>
 </form>""" if items and not locked else ""
 
+    # Sau khi chốt thì đổi VAT trên đơn hàng (báo giá đã khóa) — the đơn hàng
+    # card posts to /don-hang/{id}/vat and fixes up the ĐL sổ nợ.
+    vat_card = f"""
+<form method="post" action="/bao-gia/{quote["id"]}/vat" class="card">
+  <label class="mt-0">Thuế — sửa lúc nào cũng được</label>
+  {_vat_toggle(bool(quote.get("apply_vat", 1)))}
+  <button class="btn done mt-2">Lưu thuế</button>
+</form>""" if not locked else ""
+
     notes_card = f"""
 <form method="post" action="/bao-gia/{quote["id"]}/ghi-chu" class="card">
   <label class="mt-0">Ngày lắp đặt dự kiến</label>
@@ -1648,12 +1667,13 @@ function toggleQty(cb, qtyId) {{
     # hàng or send the customer a quote.
     ctype = quote["customer_type"]
     accessories = quote.get("accessories") or ""
+    apply_vat = bool(quote.get("apply_vat", 1))
     pk_items = pricing.phukien_line_items(accessories, items, ctype)
     if items or pk_items:
         pk_total = pricing.calc_phukien(accessories, items, ctype)
         door_total = sum(i["thanh_tien"] for i in items)
         tong_cong = quote.get("value_vnd") or (door_total + pk_total)
-        vat = round(tong_cong * 0.1)
+        vat = pricing.vat_amount(tong_cong, apply_vat)
         tong_tien = tong_cong + vat
         _line = ('<div class="sub between">'
                  '<span>{name}</span><b class="amt">{val}</b></div>')
@@ -1670,7 +1690,8 @@ function toggleQty(cb, qtyId) {{
   {pk_block}
   <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">
     {_line.format(name="Tổng cộng", val=fmt_vnd(tong_cong))}
-    {_line.format(name="VAT (10%)", val=fmt_vnd(vat))}
+    {_line.format(name="VAT (10%)", val=fmt_vnd(vat)) if apply_vat
+     else '<div class="sub between"><span>VAT</span><b>Không xuất VAT</b></div>'}
   </div>
   <div class="total between mt-2">
     <span>Tổng tiền</span><span>{fmt_vnd(tong_tien)}</span></div>
@@ -1711,6 +1732,7 @@ function toggleQty(cb, qtyId) {{
 {summary}
 {item_cards}
 {deposit_card}
+{vat_card}
 {phukien_card}
 {notes_card}
 {add_item_details}
@@ -2180,7 +2202,7 @@ def order_detail_page(o: dict, calls: list, today: str,
         payment_block = f"""
 <h2>Thanh toán</h2>
 <div class="card">
-  <div class="sub between"><span>Giá trị đơn (gồm VAT)</span><b class="amt">{fmt_vnd(o["value_vnd"])}</b></div>
+  <div class="sub between"><span>Giá trị đơn ({"gồm VAT" if o.get("apply_vat", 1) else "không VAT"})</span><b class="amt">{fmt_vnd(o["value_vnd"])}</b></div>
   <div class="sub between"><span>Đã thu</span><b class="amt">{fmt_vnd(paid)}</b></div>
   <div class="total between mt-2">
     <span>Còn lại</span><span class="amt">{fmt_vnd(bal)}</span></div>
@@ -2216,6 +2238,12 @@ def order_detail_page(o: dict, calls: list, today: str,
 <form method="post" action="/don-hang/{o["id"]}/ghi-chu" class="mt-2">
   <textarea name="note" placeholder="VD: nhà trong hẻm, gọi trước khi tới, khách cần lắp buổi sáng">{esc(o.get("note") or "")}</textarea>
   <button class="btn big mt-2">Lưu ghi chú</button>
+</form></details>
+<details class="card"><summary>Sửa thuế (VAT)</summary>
+<form method="post" action="/don-hang/{o["id"]}/vat" class="mt-2">
+  {_vat_toggle(bool(o.get("apply_vat", 1)))}
+  <div class="sub mt-2">Đổi thuế sẽ tính lại giá trị đơn{" và ghi một dòng điều chỉnh vào sổ nợ" if o["customer_type"] == "DL" else " và số còn nợ"}.</div>
+  <button class="btn big mt-2">Lưu thuế</button>
 </form></details>
 <details class="card"><summary class="text-danger">Xóa đơn hàng</summary>
   <div class="sub mt-2">Xóa hạng mục, thanh toán, sửa chữa của đơn này. Báo giá gốc quay lại "Đã gửi" để chốt lại nếu cần. Lịch sử chăm sóc của khách không bị mất.</div>
@@ -2259,8 +2287,12 @@ def invoice_page(o: dict, items: list, company: dict, today: str) -> str:
             f'<td class="num">{fmt_vnd(i["thanh_tien"])}</td></tr>'
         )
     tong_cong = sum(i["thanh_tien"] for i in items)
-    vat = round(tong_cong * 0.1)
+    vat = pricing.vat_amount(tong_cong, bool(o.get("apply_vat", 1)))
     tong_tien = tong_cong + vat
+    # Đơn không xuất VAT: drop the tax row entirely rather than printing "0đ" —
+    # a 0đ VAT line on a customer-facing hóa đơn invites the wrong question.
+    vat_row = (f'<tr class="totals"><td colspan="3"></td><td class="num">VAT 10%</td>'
+               f'<td class="num">{fmt_vnd(vat)}</td></tr>' if o.get("apply_vat", 1) else "")
     contact = " · ".join(x for x in (company.get("phone"), company.get("address")) if x)
     kh_lines = "".join(
         f'<div class="sub">{label} {esc(val)}</div>'
@@ -2280,7 +2312,7 @@ def invoice_page(o: dict, items: list, company: dict, today: str) -> str:
     <tr><th>STT</th><th>Nội dung</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th></tr>
     {"".join(rows) or '<tr><td colspan="5">Chưa có hạng mục nào.</td></tr>'}
     <tr class="totals"><td colspan="3"></td><td class="num">Tổng cộng</td><td class="num">{fmt_vnd(tong_cong)}</td></tr>
-    <tr class="totals"><td colspan="3"></td><td class="num">VAT 10%</td><td class="num">{fmt_vnd(vat)}</td></tr>
+    {vat_row}
     <tr class="totals"><td colspan="3"></td><td class="num"><b>Tổng tiền</b></td><td class="num"><b>{fmt_vnd(tong_tien)}</b></td></tr>
   </table>
   <div class="row no-print mt-3">
