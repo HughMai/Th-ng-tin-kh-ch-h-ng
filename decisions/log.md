@@ -1672,3 +1672,23 @@ Installed a working stopgap instead — `/opt/backup-local.sh` (`product/htp-thu
 **Verification summary:** all four sites 200 (thuchi, crm pretty + fallback, speed-to-lead); guarded route redirects to `/login`; login as Kế toán issues a Secure cookie; today's live day view read **Thu 2.860.000đ / Chi 0đ / Còn lại 2.860.000đ** straight from real CRM payments with no error banner; reviewed at 390×844.
 
 **Owner:** agent (deploy, Caddy, backups, verification); Hughie (DNS record, rclone/off-box backup, password rotation for the accountant)
+
+## 2026-07-28 — A repeat đại lý is picked, not retyped; two colours added to khung U
+
+**Decision:** Two changes to the CRM, both from the same complaint — the family is doing the same typing over and over. Cửa Kéo's **Màu khung U** gained `trắng` and `xám bình thường` (six options now; Nhíp and Lá untouched — Nhíp already had trắng). And the intake wizard stopped being a machine that mints a fresh customer card every single time.
+
+**The dedupe rule, and why it is name+phone and not phone alone.** Step 1 now has a type-ahead: three characters of a name or a phone hits the new session-gated `GET /api/khach/tim`, and tapping a hit fills the whole card and rides along as a hidden `customer_id`. Even with no pick, an identical **folded name AND phone** reuses the existing card. Phone alone was rejected deliberately — a household or a shop shares one number, and two names on it are two customers. That case already has an answer in this codebase (`customers_sharing_phone` → the ⚠️ trùng SĐT banner → `merge_customers`), and quietly folding those together would have destroyed the distinction the warn-and-merge flow exists to preserve. So: same person → one card, silently; same phone, different person → new card and the warning still fires. A smoke test asserts both directions.
+
+**The correctness bit that is easy to miss:** on a reuse the **stored** KH/ĐL type wins over the form's radio. `pricing.get_price` picks the price table from that value server-side, so a radio left on "Khách lẻ" while quoting a dealer would have charged retail. Proved with the same door: 4.620.000đ (ĐL) not 5.148.000đ (KH). The picker also flips the radio client-side so the on-screen preview agrees with what the server will store.
+
+**Backfill, never overwrite.** New contact details only fill columns the card is *missing*; ghi chú appends. A repeat job at a different address must not silently rewrite the address on file — that stays a deliberate "Sửa khách" edit. Anything else would make the time saved cost data.
+
+**Found on the way, not introduced:** the KH/ĐL toggle never re-priced units already added to step 2 — switching to Đại lý after adding doors left retail numbers on screen while the server quietly charged dealer prices. Display-only, but misleading, and the new picker changes that toggle automatically. Fixed with the same `repriceAll()` the picker needed.
+
+**Verification:** new `tests_smoke_khach_trung.py` (7 cases: API by phone / by folded name / <3 chars / 401 logged out, pick→reuse+ĐL pricing, retype→reuse, same-phone-different-name→new card, note append, Thêm khách dedupe, colour options rendered). Full 23-file suite green. Then a real browser at 390×844 against a throwaway db — which is where the flow was actually watched end to end: typed `0901`, saw the hit, tapped it, watched the toggle flip to Đại lý, added a Cửa Kéo in `U: trắng`, submitted, and confirmed **no fourth customer row** with the báo giá on card #1 at 4.620.000đ.
+
+**Deploy:** `scp app.py store.py views.py static/app.css`, `docker compose up -d --build`. Pre-deploy copies at `/opt/htp-crm/.bak/20260728-195454/`. Verified on live: U options read back from inside the container, `/api/khach/tim` registered, wizard markup carries the picker, CSS through Caddy, 401 when logged out, and the type-ahead returning real hits against the family's own 20 cards (`090` → 2, `093` → 3, `anh` → 3). No schema migration, no write to the customer book. Payload carries name/phone/type/address/email/zalo/source only — no notes, no prices.
+
+**Deferred:** the step-2 live price preview still omits the small-door surcharge (+20k/m² under 8m²) — it showed 4.488.000đ where the saved báo giá is 4.620.000đ. Pre-existing, server figure is the correct one, left alone rather than swept into this change. The type-ahead is on the wizard only; "Thêm khách" dedupes on submit but has no picker.
+
+**Owner:** agent (build, tests, browser check, deploy, verify); Hughie (asked for both, called the deploy)

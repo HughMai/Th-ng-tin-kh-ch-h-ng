@@ -13,9 +13,10 @@
 :root{
   /* type */
   --font:'Be Vietnam Pro',system-ui,'Segoe UI',Roboto,sans-serif;
-  --fs-xs:12.5px; --fs-sm:14px; --fs-base:16.5px; --fs-lg:18px; --fs-xl:22px;
-  /* ink — warm near-black ramp */
-  --ink:#292524; --ink-muted:#57534e; --ink-faint:#8a8580;
+  --fs-xs:12.5px; --fs-sm:14px; --fs-base:16.5px; --fs-lg:18px; --fs-xl:22px; --fs-2xl:27px;
+  --fs-label:13px;
+  /* ink — warm near-black ramp. --ink-faint is the AA floor: 4.8:1 on --paper. */
+  --ink:#292524; --ink-muted:#57534e; --ink-faint:#6f6a64;
   /* brand */
   --brand:#0f4c81; --brand-deep:#0c3d68; --brand-soft:#eef3f8; --brand-tint:#dce9f4;
   --zalo:#0068ff;
@@ -23,7 +24,7 @@
   --paper:#f4f3f1; --surface:#fff; --surface-sunken:#eceae7;
   --line:#e6e4e0; --line-strong:#d3d0cb;
   /* status pairs */
-  --ok-text:#15803d; --ok-bg:#e2f0e5;
+  --ok-text:#146c34; --ok-bg:#e2f0e5;
   --danger-text:#b91c1c; --danger-bg:#faeae8;
   --warn-text:#92510c; --warn-bg:#f9efdc;
   --info-text:#1660a0; --info-bg:#e1ecf6;
@@ -50,7 +51,7 @@ a{color:inherit;text-decoration:none}
  position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center}
 .top a{color:rgba(255,255,255,.72);font-size:var(--fs-sm);font-weight:400}
 .wrap{padding:var(--sp-3);max-width:560px;margin:0 auto}
-h2{font-size:var(--fs-xs);color:var(--ink-faint);margin:20px 2px 8px;
+h2{font-size:var(--fs-label);color:var(--ink-faint);margin:20px 2px 8px;
  text-transform:uppercase;letter-spacing:.09em;font-weight:600}
 
 /* ---- cards ---- */
@@ -120,7 +121,7 @@ h2{font-size:var(--fs-xs);color:var(--ink-faint);margin:20px 2px 8px;
 
 /* sổ đơn hàng date headers — stick just under the .top bar (z below its 5) */
 .day-h{position:sticky;top:var(--top-h);z-index:4;background:var(--paper);
- padding:10px 2px 6px;font-size:var(--fs-xs);font-weight:600;color:var(--ink-faint);
+ padding:10px 2px 6px;font-size:var(--fs-label);font-weight:600;color:var(--ink-faint);
  text-transform:uppercase;letter-spacing:.09em}
 
 /* ---- forms ---- */
@@ -212,6 +213,29 @@ details.card>summary{font-weight:600;min-height:32px;display:flex;align-items:ce
 .grand-total{background:var(--brand);color:#fff;border-radius:var(--r-md);padding:var(--sp-4);
  margin:12px 0 4px;font-size:var(--fs-base);font-weight:600;text-align:center;
  font-variant-numeric:tabular-nums}
+
+/* ---- step-1 "khách cũ" type-ahead (pick the card, don't retype it) ---- */
+.cust-hits{border:1px solid var(--line-strong);border-radius:var(--r-md);overflow:hidden;
+ margin-top:10px;background:var(--surface)}
+.cust-hits[hidden]{display:none}
+.cust-hit{display:flex;flex-direction:column;gap:3px;width:100%;min-height:48px;
+ padding:9px var(--sp-3);text-align:left;background:none;border:0;
+ border-bottom:1px solid var(--line);font-family:var(--font);cursor:pointer;
+ transition:background var(--speed) ease-out}
+.cust-hit:last-child{border-bottom:0}
+.cust-hit:hover{background:var(--brand-soft)}
+.cust-hit .ch-top{display:flex;align-items:center;gap:var(--sp-2);min-width:0}
+.cust-hit .ch-name{font-size:var(--fs-sm);font-weight:600;color:var(--ink);
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cust-hit .ch-sub{font-size:var(--fs-xs);color:var(--ink-muted);
+ font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cust-tip{font-size:var(--fs-xs);color:var(--ink-faint);margin:6px 2px 0}
+.cust-picked{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;
+ background:var(--ok-bg);border-radius:var(--r-md);padding:10px var(--sp-3);
+ margin-bottom:var(--sp-3)}
+.cust-picked[hidden]{display:none}
+.cust-picked .grow{min-width:0;font-size:var(--fs-sm);font-weight:600;color:var(--ok-text)}
+.cust-picked .btn{min-height:40px;flex:0 0 auto}
 
 /* ---- step-2 sticky "add cửa" bar (always reachable while listing units) ---- */
 .wiz-hint{color:var(--ink-muted);font-size:var(--fs-sm);background:var(--surface-sunken);

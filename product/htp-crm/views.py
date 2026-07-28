@@ -735,7 +735,7 @@ _WIZARD_COLORS = {
     }},
     "cua_keo": {"components": [
         {"key": "u", "tag": "U", "label": "Màu khung U",
-         "options": ["xanh", "xám kem", "ghi", "xám xingfa"]},
+         "options": ["xanh", "kem", "ghi", "trắng", "xám xingfa", "xám bình thường"]},
         {"key": "nhip", "tag": "Nhíp", "label": "Màu nhíp",
          "options": ["trắng", "ghi", "kem", "xám xingfa"]},
         {"key": "la", "tag": "Lá", "label": "Màu lá",
@@ -772,6 +772,90 @@ function firstIncompleteUnit(){
   return bad;
 }
 function phoneOk(){ return /^[0-9]{10}$/.test(document.getElementById('c_phone').value.trim()); }
+
+// ---- khách cũ: type-ahead + pick. A đại lý ordering every week gets typed in
+// once, then picked; the pick rides along as customer_id so the server attaches
+// the báo giá to that card instead of minting a duplicate.
+var CUST_HITS=[], custTimer=null, custSeq=0;
+function repriceAll(){ document.querySelectorAll('.unit-block').forEach(function(b){ priceUnit(b); }); }
+function hideCustHits(){
+  var box=document.getElementById('cust-hits');
+  box.hidden=true; box.innerHTML=''; CUST_HITS=[];
+}
+function renderCustHits(hits){
+  var box=document.getElementById('cust-hits');
+  box.innerHTML=''; CUST_HITS=hits;
+  if(!hits.length){ box.hidden=true; return; }
+  hits.forEach(function(h,i){
+    // built with textContent, never innerHTML — these strings are customer-typed
+    var row=document.createElement('button');
+    row.type='button'; row.className='cust-hit'; row.dataset.i=i;
+    var top=document.createElement('span'); top.className='ch-top';
+    var nm=document.createElement('span'); nm.className='ch-name'; nm.textContent=h.name;
+    var chip=document.createElement('span'); chip.className='chip '+(h.type==='DL'?'dl':'kh');
+    chip.textContent=(h.type==='DL')?'Đại lý':'Khách lẻ';
+    top.appendChild(nm); top.appendChild(chip);
+    var sub=document.createElement('span'); sub.className='ch-sub';
+    sub.textContent=h.phone+(h.address?' · '+h.address:'');
+    row.appendChild(top); row.appendChild(sub);
+    box.appendChild(row);
+  });
+  box.hidden=false;
+}
+function custSearch(v){
+  v=(v||'').trim();
+  if(v.length<3){ hideCustHits(); return; }
+  var seq=++custSeq;  // a slow earlier response must not overwrite a newer one
+  fetch('/api/khach/tim?q='+encodeURIComponent(v), {credentials:'same-origin'})
+    .then(function(r){ return r.ok?r.json():{hits:[]}; })
+    .then(function(d){ if(seq===custSeq) renderCustHits(d.hits||[]); })
+    .catch(function(){ if(seq===custSeq) hideCustHits(); });
+}
+function pickCustomer(h){
+  if(!h) return;
+  document.getElementById('customer_id').value=h.id;
+  document.getElementById('c_name').value=h.name;
+  document.getElementById('c_phone').value=h.phone;
+  // only fill what's on the card — never blank out something already typed here
+  [['c_email',h.email],['c_address',h.address],['c_zalo',h.zalo_phone],['c_source',h.source]]
+    .forEach(function(p){ if(p[1]) document.getElementById(p[0]).value=p[1]; });
+  var radio=document.querySelector('input[name=type][value="'+h.type+'"]');
+  if(radio && !radio.checked){ radio.checked=true; repriceAll(); }  // KH/ĐL = which price table
+  document.getElementById('cust-picked-name').textContent =
+    'Khách cũ: '+h.name+' — báo giá này gắn vào khách đó';
+  document.getElementById('cust-picked').hidden=false;
+  hideCustHits();
+}
+function clearCustPick(){
+  document.getElementById('customer_id').value='';
+  document.getElementById('cust-picked').hidden=true;
+  ['c_name','c_phone','c_email','c_address','c_zalo'].forEach(function(id){
+    document.getElementById(id).value='';
+  });
+  hideCustHits();
+  document.getElementById('c_name').focus();
+}
+(function(){
+  ['c_name','c_phone'].forEach(function(id){
+    document.getElementById(id).addEventListener('input', function(){
+      var pick=document.getElementById('customer_id');
+      if(pick.value){  // typing over a picked card means "not that person"
+        pick.value=''; document.getElementById('cust-picked').hidden=true;
+      }
+      var v=this.value;
+      clearTimeout(custTimer);
+      custTimer=setTimeout(function(){ custSearch(v); }, 250);
+    });
+  });
+  document.getElementById('cust-hits').addEventListener('click', function(e){
+    var row=e.target.closest('.cust-hit');
+    if(row) pickCustomer(CUST_HITS[parseInt(row.dataset.i)]);
+  });
+  // switching KH/ĐL swaps the price table — the preview has to follow
+  document.querySelectorAll('input[name=type]').forEach(function(r){
+    r.addEventListener('change', repriceAll);
+  });
+})();
 function wizNext(){
   var s=curStep();
   if(s===1){
@@ -1059,10 +1143,15 @@ def intake_wizard_page(today: str) -> str:
 <form method="post" action="/khach/tiep-nhan" id="wizform">
   <input type="hidden" name="units" id="units">
   <input type="hidden" name="accessories" id="accessories">
+  <input type="hidden" name="customer_id" id="customer_id">
 
   <div class="wiz-step active" data-step="1">
     <div class="card">
       <div class="card-title">Thông tin khách hàng</div>
+      <div class="cust-picked" id="cust-picked" hidden>
+        <span class="grow" id="cust-picked-name"></span>
+        <button type="button" class="btn done" onclick="clearCustPick()">Khách mới</button>
+      </div>
       <label>Loại khách</label>
       <div class="seg">
         <label><input type="radio" name="type" value="KH" checked><span>Khách lẻ</span></label>
@@ -1070,14 +1159,18 @@ def intake_wizard_page(today: str) -> str:
       </div>
       <div class="field-grid">
         <div class="fld"><label>Tên khách *</label>
-          <input name="name" id="c_name" placeholder="VD: Anh Hùng — Trần Phú"></div>
+          <input name="name" id="c_name" autocomplete="off" placeholder="VD: Anh Hùng — Trần Phú"></div>
         <div class="fld"><label>Số điện thoại *</label>
-          <input name="phone" id="c_phone" inputmode="numeric" maxlength="10"
+          <input name="phone" id="c_phone" inputmode="numeric" maxlength="10" autocomplete="off"
             oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,10)"></div>
-        <div class="fld"><label>Email</label><input name="email" type="email" inputmode="email"></div>
-        <div class="fld"><label>Địa chỉ</label><input name="address"></div>
-        <div class="fld"><label>Khách biết mình qua đâu?</label><select name="source">{src_opts}</select></div>
-        <div class="fld"><label>Số Zalo (nếu khác SĐT)</label><input name="zalo_phone" inputmode="numeric" maxlength="10"
+      </div>
+      <div class="cust-hits" id="cust-hits" hidden></div>
+      <div class="cust-tip">Gõ 3 ký tự tên hoặc số điện thoại — nếu là khách/đại lý cũ, bấm chọn để khỏi nhập lại.</div>
+      <div class="field-grid">
+        <div class="fld"><label>Email</label><input name="email" id="c_email" type="email" inputmode="email"></div>
+        <div class="fld"><label>Địa chỉ</label><input name="address" id="c_address"></div>
+        <div class="fld"><label>Khách biết mình qua đâu?</label><select name="source" id="c_source">{src_opts}</select></div>
+        <div class="fld"><label>Số Zalo (nếu khác SĐT)</label><input name="zalo_phone" id="c_zalo" inputmode="numeric" maxlength="10"
           oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,10)"></div>
       </div>
       <label>Ghi chú</label>

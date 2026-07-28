@@ -613,6 +613,55 @@ def find_customer_by_phone(phone: str) -> Optional[dict]:
     return dict(r) if r else None
 
 
+def find_customer_by_name_phone(name: str, phone: str) -> Optional[dict]:
+    """The same person typed in again — folded name AND phone both match. Powers
+    the "don't mint a second card" rule on the intake wizard and Thêm khách: a
+    đại lý who orders every week gets one card, not twenty.
+
+    Phone alone is deliberately not enough: a household or a shop shares one
+    number, and two different names on it are two different customers — that
+    case stays warn-and-merge (see customers_sharing_phone)."""
+    p, n = normalize_phone(phone), strip_diacritics(name)
+    if not p or not n:
+        return None
+    with _connect() as db:
+        r = db.execute(
+            "SELECT * FROM customers WHERE phone = ? AND name_search = ? ORDER BY id LIMIT 1",
+            (p, n),
+        ).fetchone()
+    return dict(r) if r else None
+
+
+def backfill_customer_contact(customer_id: int, address: str = "", email: str = "",
+                              zalo_phone: str = "", note: str = "") -> bool:
+    """Fill only the contact columns this customer is still missing, then append
+    any new ghi chú. Used when a new job attaches to an existing card: whatever
+    the family just typed that the card lacks is kept, but nothing already on
+    file is overwritten — a repeat job at a different address must not silently
+    rewrite the address, that stays an explicit "Sửa khách" edit."""
+    with _connect() as db:
+        row = db.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        if not row:
+            return False
+        c = dict(row)
+        sets = {}
+        for col, val in (("address", address.strip()), ("email", email.strip()),
+                         ("zalo_phone", normalize_phone(zalo_phone))):
+            if val and not c.get(col):
+                sets[col] = val
+        if "address" in sets:
+            sets["address_search"] = strip_diacritics(sets["address"])
+        new_note = (note or "").strip()
+        if new_note and new_note not in (c.get("note") or ""):
+            sets["note"] = f"{c['note']}\n{new_note}" if c.get("note") else new_note
+        if not sets:
+            return False
+        cols = ", ".join(f"{col} = ?" for col in sets)
+        db.execute(f"UPDATE customers SET {cols}, updated_at = datetime('now') WHERE id = ?",
+                   (*sets.values(), customer_id))
+    return True
+
+
 def customers_sharing_phone(customer_id: int) -> list:
     """Other customers with the SAME phone as this one — powers the "⚠️ trùng
     SĐT" warning on the customer page (duplicates are warned, never blocked)."""

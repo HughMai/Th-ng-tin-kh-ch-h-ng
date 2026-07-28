@@ -414,6 +414,47 @@ def customers(request: Request, q: str = "", loai: str = ""):
     return views.page("Khách hàng", views.customers_page(rows, q, loai), active="/khach")
 
 
+@app.get("/api/khach/tim")
+def api_customer_search(request: Request, q: str = ""):
+    """Type-ahead behind the intake wizard's step 1. The family types 3+ chars of
+    a name or a phone and taps the existing card instead of retyping a đại lý
+    they've already served forty times. Read-only, session-gated, capped at 8."""
+    if not _authed(request):
+        raise HTTPException(status_code=401)
+    q = q.strip()
+    if len(q) < 3:
+        return {"hits": []}
+    return {"hits": [
+        {"id": c["id"], "name": c["name"], "phone": c["phone"] or "", "type": c["type"],
+         "source": c["source"] or "khac", "address": c["address"] or "",
+         "email": c["email"] or "", "zalo_phone": c["zalo_phone"] or ""}
+        for c in store.list_customers(q=q)[:8]
+    ]}
+
+
+def _customer_for_intake(name: str, phone: str, type_: str, source: str, address: str,
+                         note: str, zalo_phone: str, email: str,
+                         customer_id: str = "") -> tuple[int, str]:
+    """Resolve the customer a manual intake belongs to, reusing the existing card
+    whenever it's the same person — either explicitly picked in the wizard
+    (customer_id) or re-typed identically (same folded name + same phone).
+
+    Returns (id, type) — the type is the STORED one on a reuse, because it picks
+    the KH/ĐL price table server-side and a card on file outranks a radio button
+    someone forgot to flip. New contact details are backfilled, never overwritten.
+    """
+    existing = None
+    if customer_id.strip().isdigit():
+        existing = store.get_customer(int(customer_id))
+    if not existing:
+        existing = store.find_customer_by_name_phone(name, phone)
+    if existing:
+        store.backfill_customer_contact(existing["id"], address, email, zalo_phone, note)
+        return existing["id"], existing["type"]
+    cid = store.create_customer(name, phone, type_, source, address, note, zalo_phone, email=email)
+    return cid, type_
+
+
 @app.get("/khach/moi", response_class=HTMLResponse)
 def customer_new_form(request: Request, next: str = ""):
     if r := _guard(request):
@@ -428,7 +469,7 @@ def customer_new(request: Request, name: str = Form(...), phone: str = Form(...)
                  zalo_phone: str = Form(""), email: str = Form(""), next: str = Form("")):
     if r := _guard(request):
         return r
-    cid = store.create_customer(name, phone, type, source, address, note, zalo_phone, email=email)
+    cid = _customer_for_intake(name, phone, type, source, address, note, zalo_phone, email)[0]
     if next == "bao-gia-moi":
         return RedirectResponse(f"/bao-gia/moi?khach={cid}", status_code=303)
     return RedirectResponse(f"/khach/{cid}", status_code=303)
@@ -450,10 +491,12 @@ def intake_submit(request: Request, name: str = Form(...), phone: str = Form(...
                   address: str = Form(""), note: str = Form(""), zalo_phone: str = Form(""),
                   email: str = Form(""), units: str = Form("[]"), accessories: str = Form(""),
                   deposit: str = Form(""), install_date: str = Form(""),
-                  quote_note: str = Form(""), apply_vat: str = Form("")):
+                  quote_note: str = Form(""), apply_vat: str = Form(""),
+                  customer_id: str = Form("")):
     if r := _guard(request):
         return r
-    cid = store.create_customer(name, phone, type, source, address, note, zalo_phone, email=email)
+    cid, type = _customer_for_intake(name, phone, type, source, address, note,
+                                     zalo_phone, email, customer_id)
     try:
         raw_units = json.loads(units) if units else []
     except (ValueError, TypeError):
@@ -707,6 +750,12 @@ def quote_status(request: Request, quote_id: int,
         q = store.get_quote(quote_id)
         if not q:
             raise HTTPException(status_code=404)
+        if q.get("order_id"):
+            # Already chốt — a double-tap on a slow connection re-hit this
+            # endpoint. create_order_from_quote would just hand back the same
+            # order id, but pinging the group again on that id would double-notify
+            # the xưởng for one chốt. Redirect without reprocessing.
+            return RedirectResponse("/bao-gia", status_code=303)
         if not store.quote_items_for(quote_id) and not q.get("value_vnd"):
             raise HTTPException(status_code=400,
                                 detail="Báo giá chưa có hạng mục — thêm hạng mục trước khi chốt")
