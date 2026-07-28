@@ -2202,6 +2202,36 @@ def _order_day_header(day: str, today: str) -> str:
     return dm
 
 
+def _make_checklist(o: dict, items: list) -> str:
+    """Tick list of hạng mục produced — the web twin of "xong 3.2" in the Zalo
+    group, and the only way to undo one that was reported by mistake. Hidden for
+    single-item đơn (the stage buttons above already say it) and for untouched
+    đơn past chờ sản xuất. Ticking the last one moves the đơn to đang sản xuất;
+    un-ticking never moves a stage back on its own — use the buttons above."""
+    if len(items) < 2:
+        return ""
+    done = [i for i in items if i.get("made_at")]
+    if not done and (o.get("stage") or "cho_san_xuat") != "cho_san_xuat":
+        return ""
+    rows = []
+    for i in items:
+        kich = (f' — {i["ngang_mm"]}×{i["cao_mm"]}mm'
+                if i.get("ngang_mm") and i.get("cao_mm") else "")
+        qty = f' ×{i["so_luong"]}' if i.get("so_luong", 1) > 1 else ""
+        made = bool(i.get("made_at"))
+        rows.append(
+            f'<form method="post" action="/don-hang/{o["id"]}/hang-muc/{i["id"]}/da-lam" class="mt-1">'
+            f'<input type="hidden" name="made" value="{"0" if made else "1"}">'
+            f'<button class="btn {"call" if made else "done"} w-full" '
+            f'style="justify-content:flex-start;text-align:left;font-size:13px;min-height:44px">'
+            f'{"✅" if made else "☐"} {esc(_door_desc(i))}{esc(kich)}{qty}</button></form>'
+        )
+    return (f'<div class="card"><div class="sub strong mb-2">Hạng mục đã sản xuất '
+            f'({len(done)}/{len(items)})</div>{"".join(rows)}'
+            '<div class="sub mt-2" style="opacity:.7">Thợ nhắn "xong &lt;số&gt;.&lt;hạng mục&gt;" '
+            'trong nhóm Zalo cũng tick ở đây. Bấm lại để bỏ tick.</div></div>')
+
+
 def order_detail_page(o: dict, calls: list, today: str,
                       items: list = None, payments: list = None) -> str:
     label = PRODUCT_LABELS.get(o["product"], "sản phẩm")
@@ -2288,7 +2318,7 @@ def order_detail_page(o: dict, calls: list, today: str,
   <div class="sub mb-2">Giai đoạn hiện tại: {stage_badge(stage_now)}</div>
   <div class="row">{stages_row}</div>
   <div class="row mt-2">{gap_btn}</div>
-</div>"""
+</div>{_make_checklist(o, items) if is_order_items else ""}"""
 
     svc = "".join(
         f'<div class="card"><div class="sub">{fmt_date(s["call_date"])} — {esc(s["issue"])}'

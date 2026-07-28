@@ -31,6 +31,13 @@ client = TestClient(app.app)
 TODAY = store.today_vn()
 HDR = {"X-Bot-Token": "test-bot-token"}
 
+
+def bot_text(r) -> str:
+    """The bot answers "viec" with one message per job (replies[]) — join them
+    back into one string so these assertions read the whole work list."""
+    body = r.json()
+    return "\n".join(body.get("replies") or ([body["reply"]] if body.get("reply") else []))
+
 # ---- 1. wrong/missing token -> 403 ---------------------------------------------
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ", "text": "viec"})
 assert r.status_code == 403, f"missing token should 403, got {r.status_code}"
@@ -44,7 +51,7 @@ cid = store.create_customer("Cô Lan — Trần Phú", "0905111222", "KH")
 oid = store.create_order(cid, "cua_cuon", "Cửa cuốn khe thoáng", 15_000_000, TODAY)
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ Tùng", "text": "viec"}, headers=HDR)
 assert r.status_code == 200, r.text
-reply = r.json()["reply"]
+reply = bot_text(r)
 assert "Cô Lan" in reply and "【1】" in reply, f"digest missing order: {reply}"
 assert store.get_digest_order(TODAY, 1) == oid, "bot_digest not written for item 1"
 print("2. viec command OK")
@@ -58,8 +65,8 @@ store.set_order_urgent(oid_d, True)
 store.add_order_item(oid_d, product="cua_cuon", cong_nghe="Cửa cuốn công nghệ Đức",
                      mau="KV 468 R", ngang_mm=3200, cao_mm=4500, mau_sac="kem",
                      ghi_chu="khung nhôm dày", thanh_tien=20_000_000)
-reply = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "viec"},
-                    headers=HDR).json()["reply"]
+reply = bot_text(client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "viec"},
+                             headers=HDR))
 for needle in ("Anh Kích Thước", "3200 × 4500mm", "Màu: kem", "khung nhôm dày",
                "Hẻm nhỏ, gọi trước", "KV 468 R", "⚡ GẤP"):
     assert needle in reply, f"digest missing {needle!r}:\n{reply}"
@@ -73,7 +80,7 @@ print("2b. viec carries kích thước / màu sắc / ghi chú OK")
 oid2 = store.create_order(cid, "cua_keo", "Cửa kéo 6zem", 8_000_000)  # no install_date
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ Tùng", "text": "viec"}, headers=HDR)
 assert r.status_code == 200, r.text
-assert "Cửa kéo 6zem" in r.json()["reply"], f"undated job missing from viec: {r.json()['reply']}"
+assert "Cửa kéo 6zem" in bot_text(r), f"undated job missing from viec: {bot_text(r)}"
 n2 = next(n for n in range(1, 10) if store.get_digest_order(TODAY, n) == oid2)
 r = client.post("/bot/inbound", json={"uid": "1", "name": "Thợ Tùng", "text": f"xong {n2}"}, headers=HDR)
 assert r.status_code == 200, r.text
@@ -108,8 +115,7 @@ assert r.status_code == 200, r.text
 digest_text = r.json()["text"]
 assert "₫" not in digest_text, "digest must not contain VND"
 r_inbound = client.post("/bot/inbound", json={"uid": "1", "name": "", "text": "viec"}, headers=HDR)
-inbound_text = r_inbound.json()["reply"]
-assert "₫" not in inbound_text, "viec reply must not contain VND"
+assert "₫" not in bot_text(r_inbound), "viec reply must not contain VND"
 print("6. /bot/digest + no VND leakage OK")
 
 # ---- 7. "cua"/"cửa" is retired — it must read as chatter, not a command -------

@@ -1210,6 +1210,21 @@ def order_item_edit(request: Request, order_id: int, item_id: int,
     return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
 
 
+@app.post("/don-hang/{order_id}/hang-muc/{item_id}/da-lam")
+def order_item_made(request: Request, order_id: int, item_id: int, made: str = Form("1")):
+    """Tick/untick one hạng mục as produced — same state the group's
+    "xong <số>.<hạng mục>" writes, so the two can't disagree. Ticking the last
+    one closes the sản xuất step; un-ticking leaves the stage alone (the stepper
+    on the same page is how you walk a đơn backwards)."""
+    if r := _guard(request):
+        return r
+    store.set_item_made(item_id, made == "1")
+    o = store.get_order(order_id)
+    if made == "1" and o and o["stage"] == "cho_san_xuat" and not store.items_to_make(order_id):
+        store.set_order_stage(order_id, "dang_san_xuat")
+    return RedirectResponse(f"/don-hang/{order_id}", status_code=303)
+
+
 @app.post("/don-hang/{order_id}/hang-muc/{item_id}/xoa")
 def order_item_delete(request: Request, order_id: int, item_id: int):
     if r := _guard(request):
@@ -1563,7 +1578,10 @@ def customer_send_zalo(request: Request, customer_id: int, text: str = Form(...)
 # The bot lives in its own container and talks to the CRM over a tiny internal
 # HTTP API, authenticated with a shared secret (X-Bot-Token). A dead/unconfigured
 # bot must never break a CRM request, so every outbound call is best-effort.
-_XONG_RE = re.compile(r"(?i)^\s*xong\s+(\d+)\s*$")
+# "xong 3" = cả đơn (unchanged), "xong 3.2" = hạng mục 2 of job 3. The separator
+# is loose on purpose — thợ type on phone keyboards, and "3 2" / "3-2" mean the
+# same thing to them as "3.2".
+_XONG_RE = re.compile(r"(?i)^\s*xong\s+(\d+)(?:\s*[.,\-/ ]\s*(\d+))?\s*$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -1575,6 +1593,11 @@ def _bot_send(text: str) -> None:
                       headers={"X-Bot-Token": BOT_TOKEN}, timeout=3)
     except Exception:
         pass
+
+
+def _bot_send_many(texts: list) -> None:
+    for t in texts:
+        _bot_send(t)
 
 
 def _bot_send_dm(phone: str, text: str) -> tuple[bool, str]:
@@ -1637,54 +1660,67 @@ def _digest_when(o: dict, today: str) -> str:
     return "  ".join(bits)
 
 
-def _digest_items(o: dict) -> list:
-    """Hạng mục lines — what to actually make. Doors carry kích thước + màu sắc
-    on their own lines; phụ kiện/generic lines still get a line each, so a
+def _digest_items(o: dict, item_no: int) -> list:
+    """Hạng mục lines — what's left to make, one addressable number each
+    ("3.2"), so a đơn with eight cửa can be reported one cửa at a time instead
+    of all-or-nothing. Already-made hạng mục drop off the list (the counter on
+    the job header carries the progress). Doors carry kích thước + màu sắc on
+    their own lines; phụ kiện/generic lines still get a line each, so a
     phụ-kiện-only đơn hàng never renders as a job with nothing in it. Orders
     with no snapshot rows at all fall back to the order's own description.
     Never prints a price — the group stays VND-free."""
     lines = []
-    for i in store.order_items_for(o["id"]):
+    for sub_no, i in enumerate(store.items_to_make(o["id"]), 1):
         sl = i.get("so_luong") or 1
         qty = f" ×{sl}" if sl > 1 else ""
+        no = f"{item_no}.{sub_no}"
         if i.get("ngang_mm") and i.get("cao_mm"):
-            lines.append(f"🚪 {views._door_desc(i)}{qty}")
-            lines.append(f"     ↔ {i['ngang_mm']} × {i['cao_mm']}mm")
+            lines.append(f"{no} 🚪 {views._door_desc(i)}{qty}")
+            lines.append(f"       ↔ {i['ngang_mm']} × {i['cao_mm']}mm")
             if i.get("mau_sac"):
-                lines.append(f"     🎨 Màu: {i['mau_sac']}")
+                lines.append(f"       🎨 Màu: {i['mau_sac']}")
         else:
-            lines.append(f"🔧 {views._door_desc(i)}{qty}")
+            lines.append(f"{no} 🔧 {views._door_desc(i)}{qty}")
         if i.get("ghi_chu"):
-            lines.append(f"     ✏️ {i['ghi_chu']}")
+            lines.append(f"       ✏️ {i['ghi_chu']}")
     return lines or [f"🚪 {_job_desc(o)}"]
 
 
-def _digest_text(today: str) -> str:
-    """Numbered chờ-sản-xuất list for the Zalo group. One visually separated
-    block per job carrying everything the xưởng needs to cut metal — kích
-    thước, màu sắc, ghi chú — so nobody has to open the CRM to start work.
-    Every call re-saves the numbering (store.save_digest) so "xong <N>" always
-    resolves against the freshest message sent to the group."""
+def _digest_block(o: dict, item_no: int, today: str) -> str:
+    """One job, everything the xưởng needs to cut metal — kích thước, màu sắc,
+    ghi chú — so nobody has to open the CRM to start work."""
+    done, total = store.item_make_counts(o["id"])
+    head = f"【{item_no}】 {o['customer_name']}"
+    if done and total:
+        head += f" · đã xong {done}/{total}"
+    lines = [head, _digest_when(o, today)]
+    lines.extend(_digest_items(o, item_no))
+    if o.get("address"):
+        lines.append(f"📍 {o['address']}")
+    if o.get("phone"):
+        lines.append(f"📞 {o['phone']}")
+    if o.get("note"):
+        lines.append(f"📝 {o['note']}")
+    return "\n".join(lines)
+
+
+def _digest_messages(today: str) -> list:
+    """Numbered chờ-sản-xuất list for the Zalo group — one message per job, so
+    each one can be pinned, forwarded and replied to on its own instead of
+    scrolling a single wall of text. Every call re-saves the numbering
+    (store.save_digest) so "xong <N>" and "xong <N>.<M>" always resolve against
+    the freshest messages sent to the group."""
     rows = store.orders_for_digest(today)
     store.save_digest(today, [o["id"] for o in rows])
     if not rows:
-        return ""
-    lines = [f"🔨 CHỜ SẢN XUẤT · {views.fmt_date(today)}",
-             f"{len(rows)} đơn cần làm"]
-    for idx, o in enumerate(rows, 1):
-        lines.append(_DIGEST_RULE)
-        lines.append(f"【{idx}】 {o['customer_name']}")
-        lines.append(_digest_when(o, today))
-        lines.extend(_digest_items(o))
-        if o.get("address"):
-            lines.append(f"📍 {o['address']}")
-        if o.get("phone"):
-            lines.append(f"📞 {o['phone']}")
-        if o.get("note"):
-            lines.append(f"📝 {o['note']}")
-    lines.append(_DIGEST_RULE)
-    lines.append("👉 Sản xuất xong nhắn: xong <số>")
-    return "\n".join(lines)
+        return []
+    blocks = [_digest_block(o, idx, today) for idx, o in enumerate(rows, 1)]
+    blocks[0] = (f"🔨 CHỜ SẢN XUẤT · {views.fmt_date(today)}\n"
+                 f"{len(rows)} đơn cần làm\n{_DIGEST_RULE}\n" + blocks[0])
+    blocks[-1] += (f"\n{_DIGEST_RULE}\n"
+                   "👉 Xong cả đơn nhắn: xong 1\n"
+                   "👉 Xong 1 hạng mục nhắn: xong 1.2")
+    return blocks
 
 
 def _care_lists(today: str) -> tuple[list, list]:
@@ -1768,21 +1804,42 @@ async def bot_inbound(request: Request):
 
     m = _XONG_RE.match(text)
     if m:
-        order_id = store.get_digest_order(today, int(m.group(1)))
+        item_no = int(m.group(1))
+        sub_no = int(m.group(2)) if m.group(2) else None
+        order_id = store.get_digest_order(today, item_no)
         o = store.get_order(order_id) if order_id else None
         if not o:
-            return {"reply": f"Không thấy số {m.group(1)} trong bảng hôm nay. Gõ: viec để xem bảng mới."}
+            return {"reply": f"Không thấy số {item_no} trong bảng hôm nay. Gõ: viec để xem bảng mới."}
         # "xong <N>" closes the sản xuất step only — đã lắp đặt/đã giao stays a
         # web-CRM action, so a stale digest number can never skip a stage.
         if o["stage"] != "cho_san_xuat":
             label = views.STAGE_LABELS.get(o["stage"], o["stage"])
             return {"reply": f"{o['customer_name']} — đã xong rồi ({label})."}
-        store.set_order_stage(order_id, "dang_san_xuat")
         who = f" ({name} báo)" if name else ""
-        return {"reply": f"✅ {o['customer_name']} — {_job_desc(o)}: SẢN XUẤT XONG{who}"}
+        if sub_no is None:
+            # Bare number = cả đơn, exactly as before. Nothing is left on the
+            # tick list, so the đơn hàng page agrees with the group.
+            store.set_all_items_made(order_id)
+            store.set_order_stage(order_id, "dang_san_xuat")
+            return {"reply": f"✅ {o['customer_name']} — {_job_desc(o)}: SẢN XUẤT XONG{who}"}
+        item = store.get_digest_item(today, item_no, sub_no)
+        if not item:
+            return {"reply": f"Không thấy hạng mục {item_no}.{sub_no} trong bảng hôm nay. "
+                             "Gõ: viec để xem bảng mới."}
+        if item.get("made_at"):
+            return {"reply": f"{o['customer_name']} — {views._door_desc(item)}: đã xong rồi."}
+        store.set_item_made(item["id"])
+        done = f"✅ {o['customer_name']} — {views._door_desc(item)}: XONG{who}"
+        left = len(store.items_to_make(order_id))
+        if left:
+            return {"reply": f"{done}\nCòn {left} hạng mục — gõ: viec để xem bảng mới."}
+        # Last hạng mục of the đơn: the job itself is now produced.
+        store.set_order_stage(order_id, "dang_san_xuat")
+        return {"reply": f"{done}\n🎉 Xong cả đơn {o['customer_name']} — SẢN XUẤT XONG."}
 
     if text.lower() in ("viec", "việc"):
-        return {"reply": _digest_text(today) or "Không có cửa nào chờ sản xuất 🎉"}
+        msgs = _digest_messages(today)
+        return {"replies": msgs} if msgs else {"reply": "Không có cửa nào chờ sản xuất 🎉"}
 
     if text.lower() in ("nhac", "nhắc"):
         replies = _care_replies(today)
@@ -1791,7 +1848,8 @@ async def bot_inbound(request: Request):
         return {"replies": replies}
 
     if text.lower().startswith("xong"):
-        return {"reply": "Gõ: xong <số> (số trong bảng chờ sản xuất)"}
+        return {"reply": "Gõ: xong <số> cho cả đơn, hoặc xong <số>.<hạng mục> cho 1 cửa "
+                         "(VD: xong 3.2). Số lấy trong bảng chờ sản xuất."}
 
     return {}
 
@@ -1801,13 +1859,18 @@ def bot_digest_pull(request: Request):
     """Pulled once a day by the bot sidecar's morning schedule (DIGEST_HOUR/
     DIGEST_MINUTE) — chờ-sản-xuất work list + chăm sóc khách summary (quote
     nudges / review asks due). The work list carries kích thước/màu/ghi chú per
-    hạng mục, so the xưởng needs nothing else in the morning message."""
+    hạng mục, so the xưởng needs nothing else in the morning message.
+
+    `texts` is one message per job (the sidecar sends them in order); `text` is
+    the same content joined, kept so an older bot container still posts a
+    digest if it's restarted before the CRM."""
     _check_bot_token(request)
     today = store.today_vn()
     chase, reviews = _care_lists(today)
-    parts = [t for t in (_digest_text(today),
-                         _care_summary_text(chase, reviews, hint=True)) if t]
-    return {"text": "\n\n".join(parts)}
+    parts = _digest_messages(today)
+    if care := _care_summary_text(chase, reviews, hint=True):
+        parts.append(care)
+    return {"texts": parts, "text": "\n\n".join(parts)}
 
 
 @app.get("/api/thu")
@@ -1841,5 +1904,5 @@ def zalo_bot_qr(request: Request):
 def zalo_bot_send_digest(request: Request):
     if r := _guard(request):
         return r
-    _bot_send(_digest_text(store.today_vn()))
+    _bot_send_many(_digest_messages(store.today_vn()))
     return RedirectResponse("/zalo", status_code=303)

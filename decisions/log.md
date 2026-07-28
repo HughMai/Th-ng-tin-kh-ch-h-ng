@@ -1692,3 +1692,23 @@ Installed a working stopgap instead — `/opt/backup-local.sh` (`product/htp-thu
 **Deferred:** the step-2 live price preview still omits the small-door surcharge (+20k/m² under 8m²) — it showed 4.488.000đ where the saved báo giá is 4.620.000đ. Pre-existing, server figure is the correct one, left alone rather than swept into this change. The type-ahead is on the wizard only; "Thêm khách" dedupes on submit but has no picker.
 
 **Owner:** agent (build, tests, browser check, deploy, verify); Hughie (asked for both, called the deploy)
+
+## 2026-07-28 — A đơn hàng with many cửa is reported one hạng mục at a time
+
+**Decision:** The Zalo work list stopped being all-or-nothing. Every hạng mục now carries its own number inside the job — `3.1`, `3.2`, `3.3` — and the xưởng reports what they actually finished: `xong 3.2` closes one cửa, `xong 3` still closes the whole đơn exactly as before. The đơn only moves to đang sản xuất when the last hạng mục is ticked. The morning digest also went from one wall of text to **one message per job**, so each can be pinned, forwarded and replied to on its own.
+
+**Why sub-numbers and not a flat number per cửa.** Giving every hạng mục its own global number would have made an eight-cửa đơn eight numbers in a list of thirty, and — worse — forced four separate messages for a small job the xưởng made in one go. Sub-numbers cost nothing in the common case: bare `xong 3` keeps meaning what it has always meant, so nobody has to relearn anything, and the extra precision only appears on the đơn that need it. The separator is deliberately loose (`3.2`, `3 2`, `3-2` all work) — thợ type on phone keyboards.
+
+**Numbers only shift when a new list is sent.** Marking 3.2 done does not renumber 3.3 in the message already sitting in the group; the next `viec` (or tomorrow's digest) re-numbers what's left and the header carries `đã xong 1/3`. Re-sending a number that's already been reported answers "đã xong rồi" instead of quietly closing a different cửa — a stale number can never close the wrong thing.
+
+**Undo lives on the web, not in chat.** `/don-hang/<id>` grew a tick list of hạng mục — the same state `xong 3.2` writes, so the two can't disagree — and tapping a ticked row un-ticks it. That was the deciding reason not to add a `chua` chat command: there is now a recovery path for a mis-typed number, and the group grammar stays at the two commands `ZALO-BOT-PLAN.md` locked. Un-ticking never drags a stage backwards on its own; the stepper on the same page does that.
+
+**The unit is the hạng mục row, not the piece.** A line reading ×3 is one tick. Per-piece marking would mean renumbering mid-day for no gain — the xưởng doesn't work a `×3` line one door at a time. Revisit if that turns out to be wrong.
+
+**Storage:** additive only. `order_items.made_at` (nullable), and a sibling `bot_digest_items` table for the sub-numbering rather than widening `bot_digest` — SQLite can't alter a primary key in place, and bare `xong N` had to keep resolving exactly as before. `save_digest()` numbers the same list the message prints (`store.items_to_make`), so `3.2` can never point at a different cửa than line 3.2.
+
+**Verification:** new `tests_smoke_hang_muc_xong.py` (10 cases: sub-numbering, partial xong not moving the đơn, renumbering after a partial, last hạng mục closing the đơn, bare `xong N` clearing the tick list, loose separators, bad sub-number, one-message-per-job, the web tick list + undo, and a single-hạng-mục đơn unchanged). Existing `tests_smoke_phase5.py` updated for the `replies[]` shape. Full 24-file suite green. No VND anywhere in the group text — asserted, not assumed.
+
+**Deploy:** backup first (`/opt/backup-local.sh`), then `scp app.py store.py views.py` + `zalo-bot/bot.js`, `docker compose up -d --build`. Verified on live: `made_at` column and `bot_digest_items` table present, bot logged in and listener connected, and the real work list rendering 5 jobs as 5 messages with sub-numbers on every one and no price leak. The migration is additive and touched no existing row (0 hạng mục marked xong at deploy time).
+
+**Owner:** agent (design, build, tests, deploy, verify); Hughie (asked for it, called the deploy)

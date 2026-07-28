@@ -304,6 +304,21 @@ def configure(db_path: str) -> None:
             )
             """
         )
+        # Sub-numbering inside a job ("3.2" = hạng mục 2 of job 3), so a big đơn
+        # can be ticked off one cửa at a time. A sibling table rather than extra
+        # columns on bot_digest: SQLite can't widen a primary key in place, and
+        # bare "xong 3" must keep resolving through bot_digest exactly as before.
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_digest_items (
+                digest_date   TEXT NOT NULL,
+                item_no       INTEGER NOT NULL,
+                sub_no        INTEGER NOT NULL,
+                order_item_id INTEGER NOT NULL REFERENCES order_items(id),
+                PRIMARY KEY (digest_date, item_no, sub_no)
+            )
+            """
+        )
         # Backfill khách-chính stage for rows that predate the split: anyone with
         # an order or a won quote is a converted customer. Idempotent + safe to
         # run every startup — it only promotes lead -> customer, never demotes.
@@ -474,10 +489,14 @@ def _migrate_quote_items_product_check(db: sqlite3.Connection) -> None:
 
 def _migrate_order_items_columns(db: sqlite3.Connection) -> None:
     """Additive: ghi_chu (free-text note per door), snapshotted from the quote
-    item on chốt — same field as quote_items.ghi_chu."""
+    item on chốt — same field as quote_items.ghi_chu. made_at marks a single
+    hạng mục as produced ("xong 3.2" in the group, or the tick list on the đơn
+    hàng page) — the order's stage only moves when the last one is ticked."""
     existing = {row["name"] for row in db.execute("PRAGMA table_info(order_items)")}
     if "ghi_chu" not in existing:
         db.execute("ALTER TABLE order_items ADD COLUMN ghi_chu TEXT")
+    if "made_at" not in existing:
+        db.execute("ALTER TABLE order_items ADD COLUMN made_at TEXT")
 
 
 def _migrate_debt_entries_columns(db: sqlite3.Connection) -> None:
@@ -1203,6 +1222,7 @@ def delete_order_item(item_id: int) -> None:
         if not r:
             return
         order_id = r["order_id"]
+        db.execute("DELETE FROM bot_digest_items WHERE order_item_id = ?", (item_id,))
         db.execute("DELETE FROM order_items WHERE id = ?", (item_id,))
     recompute_order_value(order_id)
 
@@ -1390,6 +1410,8 @@ def delete_order(order_id: int) -> bool:
         db.execute("UPDATE touches SET order_id = NULL WHERE order_id = ?", (order_id,))
         db.execute("UPDATE debt_entries SET order_id = NULL WHERE order_id = ?", (order_id,))
         db.execute("DELETE FROM bot_digest WHERE order_id = ?", (order_id,))
+        db.execute("DELETE FROM bot_digest_items WHERE order_item_id IN "
+                   "(SELECT id FROM order_items WHERE order_id = ?)", (order_id,))
         db.execute("DELETE FROM service_calls WHERE order_id = ?", (order_id,))
         db.execute("DELETE FROM order_payments WHERE order_id = ?", (order_id,))
         db.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
@@ -1519,14 +1541,41 @@ def orders_install_due(today: str = "") -> list:
     return [dict(r) for r in rows]
 
 
+def items_to_make(order_id: int) -> list:
+    """Hạng mục of an order still to be produced, in the order they're printed.
+    Single source of truth for the group's sub-numbering: the digest renders
+    this list and save_digest() numbers the same list, so "3.2" can never point
+    at a different cửa than the one written on line 3.2 of the message."""
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT * FROM order_items WHERE order_id = ? AND made_at IS NULL "
+            "ORDER BY sort_order, id",
+            (order_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def save_digest(digest_date: str, order_ids: list) -> None:
     """Overwrite today's numbered list — every send (morning, manual, "viec")
-    replaces it so "xong <N>" always resolves against the latest message."""
+    replaces it so "xong <N>" always resolves against the latest message. Each
+    job's un-made hạng mục are numbered alongside it (1-based, matching the
+    printed 【N】.M lines) for "xong <N>.<M>"."""
     with _connect() as db:
         db.execute("DELETE FROM bot_digest WHERE digest_date = ?", (digest_date,))
+        db.execute("DELETE FROM bot_digest_items WHERE digest_date = ?", (digest_date,))
         db.executemany(
             "INSERT INTO bot_digest (digest_date, item_no, order_id) VALUES (?, ?, ?)",
             [(digest_date, i, order_id) for i, order_id in enumerate(order_ids, 1)],
+        )
+    subs = []
+    for item_no, order_id in enumerate(order_ids, 1):
+        for sub_no, item in enumerate(items_to_make(order_id), 1):
+            subs.append((digest_date, item_no, sub_no, item["id"]))
+    with _connect() as db:
+        db.executemany(
+            "INSERT INTO bot_digest_items (digest_date, item_no, sub_no, order_item_id) "
+            "VALUES (?, ?, ?, ?)",
+            subs,
         )
 
 
@@ -1537,6 +1586,49 @@ def get_digest_order(digest_date: str, item_no: int) -> Optional[int]:
             (digest_date, item_no),
         ).fetchone()
     return row["order_id"] if row else None
+
+
+def get_digest_item(digest_date: str, item_no: int, sub_no: int) -> Optional[dict]:
+    with _connect() as db:
+        row = db.execute(
+            "SELECT i.* FROM bot_digest_items d JOIN order_items i ON i.id = d.order_item_id "
+            "WHERE d.digest_date = ? AND d.item_no = ? AND d.sub_no = ?",
+            (digest_date, item_no, sub_no),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_item_made(item_id: int, made: bool = True) -> bool:
+    """Tick/untick one hạng mục. Stage transitions are the caller's business —
+    marking a cửa produced is not the same event as the đơn moving to đang sản
+    xuất, and un-ticking must never drag a stage backwards on its own."""
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE order_items SET made_at = ? WHERE id = ?",
+            (datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S") if made else None, item_id),
+        )
+        return cur.rowcount > 0
+
+
+def set_all_items_made(order_id: int) -> None:
+    """Bare "xong <N>" — the whole đơn was made in one go, so nothing is left
+    outstanding on the tick list."""
+    with _connect() as db:
+        db.execute(
+            "UPDATE order_items SET made_at = ? WHERE order_id = ? AND made_at IS NULL",
+            (datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S"), order_id),
+        )
+
+
+def item_make_counts(order_id: int) -> tuple:
+    """(đã xong, tổng) hạng mục — drives the "đã xong 1/3" line in the group and
+    the tick list on the đơn hàng page."""
+    with _connect() as db:
+        r = db.execute(
+            "SELECT COUNT(*) AS total, COUNT(made_at) AS done FROM order_items WHERE order_id = ?",
+            (order_id,),
+        ).fetchone()
+    return r["done"], r["total"]
 
 
 _ORDER_FLAGS = {"checkin_done_at", "expiry_notified_at", "review_requested_at"}

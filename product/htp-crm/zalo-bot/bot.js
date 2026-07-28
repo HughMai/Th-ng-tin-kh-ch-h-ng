@@ -169,9 +169,14 @@ async function digestTick() {
     if (lastDigestDate === todayStr) return;
 
     try {
-        const { text } = await crmGet("/bot/digest");
-        if (text) {
-            await api.sendMessage({ msg: text }, GROUP_THREAD_ID, ThreadType.Group);
+        // One message per job (texts[]) so each one can be pinned and replied
+        // to on its own; `text` is the older single-message shape, kept as a
+        // fallback for a CRM deployed before this bot.
+        const data = await crmGet("/bot/digest");
+        const msgs = data.texts || (data.text ? [data.text] : []);
+        for (let i = 0; i < msgs.length; i++) {
+            if (i > 0) await new Promise((resolve) => setTimeout(resolve, 400));
+            await api.sendMessage({ msg: msgs[i] }, GROUP_THREAD_ID, ThreadType.Group);
         }
         lastDigestDate = todayStr;
         saveLastDigestDate(todayStr);
