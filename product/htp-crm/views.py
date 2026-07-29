@@ -2060,6 +2060,15 @@ _ORDER_FILTERS = (("", "Tất cả"), ("cua_cuon", "Cửa cuốn"),
                   ("khac", "Khác"))
 
 
+def _order_products_label(o: dict) -> str:
+    """'Cửa cuốn + cửa nhôm kính' for a mixed đơn. The single orders.product
+    column just says 'sản phẩm' there, which tells the parents nothing about
+    what's actually being made."""
+    seen = o.get("products") or [o["product"]]
+    labels = [PRODUCT_LABELS.get(p, "") for p in seen]
+    return " + ".join(x for x in labels if x).capitalize()
+
+
 def orders_page(active: list, completed: list, today: str, loai: str = "",
                 ngay: str = "") -> str:
     """Sổ đơn hàng — mirrors the paper order book: category chips (?loai=),
@@ -2119,19 +2128,23 @@ def orders_page(active: list, completed: list, today: str, loai: str = "",
   <a href="/don-hang/{o["id"]}" style="display:block">
     <div class="name">{esc(o["customer_name"])}</div>
     <div class="sub">{badges}</div>
-    <div class="sub">{esc(PRODUCT_LABELS.get(o["product"], "").capitalize())} — {fmt_vnd(o["value_vnd"])} — {inst}</div>
+    <div class="sub">{esc(_order_products_label(o))} — {fmt_vnd(o["value_vnd"])} — {inst}</div>
   </a>
   {actions}
 </div>"""
 
     # Chip counts come from the UNFILTERED active list so the numbers always
     # agree with what each tab shows (same principle as the today_page counts).
-    counts = Counter(o["product"] for o in active)
+    # Filtering is per hạng mục (store._with_products), not on the single
+    # orders.product column — a cửa kéo + nhôm kính đơn belongs under BOTH chips,
+    # and used to appear under neither. A mixed đơn is therefore counted once in
+    # each of its chips, so the chip numbers can sum past Tất cả.
+    counts = Counter(p for o in active for p in o["products"])
     n_all = len(active)
-    has_khac = counts.get("khac", 0) > 0 or any(o["product"] == "khac" for o in completed)
+    has_khac = counts.get("khac", 0) > 0 or any("khac" in o["products"] for o in completed)
     if loai:
-        active = [o for o in active if o["product"] == loai]
-        completed = [o for o in completed if o["product"] == loai]
+        active = [o for o in active if loai in o["products"]]
+        completed = [o for o in completed if loai in o["products"]]
     urgent = [o for o in active if o.get("urgent")]
     normal = [o for o in active if not o.get("urgent")]
     # Stable reverse sort: newest chốt day first; within a day the SQL

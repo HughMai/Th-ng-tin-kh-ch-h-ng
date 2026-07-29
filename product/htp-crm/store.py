@@ -1419,6 +1419,37 @@ def delete_order(order_id: int) -> bool:
     return cur.rowcount > 0
 
 
+# Display/filter order for a đơn's loại cửa mix — matches the Sổ đơn hàng chips.
+_PRODUCT_ORDER = ("cua_cuon", "cua_keo", "nhom_kinh", "xingfa", "khac")
+
+
+def _with_products(orders: list) -> list:
+    """Attach ``products`` — every loại cửa the đơn actually contains — so the Sổ
+    đơn hàng chips can file a mixed job under each of its types. orders.product is
+    a single column that becomes 'khac' for anything mixed, which hid a cửa kéo +
+    nhôm kính đơn from both chips at once.
+
+    Only spec'd door lines count: phụ kiện lines carry product='khac' with a
+    description, so counting those would drop every đơn in the book into Khác. No
+    door lines at all (legacy lump đơn) → fall back to orders.product, so nothing
+    that files correctly today moves."""
+    if not orders:
+        return orders
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT order_id, product FROM order_items WHERE description IS NULL "
+            "GROUP BY order_id, product"
+        ).fetchall()
+    by_order = {}
+    for r in rows:
+        by_order.setdefault(r["order_id"], []).append(r["product"])
+    for o in orders:
+        found = by_order.get(o["id"]) or [o["product"]]
+        o["products"] = sorted(found, key=lambda p: (_PRODUCT_ORDER.index(p)
+                                                     if p in _PRODUCT_ORDER else 99, p))
+    return orders
+
+
 def orders_active() -> list:
     """Tiến độ (production) — orders not yet hoàn thành. Urgent (gấp) pinned to
     the top, then oldest chốt first (FIFO). The /don-hang view regroups these by
@@ -1429,7 +1460,7 @@ def orders_active() -> list:
             _ORDER_SELECT + " WHERE o.stage != 'dang_lap' "
             "ORDER BY o.urgent DESC, o.created_at ASC, o.id ASC"
         ).fetchall()
-    return [dict(r) for r in rows]
+    return _with_products([dict(r) for r in rows])
 
 
 def orders_completed() -> list:
@@ -1439,7 +1470,7 @@ def orders_completed() -> list:
         rows = db.execute(
             _ORDER_SELECT + " WHERE o.stage = 'dang_lap' ORDER BY o.updated_at DESC, o.id DESC"
         ).fetchall()
-    return [dict(r) for r in rows]
+    return _with_products([dict(r) for r in rows])
 
 
 def orders_for_customer(customer_id: int) -> list:

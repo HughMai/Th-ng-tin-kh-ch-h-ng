@@ -1712,3 +1712,21 @@ Installed a working stopgap instead — `/opt/backup-local.sh` (`product/htp-thu
 **Deploy:** backup first (`/opt/backup-local.sh`), then `scp app.py store.py views.py` + `zalo-bot/bot.js`, `docker compose up -d --build`. Verified on live: `made_at` column and `bot_digest_items` table present, bot logged in and listener connected, and the real work list rendering 5 jobs as 5 messages with sub-numbers on every one and no price leak. The migration is additive and touched no existing row (0 hạng mục marked xong at deploy time).
 
 **Owner:** agent (design, build, tests, deploy, verify); Hughie (asked for it, called the deploy)
+
+## 2026-07-29 — A đơn hàng files under every loại cửa it contains, not one
+
+**Decision:** The Sổ đơn hàng chips filter on the **hạng mục**, not on the single `orders.product` column. An đơn with 1 cửa kéo and 2 cửa nhôm kính now appears under Cửa kéo *and* Nhôm kính, and its card names the real mix ("Cửa kéo + cửa nhôm kính") instead of the useless "Sản phẩm".
+
+**Why:** Hughie tapped Nhôm kính and the book came up empty even though anh Dậu's đơn (#29) has two of them. `recompute_quote_derived_fields` collapses any mixed báo giá to `product='khac'` (store.py:951-955) and chốt carries that onto the order — so a mixed đơn was filed under Khác and hidden from *both* of its real chips, with the counts reading (0) so it looked like the job didn't exist. The paper book is used as "show me every job with nhôm kính in it", so one job belonging to two chips is the correct model, not a compromise.
+
+**Only spec'd door lines count.** Phụ kiện lines all carry `product='khac'` with a `description` set, so a naive per-item filter would have dropped every đơn in the book into the Khác chip — a worse bug than the one being fixed. The rule is `description IS NULL`. An đơn with no door lines at all (legacy lump orders) falls back to `orders.product`, so nothing that files correctly today moves.
+
+**`orders.product` left alone.** It stays the single-value summary that báo cáo, the Zalo templates and the digest all read. The new `products` list is attached at read time in `store._with_products()` (one grouped query, not N+1) and consumed only by the đơn hàng view. No schema change, no migration, no backfill.
+
+**Known and intended:** chip counts now sum past Tất cả — anh Dậu is counted once in Cửa kéo and once in Nhôm kính. Counting a mixed đơn in only one chip would have reintroduced the bug.
+
+**Verification:** new `tests_smoke_don_hang_mixed.py` (mixed đơn under both chips and neither of the others, phụ kiện not leaking into Khác, legacy lump fallback, chip counts, card label). Full 25-file suite green. Verified on live over HTTPS after deploy: đơn #29 renders under `?loai=nhom_kinh` and `?loai=cua_keo`, absent from `cua_cuon` and `khac`, card reads "Cửa kéo + cửa nhôm kính — 20.928.666đ — Chưa lắp".
+
+**Deploy:** `scp store.py views.py`, `docker compose up -d --build`. Read-only change — no write to the customer book.
+
+**Owner:** agent (diagnosis, build, tests, deploy, verify); Hughie (found it, called the deploy)
