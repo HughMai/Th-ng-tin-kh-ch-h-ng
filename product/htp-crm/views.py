@@ -739,7 +739,7 @@ _WIZARD_COLORS = {
         {"key": "nhip", "tag": "Nhíp", "label": "Màu nhíp",
          "options": ["trắng", "ghi", "kem", "xám xingfa"]},
         {"key": "la", "tag": "Lá", "label": "Màu lá",
-         "options": ["xanh", "kem", "xám xingfa", "ghi"],
+         "options": ["xanh", "kem", "xám xingfa", "ghi", "xám thường"],
          "show_if": {"field": "cong_nghe", "equals": "Có lá"}},
     ]},
     "nhom_kinh": {"options": ["xám xingfa", "trắng", "giả gỗ"]},
@@ -1374,7 +1374,8 @@ def import_page(preview: list = None, raw: str = "") -> str:
     intro = """
 <div class="card"><div class="sub">Mỗi dòng một khách, theo mẫu:<br>
 <b>Tên, SĐT, KH hoặc ĐL, địa chỉ</b> (địa chỉ không bắt buộc)<br><br>
-VD:<br>Anh Hùng Trần Phú, 0901234567, KH, 12 Trần Phú<br>Đại lý Minh Phát, 0912345678, ĐL</div></div>"""
+VD:<br>Anh Hùng Trần Phú, 0901234567, KH, 12 Trần Phú<br>Đại lý Minh Phát, 0912345678, ĐL<br><br>
+Nhập <b>khách cũ từ sổ giấy</b> (kèm sản phẩm + ngày lắp): <a href="/khach-cu">Nhập khách cũ</a></div></div>"""
     if preview is None:
         return f"""{intro}
 <form method="post" action="/nhap">
@@ -1402,6 +1403,60 @@ VD:<br>Anh Hùng Trần Phú, 0901234567, KH, 12 Trần Phú<br>Đại lý Minh 
 </div>
 {confirm}
 <a class="btn done w-full mt-2" href="/nhap">Sửa lại danh sách</a>"""
+
+
+# ---------------------------------------------------------------- khách cũ (sổ cũ)
+# One finished job per save, typed straight from the paper books. Deliberately
+# has NO money field: the point of this list is the chăm sóc clock (ai đã mua
+# gì, lắp ngày nào, ở đâu) — giá cũ from 2015 is worthless and asking for it
+# doubles the typing on thousands of rows. See count_past_orders() in store.py.
+PAST_PRODUCTS = [
+    ("cua_cuon", "Cửa cuốn"),
+    ("cua_keo", "Cửa kéo"),
+    ("nhom_kinh", "Nhôm kính"),
+    ("khac", "Khác"),
+]
+
+
+def past_customer_page(today: str, ngay: str = "", saved: str = "",
+                       saved_id: int = 0, total: int = 0) -> str:
+    """Form for typing khách cũ out of the sổ. Saves one job, then comes back
+    blank with the date kept — a book is worked through in date order, so
+    re-picking it every row is the slowest part of the job."""
+    banner = ""
+    if saved:
+        seen = f'<a href="/khach/{saved_id}">Xem khách</a>' if saved_id else ""
+        banner = (f'<div class="card">✅ Đã lưu <b>{esc(saved)}</b> {seen}'
+                  f'<div class="sub">Tổng khách cũ đã nhập: <b>{total}</b></div></div>')
+    prod_opts = "".join(f'<option value="{v}">{label}</option>' for v, label in PAST_PRODUCTS)
+    return f"""{banner}
+<div class="card"><div class="sub">Nhập <b>khách cũ từ sổ</b> — mỗi lần lưu là một
+công trình đã làm xong. <b>Không nhập tiền</b>: chỗ này chỉ để biết ai đã mua gì,
+lắp ngày nào, ở đâu — để sau này gọi bảo trì, thay bình lưu điện, xin đánh giá.<br><br>
+Chỉ <b>Tên</b> là bắt buộc. Thiếu SĐT hay ngày thì cứ để trống, đừng đoán.</div></div>
+<form method="post" action="/khach-cu">
+  <label>Tên khách *</label>
+  <input name="name" required autofocus autocomplete="off" placeholder="VD: Anh Hùng — Trần Phú">
+  <label>Số điện thoại</label>
+  <input name="phone" inputmode="tel" autocomplete="off" placeholder="Để trống nếu sổ không ghi">
+  <label>Loại khách</label>
+  <div class="seg">
+    <label><input type="radio" name="type" value="KH" checked><span>Khách lẻ</span></label>
+    <label><input type="radio" name="type" value="DL"><span>Đại lý</span></label>
+  </div>
+  <label>Địa chỉ</label>
+  <input name="address" autocomplete="off" placeholder="VD: 12 Trần Phú, Ninh Kiều">
+  <label>Sản phẩm đã lắp</label>
+  <select name="product">{prod_opts}</select>
+  <label>Ngày lắp</label>
+  <input name="install_date" type="date" max="{esc(today)}" value="{esc(ngay)}">
+  <label>Mô tả công trình</label>
+  <input name="description" autocomplete="off" placeholder="VD: 2 bộ cửa cuốn khe thoáng 3m2">
+  <label>Ghi chú</label>
+  <textarea name="note" placeholder="VD: nhà anh Ba đầu hẻm, có bình lưu điện"></textarea>
+  <button class="btn big mt-4">Lưu &amp; nhập tiếp</button>
+</form>
+<a class="btn done w-full mt-2" href="/khach">Xong — về danh sách khách</a>"""
 
 
 # ---------------------------------------------------------------- quotes
