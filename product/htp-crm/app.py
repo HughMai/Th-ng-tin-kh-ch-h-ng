@@ -778,6 +778,16 @@ def quote_status(request: Request, quote_id: int,
     raise HTTPException(status_code=400, detail="Trạng thái không hợp lệ")
 
 
+@app.post("/bao-gia/{quote_id}/xoa")
+def quote_delete(request: Request, quote_id: int):
+    """Xóa báo giá — only from Mất, and only when no đơn hàng hangs off it."""
+    if r := _guard(request):
+        return r
+    if not store.delete_quote(quote_id):
+        raise HTTPException(status_code=400, detail="Chỉ xóa được báo giá đã Mất và chưa có đơn hàng")
+    return RedirectResponse("/bao-gia", status_code=303)
+
+
 # ---- báo giá nhiều hạng mục (calculator-backed multi-item quotes) -----------------
 # Phụ kiện vocabulary is the priced set shared with the intake wizard and the
 # price math — see pricing.PHUKIEN_CATALOG.

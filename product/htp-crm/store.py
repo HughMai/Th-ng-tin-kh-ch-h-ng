@@ -979,6 +979,23 @@ def mark_quote_contacted(quote_id: int) -> bool:
     return ok
 
 
+def delete_quote(quote_id: int) -> bool:
+    """Xóa a báo giá from the Mất column — purges its hạng mục. Only a lost quote
+    that no đơn hàng points at can go (a won-then-dragged-to-Mất quote still
+    backs a real order). Keeps the customer's lịch sử chăm sóc, only detaching
+    the dangling quote_id — same contract as delete_order."""
+    with _connect() as db:
+        q = db.execute("SELECT status FROM quotes WHERE id = ?", (quote_id,)).fetchone()
+        if not q or q["status"] != "lost":
+            return False
+        if db.execute("SELECT 1 FROM orders WHERE quote_id = ?", (quote_id,)).fetchone():
+            return False
+        db.execute("UPDATE touches SET quote_id = NULL WHERE quote_id = ?", (quote_id,))
+        db.execute("DELETE FROM quote_items WHERE quote_id = ?", (quote_id,))
+        cur = db.execute("DELETE FROM quotes WHERE id = ?", (quote_id,))
+    return cur.rowcount > 0
+
+
 def set_quote_status(quote_id: int, status: str, lost_reason: str = "") -> bool:
     with _connect() as db:
         old = db.execute("SELECT customer_id, status FROM quotes WHERE id = ?", (quote_id,)).fetchone()
@@ -1348,13 +1365,21 @@ _ORDER_STAGES = ("cho_san_xuat", "dang_san_xuat", "dang_lap")
 
 
 def set_order_stage(order_id: int, stage: str) -> bool:
+    """Reaching đã lắp đặt/đã giao stamps ngày lắp = today when it's blank (or a
+    plan still in the future — it can't have been installed tomorrow). Bảo hành,
+    xin đánh giá, bảo trì 6T and Khách lẻ còn nợ all key off install_date, so a
+    đơn marked đã giao without one silently dropped out of every follow-up."""
     if stage not in _ORDER_STAGES:
         raise ValueError(f"unknown stage: {stage}")
+    today = today_vn()
     with _connect() as db:
         old = db.execute("SELECT customer_id, stage FROM orders WHERE id = ?", (order_id,)).fetchone()
         cur = db.execute(
-            "UPDATE orders SET stage = ?, updated_at = datetime('now') WHERE id = ?",
-            (stage, order_id),
+            "UPDATE orders SET stage = ?, updated_at = datetime('now'), "
+            "install_date = CASE WHEN ? = 'dang_lap' AND (install_date IS NULL OR install_date > ?) "
+            "                    THEN ? ELSE install_date END "
+            "WHERE id = ?",
+            (stage, stage, today, today, order_id),
         )
     ok = cur.rowcount > 0
     if ok and old:

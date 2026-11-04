@@ -1490,6 +1490,11 @@ def _quote_pipeline_controls(q: dict, next_url: str = "/bao-gia") -> str:
     if q["status"] == "won" and q["order_id"]:
         return (f'<div class="row"><a class="btn copy" '
                 f'href="/don-hang/{q["order_id"]}">Xem tiến độ</a></div>')
+    if q["status"] == "lost" and not q.get("order_id"):
+        return f"""
+  <form method="post" action="/bao-gia/{q["id"]}/xoa" class="row"
+    onsubmit="return confirm('Xóa báo giá {bao_gia_so(q["id"], q.get("sent_date"))}? Không thể hoàn tác.')">
+    <button class="btn danger w-full">Xóa báo giá</button></form>"""
     return ""
 
 
@@ -2124,6 +2129,14 @@ def _order_products_label(o: dict) -> str:
     return " + ".join(x for x in labels if x).capitalize()
 
 
+# One-tap "next step" on each Sổ đơn hàng card: (stage posted, label, button class).
+# Đã giao stamps ngày lắp = today if blank (store.set_order_stage).
+_NEXT_STAGE = {
+    "cho_san_xuat": ("dang_san_xuat", "Sản xuất xong", "done"),
+    "dang_san_xuat": ("dang_lap", "Đã giao", "call"),
+}
+
+
 def orders_page(active: list, completed: list, today: str, loai: str = "",
                 ngay: str = "") -> str:
     """Sổ đơn hàng — mirrors the paper order book: category chips (?loai=),
@@ -2161,25 +2174,39 @@ def orders_page(active: list, completed: list, today: str, loai: str = "",
             badges += ' <span class="chip won">Đã thu đủ</span>'
         inst = f"lắp {fmt_date(o['install_date'])}" if o["install_date"] else "Chưa lắp"
         cls = " dim" if dim else ""
+        # Every action on this card re-renders just this card from the server's
+        # answer (data-ajax="swap") — tick a đơn đã giao, the next one is right
+        # below, no trip into the đơn and back out. JS off → normal POST + redirect.
+        swap = f'data-ajax="swap" data-swap="don-{o["id"]}"'
         actions = ""
+        step = _NEXT_STAGE.get(o.get("stage") or "cho_san_xuat") if not dim else None
+        if step:
+            stage, lbl, btn_cls = step
+            actions += f"""
+<div class="row mt-2">
+  <form method="post" action="/don-hang/{o["id"]}/giai-doan" class="flex grow" {swap}>
+    <input type="hidden" name="stage" value="{stage}">
+    <input type="hidden" name="next" value="{next_url}">
+    <button class="btn {btn_cls} w-full">{lbl}</button></form>
+</div>"""
         if bal > 0:
-            actions = f"""
+            actions += f"""
 <div class="row mt-2">
   <details class="grow"><summary class="btn done w-full">Điều chỉnh</summary>
-    <form method="post" action="/don-hang/{o["id"]}/thanh-toan" class="mt-2">
+    <form method="post" action="/don-hang/{o["id"]}/thanh-toan" class="mt-2" {swap}>
       <input type="hidden" name="next" value="{next_url}">
       <input name="amount_vnd" required inputmode="numeric" oninput="fmtMoney(this)" placeholder="Số tiền đã thu thêm">
       <button class="btn big mt-2">Ghi thanh toán</button>
     </form>
   </details>
-  <form method="post" action="/don-hang/{o["id"]}/thu-du" class="grow"
+  <form method="post" action="/don-hang/{o["id"]}/thu-du" class="grow" {swap}
     onsubmit="return confirm('Đánh dấu đã thu đủ đơn #{o["id"]}?')">
     <input type="hidden" name="next" value="{next_url}">
     <button class="btn call w-full">Đã thanh toán</button>
   </form>
 </div>"""
         return f"""
-<div class="card{cls}">
+<div class="card{cls}" id="don-{o["id"]}">
   <a href="/don-hang/{o["id"]}" style="display:block">
     <div class="name">{esc(o["customer_name"])}</div>
     <div class="sub">{badges}</div>
@@ -2270,6 +2297,11 @@ def _order_day_header(day: str, today: str) -> str:
     return dm
 
 
+# Tiến độ controls on the đơn page re-render the blocks they change in place —
+# ticking cửa 4 of 6 no longer reloads the page and drops you back at the top.
+_DETAIL_SWAP = 'data-ajax="swap" data-swap="don-head tien-do lap-dat"'
+
+
 def _make_checklist(o: dict, items: list) -> str:
     """Tick list of hạng mục produced — the web twin of "xong 3.2" in the Zalo
     group, and the only way to undo one that was reported by mistake. Hidden for
@@ -2288,7 +2320,8 @@ def _make_checklist(o: dict, items: list) -> str:
         qty = f' ×{i["so_luong"]}' if i.get("so_luong", 1) > 1 else ""
         made = bool(i.get("made_at"))
         rows.append(
-            f'<form method="post" action="/don-hang/{o["id"]}/hang-muc/{i["id"]}/da-lam" class="mt-1">'
+            f'<form method="post" action="/don-hang/{o["id"]}/hang-muc/{i["id"]}/da-lam" class="mt-1" '
+            f'{_DETAIL_SWAP}>'
             f'<input type="hidden" name="made" value="{"0" if made else "1"}">'
             f'<button class="btn {"call" if made else "done"} w-full" '
             f'style="justify-content:flex-start;text-align:left;font-size:13px;min-height:44px">'
@@ -2364,29 +2397,31 @@ def order_detail_page(o: dict, calls: list, today: str,
 
     # ── Tiến độ: stage stepper + Gấp toggle ───────────────────────────────
     stages_row = "".join(
-        f'<form method="post" action="/don-hang/{o["id"]}/giai-doan" class="flex grow">'
+        f'<form method="post" action="/don-hang/{o["id"]}/giai-doan" class="flex grow" {_DETAIL_SWAP}>'
         f'<input type="hidden" name="stage" value="{k}">'
         f'<button class="btn {"call" if k == stage_now else "done"} w-full" style="font-size:13px"'
         f'{" disabled" if k == stage_now else ""}>{esc(lbl)}</button></form>'
         for k, lbl in STAGE_LABELS.items()
     )
     if o.get("urgent"):
-        gap_btn = (f'<form method="post" action="/don-hang/{o["id"]}/gap" class="flex grow">'
+        gap_btn = (f'<form method="post" action="/don-hang/{o["id"]}/gap" class="flex grow" {_DETAIL_SWAP}>'
                    f'<input type="hidden" name="urgent" value="0">'
                    f'<button class="btn done w-full">Bỏ đánh dấu Gấp</button></form>')
     else:
-        gap_btn = (f'<form method="post" action="/don-hang/{o["id"]}/gap" class="flex grow">'
+        gap_btn = (f'<form method="post" action="/don-hang/{o["id"]}/gap" class="flex grow" {_DETAIL_SWAP}>'
                    f'<input type="hidden" name="urgent" value="1">'
                    f'<button class="btn danger w-full">Đánh dấu Gấp (làm trước)</button></form>')
     urgent_banner = ('<div class="card" style="background:var(--danger-bg);border-left:3px solid var(--danger-text)">'
                      '<b>ĐƠN GẤP</b> — ưu tiên làm trước</div>' if o.get("urgent") else "")
     tien_do = f"""
+<div id="tien-do">
 <h2>Tiến độ sản xuất</h2>
 <div class="card">
   <div class="sub mb-2">Giai đoạn hiện tại: {stage_badge(stage_now)}</div>
   <div class="row">{stages_row}</div>
   <div class="row mt-2">{gap_btn}</div>
-</div>{_make_checklist(o, items) if is_order_items else ""}"""
+</div>{_make_checklist(o, items) if is_order_items else ""}
+</div>"""
 
     svc = "".join(
         f'<div class="card"><div class="sub">{fmt_date(s["call_date"])} — {esc(s["issue"])}'
@@ -2461,6 +2496,7 @@ def order_detail_page(o: dict, calls: list, today: str,
 </form></details>"""
 
     return f"""
+<div id="don-head">
 {urgent_banner}
 <div class="card">
   <div class="name">{esc(o["customer_name"])} {type_chip(o["customer_type"])} {stage_badge(stage_now)}</div>
@@ -2472,6 +2508,8 @@ def order_detail_page(o: dict, calls: list, today: str,
   {contact_buttons(o["phone"], o["zalo_phone"])}
   <div class="row"><a class="btn done" href="/khach/{o["customer_id"]}">Xem khách</a>{debt_link}</div>
 </div>
+</div>
+{tien_do}
 <details class="card"><summary>Sửa ghi chú</summary>
 <form method="post" action="/don-hang/{o["id"]}/ghi-chu" class="mt-2">
   <textarea name="note" placeholder="VD: nhà trong hẻm, gọi trước khi tới, khách cần lắp buổi sáng">{esc(o.get("note") or "")}</textarea>
@@ -2492,9 +2530,10 @@ def order_detail_page(o: dict, calls: list, today: str,
 </details>
 {bo_cua_block}
 {payment_block}
-{tien_do}
+<div id="lap-dat">
 <h2>Lắp đặt & bảo hành</h2>
 <div class="row">{"".join(flags)}</div>
+</div>
 <h2>Sửa chữa / bảo hành ({len(calls)})</h2>
 {svc or '<div class="empty">Chưa có lần sửa nào.</div>'}
 <details class="card"><summary>+ Ghi sửa chữa</summary>

@@ -29,8 +29,11 @@ DOOR_CONFIG = {
                          "Cửa cuốn công nghệ Đài Loan", "Inox"]},
             {"key": "mau", "label": "Chọn loại", "type": "select-dynamic", "depends_on": "cong_nghe",
              "option_map": {
+                 # B7 / B5 / NO1 / AL75 khe thoáng: no bảng giá yet — the form
+                 # falls back to "nhập đơn giá tay" until prices are added below.
                  "Cửa cuốn công nghệ Đức": ["", "KV 380", "KV 422 R", "KV 432 R",
-                                            "KV 468 R", "CT 5222 R", "MT 5222 R"],
+                                            "KV 468 R", "CT 5222 R", "MT 5222 R",
+                                            "B7", "B5", "NO1", "AL75 khe thoáng"],
                  "Inox": ["", "6zem", "8zem"],
                  "Cửa cuốn công nghệ Đài Loan": ["", "6zem", "8zem", "1ly"],
                  "Cửa cuốn công nghệ Úc": ["", "Tole màu 5.2 zem", "Tole màu 5.2 zem blusc"],
@@ -67,8 +70,9 @@ DOOR_CONFIG = {
 
 # Ported verbatim from the reference calculator (customer_form's index.html,
 # refreshed 2026-07-17 against a corrected copy of the source tool). Every
-# mẫu listed in DOOR_CONFIG now has a matching price entry below for both
-# tiers — no more manual-price gaps for cua_cuon/cua_keo/nhom_kinh.
+# mẫu listed in DOOR_CONFIG has a price entry below for both tiers, except the
+# công nghệ Đức B7 / B5 / NO1 / AL75 khe thoáng (added 2026-11-04, prices
+# pending) — those price by hand until their rows land here.
 _PRICES_KH = {
     "Cửa Kéo|Có lá - 6zem": 640, "Cửa Kéo|Có lá - 8zem": 700, "Cửa Kéo|Có lá - 1ly": 760,
     "Cửa Kéo|Có lá - 1.2ly": 820, "Cửa Kéo|Có lá - 1.4ly": 900,
