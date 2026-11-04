@@ -767,12 +767,20 @@ def quote_status(request: Request, quote_id: int,
         if oid:
             _new_order_ping(oid)
         return RedirectResponse("/bao-gia", status_code=303)
+    if trang_thai in ("lost", "sent", "chasing"):
+        # A báo giá with a đơn hàng is chốt for good. Dragging it back to Đã gửi
+        # re-armed the chase nudges on a deal already in production (BG-0041
+        # got 5 false nudges, then was marked Mất with its đơn still live).
+        # Re-opening means deleting the đơn first (delete_order drops it to Mất).
+        q = store.get_quote(quote_id)
+        if q and q.get("order_id"):
+            raise HTTPException(status_code=400, detail="Xóa đơn hàng trước nếu muốn mở lại")
     if trang_thai == "lost":
         store.set_quote_status(quote_id, "lost", ly_do)
         return RedirectResponse("/bao-gia", status_code=303)
     if trang_thai in ("sent", "chasing"):
-        # Kanban drag between open columns, or pulling a card back out of
-        # Chốt/Mất (re-opening clears lost_reason; an existing order is kept).
+        # Kanban drag between open columns, or pulling a card back out of Mất
+        # (re-opening clears lost_reason).
         store.set_quote_status(quote_id, trang_thai)
         return RedirectResponse("/bao-gia", status_code=303)
     raise HTTPException(status_code=400, detail="Trạng thái không hợp lệ")

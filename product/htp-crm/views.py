@@ -1604,7 +1604,9 @@ function kbDrop(ev, newStatus) {{
     method: 'POST', credentials: 'same-origin',
     headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
     body: body.toString()
-  }}).then(function() {{ location.reload(); }});
+  }}).then(function (r) {{
+    if (!r.ok) return r.json().then(function (d) {{ alert(d.detail); }});
+  }}).catch(function () {{}}).finally(function () {{ location.reload(); }});
 }}
 </script>"""
 
