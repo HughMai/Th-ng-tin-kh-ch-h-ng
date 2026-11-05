@@ -66,7 +66,11 @@ COMPANY = {
     "address": os.environ.get("COMPANY_ADDRESS", "235 - 237 (281 Cũ) Võ Văn Kiệt, Bình Thủy, Cần Thơ"),
     "email": os.environ.get("COMPANY_EMAIL", "hungthanhphat6688@gmail.com"),
     "website": os.environ.get("COMPANY_WEBSITE", "hungthanhphat.vn"),
-    "signer": os.environ.get("COMPANY_SIGNER", ""),  # "Người báo giá" — printed name, blank = sign by hand
+    "signer": os.environ.get("COMPANY_SIGNER", "Mai Trung Hiếu"),  # "Người báo giá" — printed name
+    # Signature image printed above the signer's name. Lives in data/ (gitignored,
+    # volume-mounted on the VPS) — never commit it: one repo remote is public.
+    # Missing file = blank space to sign by hand.
+    "signature": os.environ.get("COMPANY_SIGNATURE", str(HERE / "data" / "chu-ky.png")),
     # VietQR scan-to-pay on the báo giá. bank_bin is the NAPAS code (Vietcombank
     # = 970436) and bank_account must be the real account number — bank
     # nicknames/aliases aren't part of the VietQR standard and won't resolve.

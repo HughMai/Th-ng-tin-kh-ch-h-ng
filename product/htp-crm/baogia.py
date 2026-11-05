@@ -13,6 +13,7 @@ so the sheet is internally consistent; manual-priced lines use the stored value.
 """
 import io
 import math
+import os
 import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -23,7 +24,9 @@ from openpyxl import Workbook
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from openpyxl.drawing.image import Image as XLImage
-from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor, TwoCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
+from PIL import Image
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
@@ -257,6 +260,31 @@ def _qr_png(payload: str) -> io.BytesIO:
     img.get_image().convert("RGB").save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+
+def _signature_png(path: str, max_w: int = 200, max_h: int = 104):
+    """Signature image -> (PNG buffer, display w, display h), trimmed to the ink
+    and fitted inside max_w × max_h px. None when unset or missing — the báo
+    giá then prints a blank signing space, as before. The file lives in data/
+    (gitignored, volume-mounted on the VPS), never in the repo or static/: one
+    of the repo's remotes is public, and a signature is forgeable."""
+    if not path or not os.path.isfile(path):
+        return None
+    im = Image.open(path).convert("RGBA")
+    # Ink = any pixel that is visible and not near-white; crop to it.
+    alpha = im.getchannel("A").point(lambda a: 255 if a > 16 else 0)
+    light = im.convert("L").point(lambda v: 255 if v < 235 else 0)
+    box = Image.composite(light, Image.new("L", im.size, 0), alpha).getbbox()
+    if box:
+        im = im.crop(box)
+    scale = min(max_w / im.width, max_h / im.height)
+    w, h = round(im.width * scale), round(im.height * scale)
+    # Stored at 3× display size so it stays crisp when zoomed or printed.
+    im = im.resize((w * 3, h * 3), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, format="PNG", optimize=True)
+    buf.seek(0)
+    return buf, w, h
 
 
 def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -> tuple[bytes, str]:
@@ -516,7 +544,25 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
          align="center", first=6, last=8, height=18); row += 1
     ws.merge_cells(start_row=row, start_column=6, end_row=row + 2, end_column=8)
     for r in range(row, row + 3):
-        ws.row_dimensions[r].height = 24  # room to sign and stamp
+        ws.row_dimensions[r].height = 28  # room to sign and stamp
+    sig = _signature_png(company.get("signature") or "")
+    if sig:
+        # Centred in F–H over the three signing rows (84pt = 112px), 4px
+        # top margin. One-cell anchor with an explicit size, walked to the
+        # column the centring offset actually lands in — Excel ignores a
+        # colOff wider than its own column.
+        buf, w, h = sig
+        img = XLImage(buf)
+        img.width, img.height = w, h
+        col0, off = 5, (sum(_COL_WIDTHS[c] * 7 + 5 for c in "FGH") - w) / 2
+        while off >= _COL_WIDTHS[get_column_letter(col0 + 1)] * 7 + 5:
+            off -= _COL_WIDTHS[get_column_letter(col0 + 1)] * 7 + 5
+            col0 += 1
+        img.anchor = OneCellAnchor(
+            _from=AnchorMarker(col=col0, colOff=pixels_to_EMU(off), row=row - 1,
+                               rowOff=pixels_to_EMU(4)),
+            ext=XDRPositiveSize2D(pixels_to_EMU(w), pixels_to_EMU(h)))
+        ws.add_image(img)
     row += 3
     band(row, company.get("signer") or "", size=_SZ, bold=True, color=_INK,
          align="center", first=6, last=8, height=21); row += 1
@@ -592,7 +638,10 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
             ws.merge_cells(start_row=1, start_column=7,
                            end_row=qr_caption_row, end_column=7)
         cap = ws.cell(row=1, column=7,
-                      value=f"Quét mã thanh toán\nTạm ứng {int(_DEPOSIT_PCT * 100)}%")
+                      # Three explicit lines: "Quét mã thanh toán" at 11pt
+                      # bold is 141px against G's 145px, so Excel wrapped it
+                      # wherever it liked ("thanh / toán"). Short lines can't.
+                      value=f"Quét mã\nthanh toán\nTạm ứng {int(_DEPOSIT_PCT * 100)}%")
         cap.font = Font(name=_FONT, size=11, bold=True, color=_NAVY)
         cap.alignment = Alignment(horizontal="right", vertical="center", wrap_text=True)
 
