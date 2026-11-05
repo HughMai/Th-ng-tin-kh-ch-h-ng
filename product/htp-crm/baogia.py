@@ -48,16 +48,16 @@ _FONT = "Arial"
 # Sized for SCREEN reading first — the customer opens this in Zalo / Google
 # Sheets on a phone or laptop far more often than they print it. Every column
 # fits its 14pt content on one line: B a full door name ("Cửa Cuốn Đài Loan
-# 6zem"), C a size ("4.75 x 3.1"), F/G the largest realistic đơn giá / tổng
+# 6zem"), C a size ("4.75 x 3.1") and its "Kích thước" header, F/G the largest realistic đơn giá / tổng
 # cộng ("143.400.000 ₫"), H a short ghi chú. The old 104-unit grid clipped all
-# four. On A4 fit-to-width this 134-unit grid prints at ~78% scale, so the
+# four. On A4 fit-to-width this 136-unit grid prints at ~78% scale, so the
 # small supporting text below is sized up to stay ≥ ~9pt on paper.
-_COL_WIDTHS = {"A": 6, "B": 34, "C": 15, "D": 6, "E": 13, "F": 17, "G": 20, "H": 23}
+_COL_WIDTHS = {"A": 6, "B": 34, "C": 17, "D": 6, "E": 13, "F": 17, "G": 20, "H": 23}
 _VND = '#,##0" ₫"'
 # Explicit line breaks so the two long headers split at the unit, not mid-word.
 _HEADERS = ["STT", "Nội dung", "Kích thước\n(m)", "SL", "Diện tích\n(m²)",
             "Đơn giá", "Thành tiền", "Ghi chú"]
-_INFO_H = 20  # company-info line height (12pt text)
+_INFO_H = 22  # company-info line height (12pt text) — also sets the QR's room
 
 
 def _lines(text, width_units: float, size: float = 14) -> int:
@@ -315,14 +315,14 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     if contact:
         band(row, contact, size=12, color=_GREY, height=_INFO_H, last=6); row += 1
     # The QR is drawn once the total is known (further down) but anchors here —
-    # its caption sits on the last company-info line, level with the code above.
-    qr_caption_row = max(2, row - 1)
-    # Row heights above the rule (name band, then each present 19px info line,
-    # then the 5px rule itself) — captured now, while they're still in scope, so
-    # the QR anchor below can size itself to exactly fill this header without
-    # spilling into "BẢNG BÁO GIÁ" underneath. `row - 2` is however many of the
-    # four optional lines actually got printed above (0 if the company has none).
-    _hdr_row_px = [30] + [_INFO_H] * (row - 2) + [5]
+    # its caption fills column G from row 1 down to the last company-info line,
+    # so it centres vertically on the code beside it.
+    qr_caption_row = max(1, row - 1)
+    # Row heights above the rule (name band, each present info line, then the
+    # 5pt rule) in PIXELS — row heights are points, and 1pt = 4/3px at 96dpi.
+    # Treating points as pixels left the QR ~25% smaller than the header it sits
+    # in. `row - 2` is however many of the four optional lines got printed.
+    _hdr_row_px = [h * 4 / 3 for h in [30] + [_INFO_H] * (row - 2) + [5]]
     # thin rule under the header block
     for col in range(1, 9):
         ws.cell(row=row, column=col).border = Border(bottom=Side(style="thin", color=_NAVY))
@@ -370,11 +370,14 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
 
     def header_cell(r, col, text):
         c = ws.cell(row=r, column=col, value=text)
-        c.font = Font(name=_FONT, size=_SZ, bold=True, color=_WHITE)
+        # 13pt, a notch under the body: "Kích thước" fits one line of C with
+        # room to spare even in viewers that render wider than Excel or drop
+        # the explicit "\n" — then "(m)" just wraps to the second line.
+        c.font = Font(name=_FONT, size=13, bold=True, color=_WHITE)
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.fill = PatternFill("solid", fgColor=_NAVY)
         c.border = _BORDER
-        ws.row_dimensions[r].height = 42  # two 14pt lines ("Kích thước / (m)")
+        ws.row_dimensions[r].height = 46  # two 13pt lines + padding
         return c
 
     def money(r, col, value):
@@ -495,7 +498,7 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         "- Bảo hành: Sản phẩm được bảo hành chính hãng [XX] tháng kể từ ngày bàn giao.",
         "- Lắp đặt: Có mặt khảo sát trong ngày. Lắp xong, chạy thử, nghiệm thu hài lòng mới thanh toán.",
     ):
-        # The longest term runs 98 chars — one line at 12pt across the 134-unit
+        # The longest term runs 98 chars — one line at 12pt across the 136-unit
         # band; the height still follows the estimate in case terms grow.
         band(row, line, size=12, color=_INK,
              height=_lines(line, sum(_COL_WIDTHS.values()), 12) * 17 + 3); row += 1
@@ -555,13 +558,13 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         qr_buf = _qr_png(vietqr_payload(company.get("bank_bin") or "",
                                         company["bank_account"], deposit, memo))
         img = XLImage(qr_buf)
-        # Up from the original 92px for an easier scan — capped to whatever the
-        # header actually has room for (_hdr_row_px), so a company with fewer
-        # info lines still gets a QR that fits instead of one that overlaps
-        # "BẢNG BÁO GIÁ" underneath it. 2px kept as a bottom margin.
-        qr_px = min(108, sum(_hdr_row_px) - 2)
         g_px = _COL_WIDTHS["G"] * 7 + 5
         h_px = _COL_WIDTHS["H"] * 7 + 5
+        # As big as the header allows (~160px, ≈4cm on screen) for an easy scan
+        # — capped to the header height (_hdr_row_px) so a company with fewer
+        # info lines gets a QR that fits instead of one that overlaps "BẢNG BÁO
+        # GIÁ" underneath, and to column H so it never pushes into the caption.
+        qr_px = int(min(160, h_px - 4, sum(_hdr_row_px) - 4))
         img.width = img.height = qr_px
         # Right edge flush on H's right edge (the print boundary), where the
         # "HTP" logo used to sit. The start column depends on whether the code
@@ -581,17 +584,17 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
             cum += h
         img.anchor = TwoCellAnchor(editAs="oneCell", _from=frm, to=to)
         ws.add_image(img)
-        # Caption sits in G, to the LEFT of the code — it used to span G–H and
-        # the image drew over half of it ("Quét mã thanh toán ·" then nothing).
-        # Spans the last two info lines when there are two, so both lines fit.
-        cap_top = max(2, qr_caption_row - 1)
-        if cap_top < qr_caption_row:
-            ws.merge_cells(start_row=cap_top, start_column=7,
+        # Caption sits in G, right beside the code. It spans G from row 1 to
+        # the last info line — the same rows the QR covers — and centres
+        # vertically, so its middle lines up with the QR's middle. (Company
+        # text stops at F, so G1 is free.)
+        if qr_caption_row > 1:
+            ws.merge_cells(start_row=1, start_column=7,
                            end_row=qr_caption_row, end_column=7)
-        cap = ws.cell(row=cap_top, column=7,
+        cap = ws.cell(row=1, column=7,
                       value=f"Quét mã thanh toán\nTạm ứng {int(_DEPOSIT_PCT * 100)}%")
-        cap.font = Font(name=_FONT, size=10, bold=True, color=_NAVY)
-        cap.alignment = Alignment(horizontal="right", vertical="bottom", wrap_text=True)
+        cap.font = Font(name=_FONT, size=11, bold=True, color=_NAVY)
+        cap.alignment = Alignment(horizontal="right", vertical="center", wrap_text=True)
 
     # ── Print setup: one A4 page ─────────────────────────────────────────
     # Without this, Excel prints with its default page setup and the 8 columns
@@ -603,7 +606,7 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 1
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-    # Narrow side margins widen the printable band to ~7.87", so the 134-unit
+    # Narrow side margins widen the printable band to ~7.87", so the 136-unit
     # grid only shrinks to ~78% — 14pt body still prints at ~11pt.
     ws.page_margins = PageMargins(left=0.2, right=0.2, top=0.35, bottom=0.35,
                                   header=0.15, footer=0.15)
