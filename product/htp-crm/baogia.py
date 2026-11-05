@@ -45,16 +45,36 @@ _LINE = Side(style="thin", color="FFBDBDBD")
 _BORDER = Border(_LINE, _LINE, _LINE, _LINE)
 _FONT = "Arial"
 
-# On A4 with fit-to-1-page-wide, printed text size is set by total column
-# UNITS across the page, not the point size — so the grid is kept near the 7.87"
-# printable width (≈104 units) and the body font prints close to full size. The
-# wide money columns (F/G) hold the largest realistic đơn giá / tổng cộng
-# ("143.400.000 ₫" ≈ 13 chars) without clipping to ####. H is wide enough to sit
-# under the top-right QR and to give Ghi chú room to wrap.
-_COL_WIDTHS = {"A": 4, "B": 26, "C": 11, "D": 5, "E": 10, "F": 16, "G": 19, "H": 13}
+# Sized for SCREEN reading first — the customer opens this in Zalo / Google
+# Sheets on a phone or laptop far more often than they print it. Every column
+# fits its 14pt content on one line: B a full door name ("Cửa Cuốn Đài Loan
+# 6zem"), C a size ("4.75 x 3.1"), F/G the largest realistic đơn giá / tổng
+# cộng ("143.400.000 ₫"), H a short ghi chú. The old 104-unit grid clipped all
+# four. On A4 fit-to-width this 134-unit grid prints at ~78% scale, so the
+# small supporting text below is sized up to stay ≥ ~9pt on paper.
+_COL_WIDTHS = {"A": 6, "B": 34, "C": 15, "D": 6, "E": 13, "F": 17, "G": 20, "H": 23}
 _VND = '#,##0" ₫"'
-_HEADERS = ["STT", "Nội dung", "Kích thước (m)", "SL", "Diện tích (m²)",
+# Explicit line breaks so the two long headers split at the unit, not mid-word.
+_HEADERS = ["STT", "Nội dung", "Kích thước\n(m)", "SL", "Diện tích\n(m²)",
             "Đơn giá", "Thành tiền", "Ghi chú"]
+_INFO_H = 20  # company-info line height (12pt text)
+
+
+def _lines(text, width_units: float, size: float = 14) -> int:
+    """Wrapped line count for ``text`` in a cell ``width_units`` wide. Excel /
+    Sheets never auto-fit a row we've given an explicit height, so we estimate:
+    ~1.35 width units per Arial char at 14pt (Vietnamese diacritics run wide),
+    minus 1 unit of cell padding. Errs on the side of one line too many."""
+    s = str(text or "")
+    if not s:
+        return 1
+    per_line = max(1.0, (width_units - 1) / (1.35 * size / 14))
+    return sum(max(1, math.ceil(len(part) / per_line)) for part in s.split("\n"))
+
+
+def _row_h(lines: int, size: float = 14) -> float:
+    """Row height (pt) for ``lines`` of ``size``-pt text, with breathing room."""
+    return max(24, round(lines * size * 1.3 + 6))
 _HIEU_LUC = "15 ngày"  # quote validity shown in the customer block
 _SZ = 14  # base body size; table cells and customer fields
 _DEPOSIT_PCT = 0.30  # keep in step with the "Tạm ứng 30%" payment term below
@@ -150,10 +170,14 @@ def _describe(item: dict) -> str:
 
 
 def _door_line(item: dict, customer_type: str) -> dict:
-    """{desc, ngang_m, cao_m, area, don_gia, thanh_tien, ghi_chu} for one door."""
+    """{desc, ngang_m, cao_m, area, so_luong, don_gia, thanh_tien, ghi_chu} for
+    one door line. A line can be N identical cửa (đại lý ordering a batch): area
+    and đơn giá stay per-door — that's what the customer reads down the SL and
+    Đơn giá columns — while thành tiền is the ×N line total."""
     ngang_m = (item["ngang_mm"] or 0) / 1000
     cao_m = (item["cao_mm"] or 0) / 1000
     area = ngang_m * cao_m
+    so_luong = max(1, item.get("so_luong") or 1)
     table_price = None
     if not item["is_manual_price"]:
         table_price = pricing.get_price(item["product"], item.get("cong_nghe") or "",
@@ -161,13 +185,15 @@ def _door_line(item: dict, customer_type: str) -> dict:
     if table_price is not None:
         per_sqm, flat = pricing.get_surcharges(item["product"], item.get("cong_nghe") or "", area)
         don_gia = table_price * 1000 + per_sqm  # full đ/m² incl. small-door surcharge
-        thanh_tien = pricing.line_total(table_price, item["ngang_mm"], item["cao_mm"], per_sqm, flat)
+        thanh_tien = pricing.line_total(table_price, item["ngang_mm"], item["cao_mm"],
+                                        per_sqm, flat) * so_luong
     else:
-        thanh_tien = item["thanh_tien"]
-        don_gia = round(thanh_tien / area) if area else thanh_tien
+        thanh_tien = item["thanh_tien"]  # already the ×N line total
+        don_gia = round(thanh_tien / so_luong / area) if area else thanh_tien
     ghi_chu = " · ".join(x for x in (item.get("mau_sac"), item.get("ghi_chu")) if x)
     return {"desc": _describe(item), "ngang_m": ngang_m, "cao_m": cao_m, "area": area,
-            "don_gia": don_gia, "thanh_tien": thanh_tien, "ghi_chu": ghi_chu}
+            "so_luong": so_luong, "don_gia": don_gia, "thanh_tien": thanh_tien,
+            "ghi_chu": ghi_chu}
 
 
 def _dim(m: float) -> str:
@@ -274,20 +300,20 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     # the enlarged QR below enough header height to grow into without spilling
     # into the "BẢNG BÁO GIÁ" band underneath it.
     if company.get("tagline"):
-        band(row, f'Chuyên: {company["tagline"]}', size=11, color=_GREY, height=19,
+        band(row, f'Chuyên: {company["tagline"]}', size=12, color=_GREY, height=_INFO_H,
              last=6); row += 1
     if company.get("address"):
-        band(row, f'Địa chỉ: {company["address"]}', size=11, color=_GREY, height=19,
+        band(row, f'Địa chỉ: {company["address"]}', size=12, color=_GREY, height=_INFO_H,
              last=6); row += 1
     if company.get("phone"):
-        band(row, f'Hotline: {company["phone"]}', size=11, color=_GREY, height=19,
+        band(row, f'Hotline: {company["phone"]}', size=12, color=_GREY, height=_INFO_H,
              last=6); row += 1
     contact = " | ".join(p for p in (
         (f'Email: {company["email"]}' if company.get("email") else ""),
         (f'Website: {company["website"]}' if company.get("website") else ""),
     ) if p)
     if contact:
-        band(row, contact, size=11, color=_GREY, height=19, last=6); row += 1
+        band(row, contact, size=12, color=_GREY, height=_INFO_H, last=6); row += 1
     # The QR is drawn once the total is known (further down) but anchors here —
     # its caption sits on the last company-info line, level with the code above.
     qr_caption_row = max(2, row - 1)
@@ -296,7 +322,7 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     # the QR anchor below can size itself to exactly fill this header without
     # spilling into "BẢNG BÁO GIÁ" underneath. `row - 2` is however many of the
     # four optional lines actually got printed above (0 if the company has none).
-    _hdr_row_px = [30] + [19] * (row - 2) + [5]
+    _hdr_row_px = [30] + [_INFO_H] * (row - 2) + [5]
     # thin rule under the header block
     for col in range(1, 9):
         ws.cell(row=row, column=col).border = Border(bottom=Side(style="thin", color=_NAVY))
@@ -348,7 +374,7 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.fill = PatternFill("solid", fgColor=_NAVY)
         c.border = _BORDER
-        ws.row_dimensions[r].height = 32
+        ws.row_dimensions[r].height = 42  # two 14pt lines ("Kích thước / (m)")
         return c
 
     def money(r, col, value):
@@ -383,12 +409,14 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
             cell(row, 1, idx)
             cell(row, 2, d["desc"], align="left")
             cell(row, 3, f'{_dim(d["ngang_m"])} x {_dim(d["cao_m"])}')
-            cell(row, 4, 1)
+            cell(row, 4, d["so_luong"])
             cell(row, 5, round(d["area"], 2))
             money(row, 6, d["don_gia"])
             money(row, 7, d["thanh_tien"])
             cell(row, 8, d["ghi_chu"], align="left")
-            ws.row_dimensions[row].height = 24
+            ws.row_dimensions[row].height = _row_h(max(
+                _lines(d["desc"], _COL_WIDTHS["B"]),
+                _lines(d["ghi_chu"], _COL_WIDTHS["H"])))
             row += 1
         spacer(row); row += 1
 
@@ -419,7 +447,8 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
             cell(row, 8, "")
             for col in (3, 5, 6):
                 ws.cell(row=row, column=col).border = _BORDER
-            ws.row_dimensions[row].height = 24
+            ws.row_dimensions[row].height = _row_h(
+                _lines(pk["name"], _COL_WIDTHS["B"] + _COL_WIDTHS["C"]))
             row += 1
         spacer(row); row += 1
 
@@ -451,10 +480,11 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         row += 1
     spacer(row); row += 1
 
-    # 11pt, not _SZ: a large total spells out to ~90 chars and this row is a
-    # merged band, which never auto-fits — at 13pt it would clip.
-    band(row, f"(Bằng chữ: {doc_so_tien(tong_tien)})", size=11, italic=True,
-         color=_INK, align="right", height=19); row += 1
+    # 12pt, not _SZ: a large total spells out to ~90 chars and this row is a
+    # merged band, which never auto-fits — height follows the wrapped length.
+    bang_chu = f"(Bằng chữ: {doc_so_tien(tong_tien)})"
+    band(row, bang_chu, size=12, italic=True, color=_INK, align="right",
+         height=_lines(bang_chu, sum(_COL_WIDTHS.values()), 12) * 17 + 3); row += 1
     spacer(row); row += 1
 
     # ── IV. CAM KẾT & ĐIỀU KHOẢN ─────────────────────────────────────────
@@ -465,9 +495,10 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         "- Bảo hành: Sản phẩm được bảo hành chính hãng [XX] tháng kể từ ngày bàn giao.",
         "- Lắp đặt: Có mặt khảo sát trong ngày. Lắp xong, chạy thử, nghiệm thu hài lòng mới thanh toán.",
     ):
-        # Same one-line constraint: the longest term runs 98 chars across the
-        # 102-unit band, so it stays at 10.5pt rather than following _SZ.
-        band(row, line, size=10.5, color=_INK, height=17); row += 1
+        # The longest term runs 98 chars — one line at 12pt across the 134-unit
+        # band; the height still follows the estimate in case terms grow.
+        band(row, line, size=12, color=_INK,
+             height=_lines(line, sum(_COL_WIDTHS.values()), 12) * 17 + 3); row += 1
 
     # ── Signature block ──────────────────────────────────────────────────
     # Sits bottom-right like the wet-signed paper báo giá: title, "ký ghi rõ
@@ -478,8 +509,8 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     pay_row = row
     band(row, "NGƯỜI BÁO GIÁ", size=_SZ, bold=True, color=_INK, align="center",
          first=6, last=8, height=21); row += 1
-    band(row, "(Ký, ghi rõ họ tên)", size=10, italic=True, color=_GREY,
-         align="center", first=6, last=8, height=16); row += 1
+    band(row, "(Ký, ghi rõ họ tên)", size=11, italic=True, color=_GREY,
+         align="center", first=6, last=8, height=18); row += 1
     ws.merge_cells(start_row=row, start_column=6, end_row=row + 2, end_column=8)
     for r in range(row, row + 3):
         ws.row_dimensions[r].height = 24  # room to sign and stamp
@@ -511,16 +542,15 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
              f"{deposit:,.0f} ₫".replace(",", ".")),
             ("Nội dung CK:", memo),
         ) if val]
-        # 10.5pt heading over 10pt lines — a notch below the CAM KẾT terms above
-        # (10.5pt), landing on the same size as the "(Ký, ghi rõ họ tên)" caption
-        # by the signature — the document's established size for small supporting
-        # text, which is exactly this block's role. height stays 21: these rows
-        # are shared with the signature block on the right, and band() would
-        # otherwise shrink its title row.
-        band(pay_row, "THÔNG TIN CHUYỂN KHOẢN", size=10.5, bold=True, color=_NAVY,
+        # 12pt heading over 12pt lines — the same size as the CAM KẾT terms
+        # above; the account number is read and typed by hand, so it must stay
+        # legible at the ~80% print scale. height stays 21: these rows are shared
+        # with the signature block on the right, and band() would otherwise
+        # shrink its title row.
+        band(pay_row, "THÔNG TIN CHUYỂN KHOẢN", size=12, bold=True, color=_NAVY,
              first=1, last=5, height=21)
         for i, (label, value) in enumerate(pay_lines, start=1):
-            field(pay_row + i, label, value, first=1, last=5, size=10)
+            field(pay_row + i, label, value, first=1, last=5, size=12)
 
         qr_buf = _qr_png(vietqr_payload(company.get("bank_bin") or "",
                                         company["bank_account"], deposit, memo))
@@ -533,34 +563,35 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
         g_px = _COL_WIDTHS["G"] * 7 + 5
         h_px = _COL_WIDTHS["H"] * 7 + 5
         img.width = img.height = qr_px
-        if qr_px <= h_px:
-            ws.add_image(img, "H1")
-        else:
-            # Wider than column H alone, so it can't anchor at H1 without
-            # spilling off the page (H is the last column, the print boundary).
-            # Company text stops at column F specifically so G–H stay clear for
-            # this block — start the anchor inside G instead, offset so the
-            # image's right edge still lands flush on H's right edge, matching
-            # where the "HTP" logo used to sit. TwoCellAnchor derives its size
-            # from the from/to box, not img.width/height, so the "to" marker is
-            # walked out row-by-row against the real header heights above.
-            off_px = g_px + h_px - qr_px
-            frm = AnchorMarker(col=6, colOff=pixels_to_EMU(off_px), row=0, rowOff=0)
-            cum = 0
-            for idx, h in enumerate(_hdr_row_px):
-                if cum + h >= qr_px:
-                    to = AnchorMarker(col=7, colOff=pixels_to_EMU(h_px),
-                                      row=idx, rowOff=pixels_to_EMU(qr_px - cum))
-                    break
-                cum += h
-            img.anchor = TwoCellAnchor(editAs="oneCell", _from=frm, to=to)
-            ws.add_image(img)
-        ws.merge_cells(start_row=qr_caption_row, start_column=7,
-                       end_row=qr_caption_row, end_column=8)
-        cap = ws.cell(row=qr_caption_row, column=7,
-                      value=f"Quét mã thanh toán — Tạm ứng {int(_DEPOSIT_PCT * 100)}%")
-        cap.font = Font(name=_FONT, size=8, bold=True, color=_NAVY)
-        cap.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        # Right edge flush on H's right edge (the print boundary), where the
+        # "HTP" logo used to sit. The start column depends on whether the code
+        # fits inside H alone or has to reach back into G. TwoCellAnchor derives
+        # its size from the from/to box, not img.width/height, so the "to"
+        # marker is walked out row-by-row against the real header heights.
+        off_px = g_px + h_px - qr_px  # from G's left edge
+        frm = (AnchorMarker(col=6, colOff=pixels_to_EMU(off_px), row=0, rowOff=0)
+               if off_px < g_px else
+               AnchorMarker(col=7, colOff=pixels_to_EMU(off_px - g_px), row=0, rowOff=0))
+        cum = 0
+        for idx, h in enumerate(_hdr_row_px):
+            if cum + h >= qr_px:
+                to = AnchorMarker(col=7, colOff=pixels_to_EMU(h_px),
+                                  row=idx, rowOff=pixels_to_EMU(qr_px - cum))
+                break
+            cum += h
+        img.anchor = TwoCellAnchor(editAs="oneCell", _from=frm, to=to)
+        ws.add_image(img)
+        # Caption sits in G, to the LEFT of the code — it used to span G–H and
+        # the image drew over half of it ("Quét mã thanh toán ·" then nothing).
+        # Spans the last two info lines when there are two, so both lines fit.
+        cap_top = max(2, qr_caption_row - 1)
+        if cap_top < qr_caption_row:
+            ws.merge_cells(start_row=cap_top, start_column=7,
+                           end_row=qr_caption_row, end_column=7)
+        cap = ws.cell(row=cap_top, column=7,
+                      value=f"Quét mã thanh toán\nTạm ứng {int(_DEPOSIT_PCT * 100)}%")
+        cap.font = Font(name=_FONT, size=10, bold=True, color=_NAVY)
+        cap.alignment = Alignment(horizontal="right", vertical="bottom", wrap_text=True)
 
     # ── Print setup: one A4 page ─────────────────────────────────────────
     # Without this, Excel prints with its default page setup and the 8 columns
@@ -572,9 +603,8 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 1
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-    # Narrow side margins widen the printable band to ~7.87", which the trimmed
-    # 102-unit grid fills at ~100% — no fit-to-width shrink, so the body font
-    # prints at its full 14pt instead of being scaled down.
+    # Narrow side margins widen the printable band to ~7.87", so the 134-unit
+    # grid only shrinks to ~78% — 14pt body still prints at ~11pt.
     ws.page_margins = PageMargins(left=0.2, right=0.2, top=0.35, bottom=0.35,
                                   header=0.15, footer=0.15)
 
