@@ -362,7 +362,7 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
     spacer(row); row += 1
 
     # ── Customer block (two label/value columns) ─────────────────────────
-    def field(r, label, value, *, first, last, size=_SZ):
+    def field(r, label, value, *, first, last, size=_SZ, align="left"):
         """Label and value in one merged cell — 'Kính gửi: ANH CỬA'. They used to
         sit in separate cells a whole column apart, which stranded the value ~3cm
         to the right of its label; inline also frees the full width for long
@@ -374,7 +374,7 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
             TextBlock(InlineFont(rFont=_FONT, sz=size, b=True, color=_INK[2:]), f"{label} "),
             TextBlock(InlineFont(rFont=_FONT, sz=size, color=_INK[2:]), str(value)),
         )
-        c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        c.alignment = Alignment(horizontal=align, vertical="center", wrap_text=True)
         # Merged cells never auto-fit, so a long address would be clipped at one
         # line. Width in char-units ≈ chars × (13pt Arial / 11pt Calibri) = 1.18,
         # scaled by size/_SZ so a smaller block gets the wrap budget it earns.
@@ -385,12 +385,14 @@ def build_baogia_xlsx(quote: dict, customer: dict, items: list, company: dict) -
 
     cust_name = quote.get("customer_name") or customer.get("name") or "—"
     phone = quote.get("phone") or customer.get("phone") or "—"
+    # Customer on the left edge, document refs flush to the right edge — the
+    # same right edge as the table and the QR above — so the block mirrors.
     field(row, "Kính gửi:", cust_name.upper(), first=1, last=4)
-    field(row, "Số báo giá:", so, first=5, last=8); row += 1
+    field(row, "Số báo giá:", so, first=5, last=8, align="right"); row += 1
     field(row, "Địa chỉ:", customer.get("address") or "—", first=1, last=4)
-    field(row, "Ngày lập:", today.strftime("%d/%m/%Y"), first=5, last=8); row += 1
+    field(row, "Ngày lập:", today.strftime("%d/%m/%Y"), first=5, last=8, align="right"); row += 1
     field(row, "Điện thoại:", phone, first=1, last=4)
-    field(row, "Hiệu lực:", _HIEU_LUC, first=5, last=8); row += 1
+    field(row, "Hiệu lực:", _HIEU_LUC, first=5, last=8, align="right"); row += 1
     spacer(row); row += 1
 
     def section(r, text):
